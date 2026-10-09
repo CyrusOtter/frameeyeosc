@@ -118,6 +118,7 @@ const USAGE: &str = "usage: eyecam-rec [options]
                      calibration and (for user) the wear levels
   --no-track         with --replay: do not follow the baselines after warm-up (evaluation)
   --no-gaze-drop     with --replay: no EyeWide hold after a downward glance (evaluation)
+  --no-edge-hold     with --replay: a pupil lost at the window's nasal edge may count as closed (the old rule; evaluation)
   --wide-curve S,W   with --replay: EyeWide = (rise - S * step) / (W * step) (evaluation)
   --widen-sensitivity X  with --replay: the curve for widen sensitivity X in 0..1 (default 0.5, as live)
   --seconds N        how long to record once frames are found (default 120, or the cue protocol's length)
@@ -200,6 +201,7 @@ fn parse_args() -> Result<Args> {
             }
             "--no-track" => args.tune.track = false,
             "--no-gaze-drop" => args.tune.gaze_drop = false,
+            "--no-edge-hold" => args.tune.edge_hold = false,
             "--widen-sensitivity" => {
                 let v = number(value("--widen-sensitivity")?, "--widen-sensitivity")?;
                 (args.tune.wide_start, args.tune.wide_width) = eyecam::live::wide_curve(v);
