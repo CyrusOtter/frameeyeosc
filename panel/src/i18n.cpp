@@ -714,7 +714,7 @@ UiText makeJapanese() {
     t.gazeReach = "動く範囲";
     t.gazeGlitch = "乱れ対策";
     t.rowGazeScale = "視線の倍率";
-    t.hintGazeScale = "目合わせのあとに掛けます。やり直しても消えません";
+    t.hintGazeScale = "目合わせのあとに掛けます";
     t.capScaleLeft = "左";
     t.capScaleRight = "右";
     t.capScaleUp = "上";
@@ -1552,7 +1552,7 @@ UiText makeEnglish() {
     t.gazeReach = "Reach";
     t.gazeGlitch = "Glitch guard";
     t.rowGazeScale = "Gaze scale";
-    t.hintGazeScale = "Applied after the eye fit; fitting again keeps it";
+    t.hintGazeScale = "Applied after the eye fit";
     t.capScaleLeft = "Left";
     t.capScaleRight = "Right";
     t.capScaleUp = "Up";
