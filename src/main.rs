@@ -253,7 +253,11 @@ const CAMERA_OUTWARD_SHUT_RECENT: f64 = 0.15;
 // between 0.55 and 0.70 for 40 s of 105, trembling. So the eye server's eyelid is raised to the camera's highest over
 // the last CAMERA_RAISE_PEAK_S instead (RaisePeak), and to the camera's own one again from the moment the camera sees
 // the eye closed or the eye server reads it below CAMERA_RAISE_SHUT, so a blink or wink goes as before. Only the
-// raising: where the camera's eyelid stands for the eye's (CameraOpen, the ceiling, widening) it is the camera's own.
+// raising and the ceiling rule (lowered_at_ceiling goes by the same peak, so one low camera reading no longer makes a
+// dip: the left eye on 2026-10-09 16:36, its camera eyelid low, changed by 0.0036 -> 0.0032 a sample while open, and
+// 0.0022 -> 0.0019 once eyecam's aperture baseline followed; single-sample dips of the eye server's reading that went
+// out at 0.00-0.21 stay at 0.31-0.36): where the camera's eyelid stands for the eye's (CameraOpen, widening) it is the
+// camera's own.
 // Replayed over eleven recordings and fourteen eye videos: that right eye partly closed (0.25-0.72 while the eye server
 // read 0.8 or more) 19.9 -> 12.6 s of 105, its change from sample to sample while open 0.0041 -> 0.0024 (all
 // recordings 0.0022 -> 0.0017 for the right eye, 0.0025 -> 0.0020 for the left); blinks and winks the same (1817 ->
@@ -890,7 +894,7 @@ impl Smoother {
     /// ceiling_share; for CEILING_JUMP) is lowered toward the camera's eyelid where that is clearly narrowed (see
     /// lowered_at_ceiling); the agreeing above goes by the eye server's reading all the same, so a jump to 1.000 during
     /// a squint counts as before. Otherwise an eye the eye server reads open but below relaxed open goes no lower than
-    /// the camera's eyelid (see raised_to_camera), or `raise_to` where given (RaisePeak).
+    /// the camera's eyelid (see raised_to_camera). Both go by `raise_to` where given (RaisePeak).
     fn check_lids(
         &mut self,
         time: f64,
@@ -951,7 +955,7 @@ impl Smoother {
                 from[eye] = LidFrom::CameraOpen;
                 camera.lid
             } else {
-                let (lid, share) = lowered_at_ceiling(valve, ceiling[eye] * jump, camera.lid);
+                let (lid, share) = lowered_at_ceiling(valve, ceiling[eye] * jump, raise_to[eye].unwrap_or(camera.lid));
                 if share >= 0.5 {
                     from[eye] = LidFrom::CameraAtCeiling;
                     lid
@@ -7708,6 +7712,28 @@ mod tests {
                 assert!((mix_lid(valve, Some(camera + 0.002)) - lid).abs() < 0.02, "{valve} {camera}");
             }
         }
+    }
+
+    #[test]
+    fn a_few_low_camera_readings_at_a_jump_to_the_ceiling_make_no_dip() {
+        let settings = Settings {
+            lid_sync: 0.0,
+            ..camera_settings()
+        };
+        // The right eye's reading goes between 0.9 and 1.000 every 5 samples; the camera sees it relaxed open but for
+        // three low readings (33 ms) at the jump at sample 95 (it went down to 0.37 when the rule took the camera's own),
+        // and narrowed from sample 130 on
+        let openness = |i: usize| if i % 10 < 5 { [1.0, 0.9] } else { [1.0; 2] };
+        let cameras = |i: usize| {
+            let right = if (95..98).contains(&i) || i >= 130 { 0.3 } else { LID_RELAXED };
+            Some(camera_eyes([(LID_RELAXED, 0.0, false), (right, 0.0, false)]))
+        };
+        let mut smoother = saturated_smoother(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 2.0, openness, cameras);
+        let low = sent[90..125].iter().map(|sample| sample.lids[1]).fold(1.0f32, f32::min);
+        assert!(low > 0.65, "{low}");
+        // Held narrowed past CAMERA_RAISE_PEAK_S, a jump is lowered to it as before
+        assert!(sent[165..180].iter().any(|sample| sample.lid_from[1] == LidFrom::CameraAtCeiling && sample.lids[1] < 0.5), "{:?}", sent[170].lids);
     }
 
     #[test]
