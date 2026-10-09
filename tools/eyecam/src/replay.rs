@@ -369,7 +369,7 @@ pub struct LiveOpts {
 }
 
 pub const LIVE_HEADER: &str = "eye,eye_index,t_cam,label,step,ok_pupil,skin_up,aperture,lower,pupil_ratio,box_f,r,pitch,v_open,\
-closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready";
+closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready,edge_held";
 
 /// The live engine over a session, both eyes in step, causally. Returns ms per processed frame.
 pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, String> {
@@ -485,6 +485,7 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 f(o.f.upper_frac),
                 f(o.f.lower_frac),
                 (engines[e].baseline_ready() as u8).to_string(),
+                (o.edge_held as u8).to_string(),
             ];
             writeln!(w, "{}", row.join(",")).map_err(|e| e.to_string())?;
         }
