@@ -94,6 +94,7 @@ enum class PanelAction {
                        ///< 1 = passwd; the caller starts it, never from --dump-png)
     SetupVideo,        ///< ...open the setup video (only shown with a video URL)
     SetupProceed,      ///< ...on to the usual page (its "start using", or "continue" with the standard widening)
+    SetupBegin,        ///< "Get started" under what the eye cameras add: on to the setup checklist (handled inside)
     EyecamBack,        ///< "Back" on a failed calibration's or recording's error: dismiss it in the panel only
                        ///< (SetupFlow::dismissError; eyecam-rec stays in "error" until the next command)
     DiagOpen,          ///< open the diagnostics page on the Advanced tab (the panel opens it; the caller reads the
@@ -287,6 +288,15 @@ public:
      * @param page 0 = gaze, 1 = eyelids
      */
     void setFitDetailsPage(int page) { fitDetailsPage_ = page; }
+
+    /**
+     * Whether "Get started" under what the eye cameras add was pressed (then their tab shows the setup checklist).
+     * @param begun pressed
+     */
+    void setSetupBegun(bool begun) { setupBegun_ = begun; }
+
+    /** @return "Get started" was pressed since the panel started */
+    bool setupBegun() const { return setupBegun_; }
 
     /**
      * Open the keypad for the target PC's IPv4 address (only its buttons work while it is open).
@@ -510,6 +520,7 @@ private:
     PanelHit pressed_;
     PanelTab tab_ = PanelTab::Basic;
     bool fitDetails_ = false;  ///< "Fine-tune" is open on the Eye fit tab
+    bool setupBegun_ = false;  ///< "Get started" pressed: the eye cameras tab shows the setup checklist, not the intro
     int fitDetailsPage_ = 0;   ///< what "Fine-tune" shows: 0 = gaze, 1 = eyelids
     bool quitArmed_ = false;
     double quitArmedUntil_ = 0.0;
@@ -625,14 +636,58 @@ private:
 
     /**
      * The Basic tab's destination: three cards (VRChat directly, VRCFT LiveLink, VRCFT ETVR), each with what it
-     * carries in three short lines.
+     * carries in three short lines. Widening needs the eye cameras: while they aren't in use, that line is dimmer and
+     * says so ("（カメラ）"), on one line.
      * @param pen drawing tools
      * @param t texts
      * @param view the settings shown
      * @param y top
+     * @param camera the eye cameras are in use
      * @return the height used
      */
-    double drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& view, double y);
+    double drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& view, double y, bool camera);
+
+    /**
+     * The Basic tab's eye cameras row: not set up, what they add, "not in use" and the way to their tab; set up, a
+     * "Camera" badge, the camera_lids switch ("Use" / "Don't use") and the short state after it.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     * @param y top
+     * @param h height
+     */
+    void drawEyeCamerasRow(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view, double y,
+                           double h);
+
+    /**
+     * The small green "Camera" badge after the title of a row that only works with the eye cameras.
+     * @param pen drawing tools
+     * @param t texts
+     * @param x left
+     * @param cy middle (y)
+     * @param draw draw it (else only measure)
+     * @return its width
+     */
+    double cameraBadge(const Pen& pen, const UiText& t, double x, double cy, bool draw = true);
+
+    /**
+     * In place of the rows that only work with the eye cameras while they aren't in use: one dashed line saying what
+     * they would add, which opens their tab when pressed (while it is in the tab row).
+     * @param pen drawing tools
+     * @param text what they would add
+     * @param y top
+     * @return the height used
+     */
+    double drawCameraLine(const Pen& pen, const std::string& text, double y);
+
+    /**
+     * The eye cameras tab before they are set up: what they add, the one-time setup, and "Get started" (into the setup
+     * checklist).
+     * @param pen drawing tools
+     * @param t texts
+     */
+    void drawCameraIntro(const Pen& pen, const UiText& t);
 
     /**
      * The Output tab: the target PC and port, then the VRChat-only rows (parameter prefix, EyeTrackingActive type, Steam Link's names, VRChat's own eye tracking),
@@ -1225,9 +1280,10 @@ private:
      * @param hint the hint (may be empty)
      * @param locked show the lock note instead of the hint
      * @param indent how far right of the usual place (room for a numbered circle before it)
+     * @param badge a "Camera" badge after the title (cameraBadge; the title gets smaller to leave it room)
      */
     void drawRowLabel(const Pen& pen, const UiText& t, double y, double h, const std::string& title,
-                      const std::string& hint, bool locked, double indent = 0);
+                      const std::string& hint, bool locked, double indent = 0, bool badge = false);
 
     /**
      * A pill with 2 or more choices; the chosen one gets the accent fill, a check mark and bold text.

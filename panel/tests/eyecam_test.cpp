@@ -652,7 +652,7 @@ void testCalibText() {
     for (const Language language : {Language::Ja, Language::En}) {
         const UiText& t = uiText(language);
         for (const char* text :
-             {t.rowCameraLids, t.cameraUseBoth, t.cameraUseLeft, t.cameraUseRight, t.cameraUseValve,
+             {t.cameraUseBoth, t.cameraUseLeft, t.cameraUseRight, t.cameraUseValve,
               t.cameraUseValveFormat, t.cameraWhyNotCalibrated, t.cameraWhyNoCamera, t.cameraPupilSuffix,
               t.cameraWhyWarming, t.eyecamWarmingFormat, t.eyecamLiveOff, t.eyecamCalibWearTitle,
               t.eyecamCalibUserTitle, t.eyecamCalibWaiting, t.eyecamCalibErrorTitle, t.eyecamCalibRetry,
@@ -679,7 +679,7 @@ void testCalibText() {
               t.setupDoneHelp2Do, t.setupDoneButton, t.setupDoneNote, t.nextTitle, t.nextPass, t.nextWait,
               t.nextLearnFormat, t.nextFail, t.nextError, t.readyTitle, t.readyNote, t.lidsFromValve,
               t.lidsFromCamera, t.lidsFromCameraLeft, t.lidsFromCameraRight, t.camRowState, t.camRowStateHint,
-              t.camLearned, t.camRowLidsHint, t.camRowCalib, t.camRowCalibHint,
+              t.camLearned, t.camRowCalib, t.camRowCalibHint,
               t.camCalibButton, t.camCalibSide1, t.camCalibSide2, t.camRowUser, t.camRowUserHint, t.camUserButton,
               t.camUserSide1, t.camUserSide2, t.camUserNeedsCalib, t.camHelpTitle, t.camHelp1, t.camHelp1Do,
               t.camHelp2, t.camHelp2Do, t.camHelp3, t.camHelp3Do, t.lidsCamButton, t.lidsCamMarks,
@@ -688,14 +688,19 @@ void testCalibText() {
               t.devRecord, t.devRecordHint, t.tabEyecam, t.setupChipSquint, t.setupChipLookUp,
               t.setupChipLookDown, t.calibDonePill, t.calibDoneTitle, t.calibDoneBody, t.calibUserDoneTitle,
               t.calibUserDoneBody, t.calibDoneButton, t.lidsNowLabel, t.lidsNowBoth, t.lidsNowLeft,
-              t.lidsNowRight, t.lidsNowValve, t.lidsNowSwitch, t.lidsNowNoCamera, t.rowWidenEase, t.widenHintCamera,
+              t.lidsNowRight, t.lidsNowValve, t.lidsNowSwitch, t.lidsNowWaiting, t.rowWidenEase, t.widenHintCamera,
               t.widenHintMixed, t.widenHintValve, t.widenHintSaturated, t.widenNoteCamera, t.widenNoteValve,
               t.widenNoteUnfitted, t.widenSaturated, t.blinkHint, t.blinkHoldCaption,
               t.rowBlinkBoth, t.blinkBothHint, t.blinkBothNote, t.rowLidFloor, t.lidFloorHint, t.lidFloorNote, t.lidFloorNoteIdle,
               t.lidSmoothHint, t.syncOff, t.syncStrong, t.syncHint,
               t.lidsLook, t.lidsBlinks, t.lidsFine, t.camPupilLine,
               t.camWidenNotice, t.camWidenButton, t.calibCardTitle, t.calibResultTitle, t.calibWearNote,
-              t.searchNotWornFormat, t.searchNotWorn, t.searchNoVideo, t.searchOneEye}) {
+              t.searchNotWornFormat, t.searchNotWorn, t.searchNoVideo, t.searchOneEye, t.outputCameraSuffix,
+              t.rowEyeCameras, t.hintEyeCamerasNew, t.eyeCamerasUnused, t.eyeCamerasStart, t.hintEyeCamerasOn,
+              t.eyeCamerasUse, t.eyeCamerasDontUse, t.camBriefBoth, t.camBriefLeft, t.camBriefRight, t.camBriefOff,
+              t.camBriefWarming, t.camBriefWaiting, t.cameraBadge, t.cameraLineWiden, t.cameraLineFloor,
+              t.cameraLinePupils, t.camIntroTitle, t.camIntro[0], t.camIntro[1], t.camIntro[2], t.camIntroBox,
+              t.camIntroButton, t.camIntroNote}) {
             CHECK(text != nullptr && text[0] != '\0');
         }
         CHECK(t.setupLeftBefore != nullptr);  // (empty in English: "7 s left")

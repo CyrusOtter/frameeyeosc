@@ -91,6 +91,26 @@ struct UiText {
     /** Each card's three lines (VRChat, LiveLink, ETVR): wide eyes, sync, VRCFT. A leading ICON_CHECK or ICON_CROSS
      *  and a space hang in front of the lines (icons.h). */
     const char* outputMarks[3][3];
+    const char* outputCameraSuffix;  ///< after a card's wide-eyes line while the eye cameras aren't in use ("（カメラ）")
+    // The Basic tab's eye cameras row: not set up (a way to their tab), or set up (the camera_lids switch)
+    const char* rowEyeCameras;
+    const char* hintEyeCamerasNew;   ///< ...not set up: what they add
+    const char* eyeCamerasUnused;    ///< ...its state then (grey)
+    const char* eyeCamerasStart;     ///< ...and the button to their tab
+    const char* hintEyeCamerasOn;    ///< ...set up: what off means
+    const char* eyeCamerasUse;       ///< ...the switch: on...
+    const char* eyeCamerasDontUse;   ///< ...and off
+    const char* camBriefBoth;        ///< ...the short state after it: both eyes on the cameras...
+    const char* camBriefLeft;        ///< ...only the left...
+    const char* camBriefRight;       ///< ...only the right...
+    const char* camBriefOff;         ///< ...switched off...
+    const char* camBriefWarming;     ///< ...learning the relaxed eyes...
+    const char* camBriefWaiting;     ///< ...or not on the cameras for another reason (the headset off, ...)
+    const char* cameraBadge;         ///< the small green badge after a row that only works with the eye cameras
+    // Where a row only for the eye cameras would be while they aren't in use: one dashed line (to their tab)
+    const char* cameraLineWiden;     ///< Eyelids, Look
+    const char* cameraLineFloor;     ///< Eyelids, Blinks and narrowing
+    const char* cameraLinePupils;    ///< Output
     const char* rowActiveType;      ///< how EyeTrackingActive is sent
     const char* hintActiveType;
     const char* activeOff;
@@ -517,8 +537,7 @@ struct UiText {
     const char* eyecamStartNoLight;    ///< ...sends "start widen_nolight"
     const char* eyecamCancel;          ///< ...back without starting
     const char* eyecamNoLight;         ///< by the step number while recording without the light
-    // ...the eye cameras for frameeyeosc (their usual page): the camera_lids switch and what frameeyeosc uses now
-    const char* rowCameraLids;         ///< the camera_lids switch
+    // ...the eye cameras for frameeyeosc (their usual page): what frameeyeosc uses now
     const char* cameraUseBoth;         ///< the cameras drive both eyes
     const char* cameraUseLeft;         ///< ...only the left one
     const char* cameraUseRight;        ///< ...only the right one
@@ -673,7 +692,6 @@ struct UiText {
     const char* camRowState;  ///< the eye cameras page: rows (title, hint)
     const char* camRowStateHint;
     const char* camLearned;  ///< ...the baseline learned (green pill)
-    const char* camRowLidsHint;
     const char* camRowCalib;
     const char* camRowCalibHint;
     const char* camCalibButton;
@@ -720,8 +738,14 @@ struct UiText {
     const char* lidsNowLeft;  ///< ...the left camera, Valve for the right
     const char* lidsNowRight;  ///< ...the right camera, Valve for the left
     const char* lidsNowValve;  ///< ...Valve's values
-    const char* lidsNowSwitch;  ///< ...at its right: where to switch
-    const char* lidsNowNoCamera;  ///< ...no eye cameras set up
+    const char* lidsNowWaiting;  ///< ...the eye cameras in use, but neither eye on them yet
+    const char* lidsNowSwitch;  ///< ...at its right, set up: where they are switched on and off
+    // The eye cameras tab before they are set up: what they add, and the way into the setup
+    const char* camIntroTitle;
+    const char* camIntro[3];      ///< the three things they add
+    const char* camIntroBox;      ///< the one-time setup, and the video staying in the Frame
+    const char* camIntroButton;   ///< starts the setup checklist
+    const char* camIntroNote;     ///< without them all works as before
     const char* rowWidenEase;  ///< the one widening slider
     const char* widenHintCamera;  ///< ...its hint: the cameras
     const char* widenHintMixed;  ///< ...one eye on the cameras

@@ -2510,6 +2510,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::EyecamStart:
         case PanelAction::NumberSlider:                // the loop writes the slider's value (SetNumber)
         case PanelAction::EyecamSensitivity: return;  // the loop sends the slider's value
+        case PanelAction::SetupBegin: return;  // handled inside the panel
         case PanelAction::SetupProceed:
             std::fprintf(stderr, "[setup] on to the eye cameras' page\n");
             model.eyecam.flow.proceed();

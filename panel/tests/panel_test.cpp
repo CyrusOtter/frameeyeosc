@@ -141,11 +141,11 @@ void testWidenRouting(const FontSet& fonts) {
         panel.render(m);
         CHECK(hits(panel, PanelAction::EyecamSensitivity).empty());
     }
-    // Valve's values: lid_widen's four stops side by side, left to right
+    // Valve's values (the eye cameras in use, neither eye on them now): lid_widen's four stops side by side
     {
         EyePanel panel(fonts);
         panel.setTab(PanelTab::Lids);
-        panel.render(modelWith(Lids::Valve, false));
+        panel.render(modelWith(Lids::Valve));
         const std::vector<EyePanel::HitArea> stops = hits(panel, PanelAction::SetLidWiden, key::kLidWiden);
         CHECK(stops.size() == 4);
         for (size_t i = 0; i < stops.size(); ++i) {
@@ -154,7 +154,7 @@ void testWidenRouting(const FontSet& fonts) {
         }
         CHECK(hits(panel, PanelAction::EyecamSensitivity).empty());
         // ...locked on frameeyeosc's command line: none
-        PanelModel locked = modelWith(Lids::Valve, false);
+        PanelModel locked = modelWith(Lids::Valve);
         locked.status.locked.push_back(key::kLidWiden);
         panel.render(locked);
         CHECK(hits(panel, PanelAction::SetLidWiden).empty());
@@ -190,7 +190,7 @@ void testSliderMoved(const FontSet& fonts) {
     CHECK(hits(panel, PanelAction::EyecamSensitivity).empty());
     const std::vector<EyePanel::HitArea> pointer = hits(panel, PanelAction::LidsPage);
     CHECK(pointer.size() == 1 && pointer[0].hit.arg == static_cast<int>(LidsPage::Look));
-    CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).size() == 2);
+    CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).empty());  // the switch is on the Basic tab now
     CHECK(hits(panel, PanelAction::EyecamCalib).size() == 2);
     // ...the pointer goes there, to "Look" where the slider is (also when another sub-tab was open last)
     panel.setLidsPage(LidsPage::Fine);
@@ -328,7 +328,7 @@ void testErrorBack(const FontSet& fonts) {
     m.eyecam.flow.dismissError(m.eyecam.lastRun, m.eyecam.status);
     panel.render(m);
     CHECK(hits(panel, PanelAction::EyecamBack).empty());
-    CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).size() == 2);
+    CHECK(hits(panel, PanelAction::LidsPage).size() == 1);  // the page's pointer to the widening
 
     // The recording's error on the Advanced tab (at the bottom of its page): "Start again" and "Back"; after "Back",
     // "Start recording" alone
@@ -658,7 +658,7 @@ void testEyeBehavior(const FontSet& fonts) {
     EyePanel panel(fonts);
     panel.setTab(PanelTab::Advanced);
     panel.setAdvPage(AdvPage::Version);
-    PanelModel m = modelWith(Lids::Valve, false);
+    PanelModel m = modelWith(Lids::Valve);
     panel.render(m);
     std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetInteger, key::kEyeBehavior);
     CHECK(found.size() == 2 && found[0].hit.arg == 2 && found[1].hit.arg == 1);
@@ -730,7 +730,8 @@ void testLidsPages(const FontSet& fonts) {
                         CHECK(hits(panel, PanelAction::EyecamSensitivity).empty());
                         CHECK(!pointsTo(panel, PanelTab::Eyecam));
                     } else if (lids == Lids::Valve) {
-                        CHECK(hits(panel, PanelAction::SetLidWiden).size() == 4);
+                        // (only while the eye cameras are in use: one line about them in its place otherwise)
+                        CHECK(hits(panel, PanelAction::SetLidWiden).size() == (eyecam ? 4u : 0u));
                     } else if (lids == Lids::Saturated) {
                         // One row: no slider, the way to the eye cameras while their tab is there
                         CHECK(hits(panel, PanelAction::SetLidWiden).empty());
@@ -740,11 +741,11 @@ void testLidsPages(const FontSet& fonts) {
                         CHECK(hits(panel, PanelAction::SetLidWiden).empty());
                         CHECK(hits(panel, PanelAction::EyecamSensitivity).size() == (eyecam ? 1u : 0u));
                     }
-                    // Blinks & squint: the hold, both eyes together, and the eyelid floor (always there; off, its
-                    // minimum, by default: only + can be pressed)
+                    // Blinks & squint: the hold, both eyes together, and the eyelid floor (while the eye cameras are in
+                    // use; off, its minimum, by default: only + can be pressed)
                     CHECK(hits(panel, PanelAction::Step, key::kBlinkHoldMs).empty() == !blinks);
                     CHECK(hits(panel, PanelAction::Step, key::kBlinkSyncBelow).empty() == !blinks);
-                    CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).size() == (blinks ? 1u : 0u));
+                    CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).size() == (blinks && eyecam ? 1u : 0u));
                     // Fine-tune: the scales, the marks (3 and 4 not while the cameras drive both), the smoothing
                     // values, and the auto calibration for eyes without a fit, unless the cameras drive both
                     CHECK(hits(panel, PanelAction::ScaleAuto).size() == (fine ? 1u : 0u));
@@ -1347,7 +1348,10 @@ void testCalibNeedsLids(const FontSet& fonts) {
     m.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
     panel.render(m);
     CHECK(hits(panel, PanelAction::EyecamCalib).empty());
-    CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).size() == 2);  // the switch to turn it on again
+    // The switch to turn it on again: on the Basic tab
+    panel.setTab(PanelTab::Basic);
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).size() == 2);
 }
 
 void testWayOut(const FontSet& fonts) {
@@ -1473,7 +1477,7 @@ void testToolNotice(const FontSet& fonts) {
         panel.setTab(PanelTab::Eyecam);
         panel.render(m);
         // The page, not the checklist: its rows are there either way
-        CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).size() == 2);
+        CHECK(hits(panel, PanelAction::LidsPage).size() == 1);
         CHECK(hits(panel, PanelAction::SetupKonsole).size() == (current ? 0u : 1u));
         if (!current) CHECK(hits(panel, PanelAction::SetupKonsole)[0].hit.arg == 0);  // install_grab.sh, not passwd
         // From another tab, the left column's card leads to the eye cameras tab
@@ -1591,6 +1595,185 @@ void testFitTabPolicy(const FontSet& fonts) {
     }
     // Everything on the page stays inside the card
     for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
+}
+
+/**
+ * A model whose eye cameras aren't set up: eyecam-rec runs, nothing of its setup done (no camera tool yet).
+ * @return the model
+ */
+PanelModel notSetUp() {
+    PanelModel m = modelWith(Lids::Valve);
+    eyecam::Status& e = m.eyecam.status;
+    e.setupDone = false;
+    e.autoGrab = "missing";
+    e.hasBuffers = false;
+    e.calibState = 0;
+    e.state = eyecam::State::WaitingFds;  // (no tool: waiting for the camera buffers)
+    e.stateText = "waiting_fds";
+    return m;
+}
+
+/**
+ * Whether every usable button besides the tab row is inside the card and at least 44 px high.
+ * @param panel the panel
+ * @return true if they all are
+ */
+bool allInsideAndTall(const EyePanel& panel) {
+    for (const EyePanel::HitArea& area : panel.hitAreas()) {
+        if (area.hit.action == PanelAction::Tab && area.y < 100) continue;
+        // (the left column's card and the sub-tabs are not this change's; the content's own buttons are)
+        if (area.x < 400) continue;
+        if (area.y < 110 || area.y + area.h > 676 || area.h < 40) return false;
+    }
+    return true;
+}
+
+/**
+ * Whether the card itself (not the left column) has a way to the eye cameras tab: the Basic tab's button, or a dashed
+ * line in place of the camera rows.
+ * @param panel the panel
+ * @return true if there is one
+ */
+bool inCard(const EyePanel& panel) {
+    for (const EyePanel::HitArea& area : hits(panel, PanelAction::Tab)) {
+        if (area.hit.arg == static_cast<int>(PanelTab::Eyecam) && area.y > 100 && area.x > 400) return true;
+    }
+    return false;
+}
+
+void testCameraRows(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        // Not set up: the Basic tab's row leads to the eye cameras tab (no switch yet)
+        PanelModel none = notSetUp();
+        none.language = language;
+        EyePanel panel(fonts);
+        panel.render(none);
+        CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).empty());
+        CHECK(inCard(panel));
+        CHECK(allInsideAndTall(panel));
+        for (const EyePanel::HitArea& area : hits(panel, PanelAction::Tab)) {
+            if (area.y > 100 && area.x > 400) CHECK(area.h >= 44);
+        }
+        // ...the camera-only rows aren't there: one dashed line each place instead, which leads to their tab
+        panel.setTab(PanelTab::Lids);
+        panel.setLidsPage(LidsPage::Look);
+        panel.render(none);
+        CHECK(hits(panel, PanelAction::SetLidWiden).empty() && hits(panel, PanelAction::EyecamSensitivity).empty());
+        CHECK(inCard(panel) && allInsideAndTall(panel));
+        panel.setLidsPage(LidsPage::Blinks);
+        panel.render(none);
+        CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).empty() && inCard(panel));
+        panel.setLidsPage(LidsPage::Fine);
+        panel.render(none);
+        CHECK(!inCard(panel));  // nothing there only for the cameras
+        panel.setTab(PanelTab::Output);
+        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr}) {
+            PanelModel m = none;
+            m.config.root.set(key::kOutput, JsonValue::makeString(output));
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::SetInteger, key::kPupilBits).empty());
+            CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).empty());
+            // (ETVR sends no pupils at all: no line there)
+            CHECK(inCard(panel) == (std::string(output) != kOutputEtvr));
+            CHECK(allInsideAndTall(panel));
+        }
+        // ...and their tab says what they add, with "Get started" into the setup checklist
+        panel.setTab(PanelTab::Eyecam);
+        panel.render(none);
+        const std::vector<EyePanel::HitArea> begin = hits(panel, PanelAction::SetupBegin);
+        CHECK(begin.size() == 1 && hits(panel, PanelAction::SetupKonsole).empty() && allInsideAndTall(panel));
+        if (begin.size() == 1) {
+            CHECK(begin[0].h >= 44);
+            panel.pointerDown(begin[0].x + begin[0].w / 2, begin[0].y + begin[0].h / 2, 0.0);
+            panel.pointerUp();
+        }
+        CHECK(panel.setupBegun());
+        panel.render(none);
+        // (the checklist's (2): the tool's Konsole with the sudo line typed in)
+        const std::vector<EyePanel::HitArea> konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && hits(panel, PanelAction::SetupBegin).empty());
+        if (konsole.size() == 1) CHECK(konsole[0].hit.arg == 0);
+        // ...the password missing: (1) first, its Konsole for passwd
+        PanelModel noPassword = none;
+        noPassword.eyecam.password = eyecam::PasswordState::NotSet;
+        EyePanel fresh(fonts);
+        fresh.setTab(PanelTab::Eyecam);
+        fresh.render(noPassword);
+        CHECK(hits(fresh, PanelAction::SetupBegin).size() == 1);
+        fresh.setSetupBegun(true);
+        fresh.render(noPassword);
+        CHECK(hits(fresh, PanelAction::SetupBegin).empty() && hits(fresh, PanelAction::SetupKonsole).size() == 1);
+        // ...the tool already in (the setup halfway): the checklist straight away
+        PanelModel halfway = none;
+        halfway.eyecam.status.autoGrab = "ok";
+        halfway.eyecam.status.state = eyecam::State::Idle;
+        halfway.eyecam.status.stateText = "idle";
+        fresh.setSetupBegun(false);
+        fresh.render(halfway);
+        CHECK(hits(fresh, PanelAction::SetupBegin).empty());
+        // ...without eyecam-rec (no tab): no way there from the Basic tab or the lines
+        PanelModel gone = modelWith(Lids::Valve, false);
+        gone.language = language;
+        EyePanel plain(fonts);
+        plain.render(gone);
+        CHECK(!inCard(plain) && hits(plain, PanelAction::SetBool, key::kCameraLids).empty());
+
+        // In use (set up, switched on): the switch on the Basic tab, the camera rows back, no lines
+        PanelModel on = modelWith(Lids::Both);
+        on.language = language;
+        on.config.root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
+        EyePanel used(fonts);
+        used.render(on);
+        const std::vector<EyePanel::HitArea> sw = hits(used, PanelAction::SetBool, key::kCameraLids);
+        CHECK(sw.size() == 2 && allInsideAndTall(used));
+        if (sw.size() == 2) CHECK(sw[0].hit.arg == 1 && sw[1].hit.arg == 0);  // "Use", "Don't use"
+        CHECK(!inCard(used));
+        used.setTab(PanelTab::Lids);
+        used.setLidsPage(LidsPage::Look);
+        used.render(on);
+        CHECK(hits(used, PanelAction::EyecamSensitivity).size() == 1 && !inCard(used));
+        used.setLidsPage(LidsPage::Blinks);
+        used.render(on);
+        CHECK(hits(used, PanelAction::Step, key::kCameraLidFloor).size() == 1 && !inCard(used));
+        used.setTab(PanelTab::Output);
+        used.render(on);
+        CHECK(hits(used, PanelAction::SetBool, key::kPupilsToVrchat).size() == 2);
+        CHECK(hits(used, PanelAction::SetInteger, key::kPupilBits).size() == 5 && !inCard(used));
+        CHECK(allInsideAndTall(used));
+        used.setTab(PanelTab::Eyecam);
+        used.render(on);
+        CHECK(hits(used, PanelAction::SetBool, key::kCameraLids).empty() && hits(used, PanelAction::SetupBegin).empty());
+        CHECK(hits(used, PanelAction::EyecamCalib).size() == 2 && allInsideAndTall(used));
+
+        // Set up but switched off: the switch on the Basic tab; their page as usual (the calibrations wait); the
+        // camera rows go as without them
+        PanelModel off = on;
+        off.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
+        off.status.camera.used[0] = off.status.camera.used[1] = false;
+        EyePanel offPanel(fonts);
+        offPanel.render(off);
+        CHECK(hits(offPanel, PanelAction::SetBool, key::kCameraLids).size() == 2 && allInsideAndTall(offPanel));
+        offPanel.setTab(PanelTab::Eyecam);
+        offPanel.render(off);
+        CHECK(hits(offPanel, PanelAction::SetupBegin).empty() && hits(offPanel, PanelAction::EyecamCalib).empty());
+        CHECK(hits(offPanel, PanelAction::LidsPage).size() == 1);
+        offPanel.setTab(PanelTab::Lids);
+        offPanel.setLidsPage(LidsPage::Look);
+        offPanel.render(off);
+        CHECK(hits(offPanel, PanelAction::EyecamSensitivity).empty() && hits(offPanel, PanelAction::SetLidWiden).empty());
+        CHECK(inCard(offPanel));
+        offPanel.setTab(PanelTab::Output);
+        offPanel.render(off);
+        CHECK(hits(offPanel, PanelAction::SetInteger, key::kPupilBits).empty() && inCard(offPanel));
+        // ...pressing a dashed line opens their tab
+        for (const EyePanel::HitArea& area : hits(offPanel, PanelAction::Tab)) {
+            if (area.y < 100 || area.hit.arg != static_cast<int>(PanelTab::Eyecam)) continue;
+            offPanel.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+            offPanel.pointerUp();
+            break;
+        }
+        CHECK(offPanel.tab() == PanelTab::Eyecam);
+    }
 }
 
 void testIconText(const FontSet& fonts) {
@@ -1712,6 +1895,7 @@ int main() {
     testPartialResult(fonts);
     testFitRunning(fonts);
     testFitTabPolicy(fonts);
+    testCameraRows(fonts);
     testIconText(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);

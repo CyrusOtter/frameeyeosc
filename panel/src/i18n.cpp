@@ -87,6 +87,24 @@ UiText makeJapanese() {
     t.outputMarks[2][0] = "見開き " ICON_CROSS;
     t.outputMarks[2][1] = "同期 " ICON_RING;
     t.outputMarks[2][2] = "VRCFT 必要";
+    t.outputCameraSuffix = "（カメラ）";
+    t.rowEyeCameras = "目のカメラ";
+    t.hintEyeCamerasNew = "見開きと瞳孔をカメラで取る";
+    t.eyeCamerasUnused = "使っていない";
+    t.eyeCamerasStart = "はじめる";
+    t.hintEyeCamerasOn = "オフ＝Valve の値だけ";
+    t.eyeCamerasUse = "使う";
+    t.eyeCamerasDontUse = "使わない";
+    t.camBriefBoth = "左・右 OK";
+    t.camBriefLeft = "左だけ";
+    t.camBriefRight = "右だけ";
+    t.camBriefOff = "オフ";
+    t.camBriefWarming = "目を覚えてる途中";
+    t.camBriefWaiting = "待機中";
+    t.cameraBadge = "カメラ";
+    t.cameraLineWiden = "目のカメラを使うと「見開きの出やすさ」が増えるよ";
+    t.cameraLineFloor = "目のカメラを使うと「細めたときのまぶたの下限」も使えるよ";
+    t.cameraLinePupils = "目のカメラを使うと、瞳孔の大きさも送れるよ";
     t.rowActiveType = "EyeTrackingActive の型";
     t.hintActiveType = "アバターによっては Float が必要";
     t.activeOff = "送らない";
@@ -513,7 +531,6 @@ UiText makeJapanese() {
     t.eyecamStartNoLight = "光なしで始める";
     t.eyecamCancel = "やめる";
     t.eyecamNoLight = "光なし";
-    t.rowCameraLids = "カメラで瞼を取る";
     t.cameraUseBoth = "使用中：左・右";
     t.cameraUseLeft = "使用中：左だけ（右は Valve の値）";
     t.cameraUseRight = "使用中：右だけ（左は Valve の値）";
@@ -543,7 +560,7 @@ UiText makeJapanese() {
     t.setupToolUpdated = "道具が新しくなったよ、入れ直してね";
     t.toolNoticeOutdated = "道具が新しくなったよ、入れ直してね（今の道具のままでも動くよ）";
     t.eyecamBack = "戻る";
-    t.camCalibNeedsLids = "「カメラで瞼を取る」を\nオンにしてから";
+    t.camCalibNeedsLids = "「基本」タブで目のカメラを\n「使う」にしてから";
     t.eyecamUserNeedsWear = "かぶり直したので、先に目のカメラの校正（18秒）をしてね";
     t.toolNoticeTooOld = "安全のため、道具を入れ直してね。入れ直すまでカメラは止まってて、まぶたは Valve の値だけで送ってるよ";
     t.nextToolOutdated = "今の道具のままでも動くよ";
@@ -664,9 +681,8 @@ UiText makeJapanese() {
     t.lidsFromCameraLeft = "目のカメラ（左）";
     t.lidsFromCameraRight = "目のカメラ（右）";
     t.camRowState = "いまの状態";
-    t.camRowStateHint = "まぶたを何で取っているか";
+    t.camRowStateHint = "オン・オフは「基本」タブで";
     t.camLearned = "普段の目を覚えたよ";
-    t.camRowLidsHint = "オフ = Valve の値だけ";
     t.camRowCalib = "違和感があるとき";
     t.camRowCalibHint = "ふだんは要らないよ";
     t.camCalibButton = "目のカメラの校正（18秒）";
@@ -713,8 +729,16 @@ UiText makeJapanese() {
     t.lidsNowLeft = "目のカメラ（左）＋ Valve（右）";
     t.lidsNowRight = "目のカメラ（右）＋ Valve（左）";
     t.lidsNowValve = "Valve の値";
-    t.lidsNowSwitch = "切り替えは「目のカメラ」タブで";
-    t.lidsNowNoCamera = "目のカメラは準備してないよ";
+    t.lidsNowWaiting = "目のカメラ（待機中）";
+    t.lidsNowSwitch = "オン・オフは「基本」タブで";
+    t.camIntroTitle = "目のカメラでできること";
+    t.camIntro[0] = "目を見開いたのが送れる";
+    t.camIntro[1] = "瞳孔の大きさが送れる（明るい・暗いで変わる）";
+    t.camIntro[2] = "Valve がまぶたを低く読んだときに、カメラで開いてるのを確かめて直す";
+    t.camIntroBox = "最初に 1 回だけ準備がいります（Konsole でパスワードを 1 回入れる）。目の映像は Frame の中だけで使い、"
+                    "外には出しません。";
+    t.camIntroButton = "はじめる（約 2 分）";
+    t.camIntroNote = "使わなくても、目の送信はふつうに動きます";
     t.rowWidenEase = "見開きの出やすさ";
     t.widenHintCamera = "カメラの感度に効くよ";
     t.widenHintMixed = "カメラと Valve の目に効くよ";
@@ -909,6 +933,24 @@ UiText makeEnglish() {
     t.outputMarks[2][0] = ICON_CROSS " No wide eyes";
     t.outputMarks[2][1] = ICON_CHECK " Synced to others";
     t.outputMarks[2][2] = "Needs VRCFT";
+    t.outputCameraSuffix = " (camera)";
+    t.rowEyeCameras = "Eye cameras";
+    t.hintEyeCamerasNew = "Widening and pupils by camera";
+    t.eyeCamerasUnused = "Not in use";
+    t.eyeCamerasStart = "Get started";
+    t.hintEyeCamerasOn = "Off = Valve's values only";
+    t.eyeCamerasUse = "Use";
+    t.eyeCamerasDontUse = "Don't use";
+    t.camBriefBoth = "L + R OK";
+    t.camBriefLeft = "Left only";
+    t.camBriefRight = "Right only";
+    t.camBriefOff = "Off";
+    t.camBriefWarming = "Learning your eyes";
+    t.camBriefWaiting = "Waiting";
+    t.cameraBadge = "Camera";
+    t.cameraLineWiden = "With the eye cameras you also get \"How easily widening shows\"";
+    t.cameraLineFloor = "With the eye cameras you also get \"Lowest eyelid when narrowed\"";
+    t.cameraLinePupils = "With the eye cameras, pupil size goes out too";
     t.rowActiveType = "EyeTrackingActive type";
     t.hintActiveType = "Some avatars need Float";
     t.activeOff = "Off";
@@ -1338,7 +1380,6 @@ UiText makeEnglish() {
     t.eyecamStartNoLight = "Start without light";
     t.eyecamCancel = "Cancel";
     t.eyecamNoLight = "No light";
-    t.rowCameraLids = "Eyelids from the eye cameras";
     t.cameraUseBoth = "In use: left and right";
     t.cameraUseLeft = "In use: left only (right: Valve's values)";
     t.cameraUseRight = "In use: right only (left: Valve's values)";
@@ -1368,7 +1409,7 @@ UiText makeEnglish() {
     t.setupToolUpdated = "The tool was updated. Install it again";
     t.toolNoticeOutdated = "The tool was updated. Install it again (the current one still works)";
     t.eyecamBack = "Back";
-    t.camCalibNeedsLids = "Turn on \"Eyelids from\nthe eye cameras\" first";
+    t.camCalibNeedsLids = "Set the eye cameras to\n\"Use\" on the Basic tab first";
     t.eyecamUserNeedsWear = "You put the headset back on, so run the eye camera calibration (18 s) first";
     t.toolNoticeTooOld =
         "For safety, install the tool again. Until then the cameras are stopped and the eyelids go out on Valve's "
@@ -1491,9 +1532,8 @@ UiText makeEnglish() {
     t.lidsFromCameraLeft = "eye cameras (L)";
     t.lidsFromCameraRight = "eye cameras (R)";
     t.camRowState = "Now";
-    t.camRowStateHint = "What drives the eyelids";
+    t.camRowStateHint = "On / off on the Basic tab";
     t.camLearned = "Learned your relaxed eyes";
-    t.camRowLidsHint = "Off = Valve's values only";
     t.camRowCalib = "When something feels off";
     t.camRowCalibHint = "Not needed normally";
     t.camCalibButton = "Calibrate the cameras (18 s)";
@@ -1540,10 +1580,18 @@ UiText makeEnglish() {
     t.lidsNowLeft = "Eye camera (left) + Valve (right)";
     t.lidsNowRight = "Eye camera (right) + Valve (left)";
     t.lidsNowValve = "Valve's values";
-    t.lidsNowSwitch = "Switch on the Eye cameras tab";
-    t.lidsNowNoCamera = "The eye cameras aren't set up";
+    t.lidsNowWaiting = "Eye cameras (waiting)";
+    t.lidsNowSwitch = "On / off on the Basic tab";
+    t.camIntroTitle = "What the eye cameras add";
+    t.camIntro[0] = "Your eyes opening wide goes out";
+    t.camIntro[1] = "Pupil size goes out (it changes with light and dark)";
+    t.camIntro[2] = "When Valve reads an eyelid too low, the camera checks it's open and fixes it";
+    t.camIntroBox = "It needs a one-time setup (you type your password once in Konsole). The eye video is used only "
+                    "inside the Frame and never leaves it.";
+    t.camIntroButton = "Get started (about 2 min)";
+    t.camIntroNote = "Without them, eye tracking works as usual";
     t.rowWidenEase = "How easily widening shows";
-    t.widenHintCamera = "Sets the cameras' sensitivity";
+    t.widenHintCamera = "Camera sensitivity";
     t.widenHintMixed = "Cameras and the Valve eye";
     t.widenHintValve = "For eyes with an eye fit";
     t.widenHintSaturated = "No effect on this SteamOS";

@@ -627,13 +627,30 @@ CameraLine cameraLine(CameraUse use, bool warming, bool live, bool locked, bool 
     return CameraLine::Reason;
 }
 
-bool pupilsRowShown(const std::string& output, bool eyeCameras) {
-    return output == kOutputLivelink && eyeCameras;
+CameraBrief cameraBrief(const EyeStatus& status, bool cameraLids, bool warming) {
+    switch (cameraUse(status, cameraLids, warming)) {
+        case CameraUse::Both: return CameraBrief::Both;
+        case CameraUse::Left: return CameraBrief::Left;
+        case CameraUse::Right: return CameraBrief::Right;
+        case CameraUse::Off: return CameraBrief::Off;
+        case CameraUse::Warming: return CameraBrief::Warming;
+        default: break;
+    }
+    // (frameeyeosc not running says nothing about the switch: off is still off)
+    return cameraLids ? CameraBrief::Waiting : CameraBrief::Off;
 }
 
-PupilBitsRow pupilBitsRow(const std::string& output, bool eyeCameras, bool cameraLids, bool pupilsToVrchat) {
+bool pupilsRowShown(const std::string& output, bool camera) {
+    return output == kOutputLivelink && camera;
+}
+
+bool pupilsLineShown(const std::string& output, bool camera) {
+    return !camera && (output == kOutputVrchat || output == kOutputLivelink);
+}
+
+PupilBitsRow pupilBitsRow(const std::string& output, bool camera, bool pupilsToVrchat) {
     const bool livelink = output == kOutputLivelink;
-    if (!eyeCameras || (output != kOutputVrchat && !livelink)) return PupilBitsRow::Hidden;
-    if (!cameraLids || (livelink && !pupilsToVrchat)) return PupilBitsRow::Greyed;
+    if (!camera || (output != kOutputVrchat && !livelink)) return PupilBitsRow::Hidden;
+    if (livelink && !pupilsToVrchat) return PupilBitsRow::Greyed;
     return PupilBitsRow::Usable;
 }

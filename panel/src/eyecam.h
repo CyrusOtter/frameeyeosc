@@ -571,6 +571,33 @@ ToolNotice toolNotice(const Status& status, PasswordState password);
 bool setupComplete(const Status& status);
 
 /**
+ * Whether the eye cameras are set up: eyecam-rec runs (their tab shows) and its setup is done, the camera tool there
+ * (setupStep is Done).
+ * @param view eyecam-rec
+ * @return true if set up
+ */
+bool setUp(const View& view);
+
+/**
+ * Whether the eye cameras are in use: set up (setUp) and switched on (camera_lids, on the Basic tab). The rows that only
+ * work with them show only then (with a "Camera" badge); otherwise one dashed line in their place says what the cameras
+ * would add.
+ * @param view eyecam-rec
+ * @param cameraLids the camera_lids setting
+ * @return true if in use
+ */
+bool inUse(const View& view, bool cameraLids);
+
+/**
+ * Whether the eye cameras tab shows what the cameras add (and "Get started") instead of the setup checklist: not set up
+ * and nothing of the setup done yet (at (1) or (2), never set up before), until that button is pressed.
+ * @param view eyecam-rec
+ * @param begun "Get started" was pressed since the panel started
+ * @return true to show it
+ */
+bool introShown(const View& view, bool begun);
+
+/**
  * The current step, from this status and password check alone: the first one not met.
  * - Set up (setupComplete): Done while the tool is there at all, outdated or too old included (the usual page asks for
  *   it then, see toolNotice); a missing one goes back to (1) / (2). An eyecam-rec without auto_grab can't say, so set

@@ -456,33 +456,60 @@ int helpRows(double top, double bottom);
 /** The "When..." box's height for this many rows (helpRows). */
 double helpBoxHeight(int rows);
 
+/** The short state after the Basic tab's eye camera switch. */
+enum class CameraBrief {
+    Both,     ///< both eyes on the cameras
+    Left,     ///< only the left
+    Right,    ///< only the right
+    Off,      ///< camera_lids off
+    Warming,  ///< learning the relaxed eyes for this wear
+    Waiting,  ///< anything else: neither eye on the cameras yet (the headset off, frameeyeosc not running, ...)
+};
+
+/**
+ * The short state after the Basic tab's eye camera switch, from the same things as the eye cameras page's "Now" row.
+ * @param status frameeyeosc's status
+ * @param cameraLids the camera_lids setting
+ * @param warming eyecam-rec is learning the relaxed eyes (eyecam::baselineWarming)
+ * @return the state
+ */
+CameraBrief cameraBrief(const EyeStatus& status, bool cameraLids, bool warming);
+
 /**
  * Whether the Output tab shows "Send pupils straight to VRChat": only for LiveLink (whose module has no pupils), and
- * only with the eye cameras (their tab shows: eyecam-rec runs), which are where the pupils come from.
+ * only while the eye cameras are in use (eyecam::inUse), which are where the pupils come from.
  * @param output the "output" setting
- * @param eyeCameras the eye cameras tab shows (eyecam::View::visible)
+ * @param camera the eye cameras are in use
  * @return true to show it
  */
-bool pupilsRowShown(const std::string& output, bool eyeCameras);
+bool pupilsRowShown(const std::string& output, bool camera);
+
+/**
+ * Whether the Output tab shows the dashed line "with the eye cameras, pupil size goes out too" in place of its pupil
+ * rows: where those would be (VRChat directly, LiveLink) while the eye cameras aren't in use.
+ * @param output the "output" setting
+ * @param camera the eye cameras are in use
+ * @return true to show it
+ */
+bool pupilsLineShown(const std::string& output, bool camera);
 
 /** How the Output tab shows "How the avatar takes pupils" (pupil_bits). */
 enum class PupilBitsRow {
-    Hidden,  ///< not there: no eye cameras, or ETVR (no pupils go to VRChat)
-    Greyed,  ///< there, but the pupils don't go straight to VRChat now (pupils_to_vrchat or camera_lids off)
+    Hidden,  ///< not there: the eye cameras not in use, or ETVR (no pupils go to VRChat)
+    Greyed,  ///< there, but the pupils don't go straight to VRChat now (LiveLink with pupils_to_vrchat off)
     Usable,  ///< there and in effect
 };
 
 /**
  * How the Output tab shows "How the avatar takes pupils" (pupil_bits): wherever the pupils go to VRChat straight from
- * frameeyeosc, so with the eye cameras, for VRChat directly and for LiveLink (under "Send pupils straight to VRChat").
- * Greyed while they don't go there: camera_lids off (no camera values at all), or LiveLink with pupils_to_vrchat off.
+ * frameeyeosc, so while the eye cameras are in use, for VRChat directly and for LiveLink (under "Send pupils straight
+ * to VRChat"). Greyed while they don't go there: LiveLink with pupils_to_vrchat off.
  * @param output the "output" setting
- * @param eyeCameras the eye cameras tab shows (eyecam::View::visible)
- * @param cameraLids camera_lids
+ * @param camera the eye cameras are in use (eyecam::inUse)
  * @param pupilsToVrchat pupils_to_vrchat
  * @return how it shows
  */
-PupilBitsRow pupilBitsRow(const std::string& output, bool eyeCameras, bool cameraLids, bool pupilsToVrchat);
+PupilBitsRow pupilBitsRow(const std::string& output, bool camera, bool pupilsToVrchat);
 
 /** The sentence at the bottom of the eye cameras' page (eyecam-rec idle, set up). */
 enum class CameraLine {

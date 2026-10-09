@@ -743,12 +743,45 @@ void testPupilsToVrchat() {
     // Where they go, from status.json
     CHECK(parseStatus("{\"pid\": 1, \"pupil_target\": \"192.168.0.60:9000\"}", 0, false).pupilTarget ==
           "192.168.0.60:9000");
-    // Shown only for LiveLink with the eye cameras
+    // Shown only for LiveLink while the eye cameras are in use
     CHECK(pupilsRowShown(kOutputLivelink, true));
     CHECK(!pupilsRowShown(kOutputLivelink, false));
     CHECK(!pupilsRowShown(kOutputVrchat, true));
     CHECK(!pupilsRowShown(kOutputEtvr, true));
     CHECK(!pupilsRowShown("", true));
+    // ...and in their place, without them, the one dashed line (where pupils could go: VRChat directly and LiveLink)
+    CHECK(pupilsLineShown(kOutputLivelink, false) && pupilsLineShown(kOutputVrchat, false));
+    CHECK(!pupilsLineShown(kOutputEtvr, false) && !pupilsLineShown("", false));
+    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr}) CHECK(!pupilsLineShown(output, true));
+}
+
+/** The short state after the Basic tab's eye camera switch follows the eye cameras page's "Now" row. */
+void testCameraBrief() {
+    EyeStatus s;
+    s.present = s.running = true;
+    s.camera.known = s.camera.present = true;
+    s.camera.calibState = 5;
+    s.camera.used[0] = s.camera.used[1] = true;
+    CHECK(cameraBrief(s, true, false) == CameraBrief::Both);
+    // (camera values still in use just after switching off: frameeyeosc hasn't caught up yet)
+    CHECK(cameraBrief(s, false, false) == CameraBrief::Both);
+    s.camera.used[1] = false;
+    CHECK(cameraBrief(s, true, false) == CameraBrief::Left);
+    s.camera.used[0] = false;
+    s.camera.used[1] = true;
+    CHECK(cameraBrief(s, true, false) == CameraBrief::Right);
+    s.camera.used[1] = false;
+    CHECK(cameraBrief(s, false, false) == CameraBrief::Off);
+    // Learning the relaxed eyes, no baseline yet
+    s.camera.calibState = 0;
+    CHECK(cameraBrief(s, true, true) == CameraBrief::Warming);
+    // Anything else: waiting (no camera values, not calibrated, frameeyeosc not running); off stays off
+    CHECK(cameraBrief(s, true, false) == CameraBrief::Waiting);
+    s.camera.present = false;
+    CHECK(cameraBrief(s, true, false) == CameraBrief::Waiting);
+    EyeStatus stopped;
+    CHECK(cameraBrief(stopped, true, false) == CameraBrief::Waiting);
+    CHECK(cameraBrief(stopped, false, false) == CameraBrief::Off);
 }
 
 /** pupil_bits (the Output tab's "How the avatar takes pupils"): an integer 0..4, 0 by default, and where its row
@@ -766,17 +799,16 @@ void testPupilBits() {
     // Locked by --pupil-bits: frameeyeosc's value
     m.status = parseStatus("{\"pid\": 1, \"locked\": [\"pupil_bits\"], \"effective\": {\"pupil_bits\": 2}}", 0, false);
     CHECK(SettingsView(m).locked(key::kPupilBits) && SettingsView(m).number(key::kPupilBits) == 2);
-    // The row: only with the eye cameras, for VRChat directly and LiveLink; greyed while the pupils don't go there
-    CHECK(pupilBitsRow(kOutputVrchat, true, true, true) == PupilBitsRow::Usable);
-    CHECK(pupilBitsRow(kOutputVrchat, true, true, false) == PupilBitsRow::Usable);  // pupils_to_vrchat is LiveLink's
-    CHECK(pupilBitsRow(kOutputVrchat, true, false, true) == PupilBitsRow::Greyed);  // camera_lids off
-    CHECK(pupilBitsRow(kOutputLivelink, true, true, true) == PupilBitsRow::Usable);
-    CHECK(pupilBitsRow(kOutputLivelink, true, true, false) == PupilBitsRow::Greyed);
-    CHECK(pupilBitsRow(kOutputLivelink, true, false, true) == PupilBitsRow::Greyed);
+    // The row: only while the eye cameras are in use (set up and switched on), for VRChat directly and LiveLink;
+    // greyed while the pupils don't go there (LiveLink without pupils_to_vrchat)
+    CHECK(pupilBitsRow(kOutputVrchat, true, true) == PupilBitsRow::Usable);
+    CHECK(pupilBitsRow(kOutputVrchat, true, false) == PupilBitsRow::Usable);  // pupils_to_vrchat is LiveLink's
+    CHECK(pupilBitsRow(kOutputLivelink, true, true) == PupilBitsRow::Usable);
+    CHECK(pupilBitsRow(kOutputLivelink, true, false) == PupilBitsRow::Greyed);
     for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr, ""}) {
-        CHECK(pupilBitsRow(output, false, true, true) == PupilBitsRow::Hidden);
+        CHECK(pupilBitsRow(output, false, true) == PupilBitsRow::Hidden);  // not in use (camera_lids off too)
     }
-    CHECK(pupilBitsRow(kOutputEtvr, true, true, true) == PupilBitsRow::Hidden);
+    CHECK(pupilBitsRow(kOutputEtvr, true, true) == PupilBitsRow::Hidden);
 }
 
 /** The bottom sentence of the eye cameras' page, for every case, in its order. */
@@ -1103,6 +1135,7 @@ int main() {
     testWarmingShown();
     testCameraLine();
     testPupilsToVrchat();
+    testCameraBrief();
     testPupilBits();
     testLearnedAndHelpRows();
     testUpdateNotes();

@@ -432,6 +432,20 @@ SetupStep setupStep(const Status& status, PasswordState password) {
     return password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool;
 }
 
+bool setUp(const View& view) {
+    return view.visible && setupStep(view.status, view.password) == SetupStep::Done;
+}
+
+bool inUse(const View& view, bool cameraLids) {
+    return cameraLids && setUp(view);
+}
+
+bool introShown(const View& view, bool begun) {
+    if (begun || !view.visible || setupComplete(view.status)) return false;
+    const SetupScreen screen = setupScreen(view);
+    return screen == SetupScreen::Pass || screen == SetupScreen::Check;
+}
+
 std::vector<std::string> calibChips(const Status& status, Calib calib) {
     const bool user = calib == Calib::User;
     const size_t count = user ? std::size(kCalibUserSteps) : std::size(kCalibWearSteps);

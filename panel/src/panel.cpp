@@ -965,6 +965,9 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::FitDetails:
             fitDetails_ = !fitDetails_;
             return {};
+        case PanelAction::SetupBegin:
+            setupBegun_ = true;
+            return {};
         case PanelAction::FitDetailsPage:
             fitDetailsPage_ = hit.arg;
             return {};
@@ -1200,23 +1203,83 @@ void EyePanel::armResetForPreview() {
 }
 
 void EyePanel::drawRowLabel(const Pen& pen, const UiText& t, double y, double h, const std::string& title,
-                            const std::string& hint, bool locked, double indent) {
+                            const std::string& hint, bool locked, double indent, bool badge) {
     const double left = kInnerX + indent;
     const double width = kLabelW - indent;
-    const double titleSize = fitSize(pen, title, 20, 14, width, true);
-    if (hint.empty() && !locked) {
-        pen.text(left, centerBaseline(y, h, titleSize), title, titleSize, kText, true);
-        return;
-    }
-    pen.text(left, y + h / 2 - 3, title, titleSize, kText, true);
+    // The badge after the title (up to the gap before the controls), the title smaller to leave it room; a title too
+    // long for that has it at the start of the hint line instead, so it never wraps or reaches the controls
+    const double badgeW = badge ? cameraBadge(pen, t, 0, 0, false) + 8 : 0.0;
+    const double reach = width + (badge ? 8 : 0);
+    double titleSize = fitSize(pen, title, 20, 14, reach - badgeW, true);
+    const bool badgeAfter = badge && pen.measure(title, titleSize, true) + badgeW <= reach;
+    if (badge && !badgeAfter) titleSize = fitSize(pen, title, 20, 13, width, true);
+    const bool hintLine = !hint.empty() || locked || (badge && !badgeAfter);
+    const double titleBaseline = hintLine ? y + h / 2 - 3 : centerBaseline(y, h, titleSize);
+    const double titleW = pen.text(left, titleBaseline, title, titleSize, kText, true);
+    if (badgeAfter) cameraBadge(pen, t, left + titleW + 8, titleBaseline - titleSize * 0.36);
+    if (!hintLine) return;
     const double hintY = y + h / 2 + 19;
+    double x = left;
+    if (badge && !badgeAfter) {
+        cameraBadge(pen, t, x, hintY - 5);
+        x += badgeW;
+    }
     if (locked) {
-        drawLock(pen, left, hintY, 16, kTextMuted);
-        const double x = left + 20;
-        pen.text(x, hintY, t.locked, fitSize(pen, t.locked, 15, 11, width - 20, false), kTextMuted);
+        drawLock(pen, x, hintY, 16, kTextMuted);
+        x += 20;
+        pen.text(x, hintY, t.locked, fitSize(pen, t.locked, 15, 11, left + width - x, false), kTextMuted);
         return;
     }
-    pen.text(left, hintY, hint, fitSize(pen, hint, 15, 11, width, false), kTextMuted);
+    if (!hint.empty()) {
+        const double size = fitSize(pen, hint, 15, 11, left + width - x, false);
+        pen.text(x, hintY, ellipsize(pen, hint, size, false, left + width - x, false), size, kTextMuted);
+    }
+}
+
+double EyePanel::cameraBadge(const Pen& pen, const UiText& t, double x, double cy, bool draw) {
+    const double size = 12;
+    const double h = 20;
+    const double iconW = 14;
+    const double w = 6 + iconW + 4 + pen.measure(t.cameraBadge, size, true) + 8;
+    if (!draw) return w;
+    cairo_t* cr = pen.cr;
+    fillRounded(pen, x, cy - h / 2, w, h, h / 2, kSuccessTint);
+    strokeRounded(pen, x, cy - h / 2, w, h, h / 2, kSuccess, 1);
+    // The camera icon, smaller
+    cairo_save(cr);
+    cairo_translate(cr, x + 6 + iconW / 2, cy);
+    cairo_scale(cr, 0.62, 0.62);
+    drawCameraIcon(pen, 0, 1, kSuccess);
+    cairo_restore(cr);
+    pen.text(x + 6 + iconW + 4, centerBaseline(cy - h / 2, h, size), t.cameraBadge, size, kSuccess, true);
+    return w;
+}
+
+double EyePanel::drawCameraLine(const Pen& pen, const std::string& text, double y) {
+    cairo_t* cr = pen.cr;
+    const double h = 48;
+    const double x0 = kInnerX;
+    const double w = kInnerRight - kInnerX;
+    // Pressed: their tab (only while it is in the tab row; otherwise the line only says it)
+    const PanelHit hit {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Eyecam)};
+    const bool usable = eyecamTab_;
+    if (usable && pointerState(hit) > 0) fillRounded(pen, x0, y, w, h, 12, kControlHover);
+    const double dash[2] = {6, 4};
+    cairo_set_dash(cr, dash, 2, 0);
+    strokeRounded(pen, x0, y, w, h, 12, kBorder, 1.5);
+    cairo_set_dash(cr, nullptr, 0, 0);
+    drawCameraIcon(pen, x0 + 28, y + h / 2, kTextMuted);
+    const double tx = x0 + 52;
+    double right = x0 + w - 16;
+    if (usable) {
+        const double arrowW = pen.measure(ICON_ARROW_RIGHT, 18, false);
+        pen.text(right - arrowW, centerBaseline(y, h, 18), ICON_ARROW_RIGHT, 18, kText);
+        right -= arrowW + 12;
+    }
+    const double size = fitSize(pen, text, 16, 11, right - tx, false);
+    pen.text(tx, centerBaseline(y, h, size), ellipsize(pen, text, size, false, right - tx, false), size, kText);
+    addButton(hit, x0, y, w, h, usable);
+    return h;
 }
 
 void EyePanel::drawSegmented(const Pen& pen, double x, double y, double w, double h,
@@ -1792,8 +1855,12 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
                       v.flag(key::kSending) ? 0 : 1, 20, locked);
     }
     y += kRowH + kRowGap;
-    // Where to send: three cards
-    y += drawOutputCards(pen, t, v, y) + kRowGap;
+    // Where to send: three cards (widening needs the eye cameras)
+    const bool camera = eyecam::inUse(m.eyecam, v.flag(key::kCameraLids));
+    y += drawOutputCards(pen, t, v, y, camera) + kRowGap;
+    // The eye cameras: the way to set them up, or their switch
+    drawEyeCamerasRow(pen, t, m, v, y, kRowH);
+    y += kRowH + kRowGap;
     // Language (each name in its own language)
     {
         drawRowLabel(pen, t, y, kRowH, t.rowLanguage, "", false);
@@ -1837,7 +1904,51 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
     for (size_t i = 0; i < lines.size(); ++i) pen.text(kInnerX, y + i * 22, lines[i], 15, kTextMuted);
 }
 
-double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& v, double y) {
+void EyePanel::drawEyeCamerasRow(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
+                                  double y, double h) {
+    const double cy = (h - kControlH) / 2;
+    if (!eyecam::setUp(m.eyecam)) {
+        // Not set up: what they add, that they aren't in use, and the way to their tab (where the setup starts)
+        drawRowLabel(pen, t, y, h, t.rowEyeCameras, t.hintEyeCamerasNew, false);
+        double right = kInnerRight;
+        if (eyecamTab_) {
+            const std::string label = std::string(t.eyeCamerasStart) + "  " ICON_ARROW_RIGHT;
+            const double bh = 46;
+            const double bw = std::max(150.0, pen.measure(label, 18, true) + 44);
+            drawButton(pen, kInnerRight - bw, y + (h - bh) / 2, bw, bh, label,
+                       {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Eyecam)}, true, false, 18);
+            right = kInnerRight - bw - 16;
+        }
+        const double size = fitSize(pen, t.eyeCamerasUnused, 18, 12, right - kControlX - 4, false);
+        pen.text(kControlX + 4, centerBaseline(y, h, size), t.eyeCamerasUnused, size, kTextMuted);
+        return;
+    }
+    // Set up: the switch (camera_lids), and how they are doing after it
+    const bool locked = v.locked(key::kCameraLids);
+    const bool on = v.flag(key::kCameraLids);
+    drawRowLabel(pen, t, y, h, t.rowEyeCameras, t.hintEyeCamerasOn, locked, 0, true);
+    const double switchW = 300;
+    drawSegmented(pen, kControlX, y + cy, switchW, kControlH,
+                  {{t.eyeCamerasUse, {PanelAction::SetBool, key::kCameraLids, 1}},
+                   {t.eyeCamerasDontUse, {PanelAction::SetBool, key::kCameraLids, 0}}},
+                  on ? 0 : 1, 20, locked);
+    const CameraBrief brief = cameraBrief(m.status, on, eyecam::baselineWarming(m.eyecam.status));
+    const char* text = brief == CameraBrief::Both      ? t.camBriefBoth
+                       : brief == CameraBrief::Left    ? t.camBriefLeft
+                       : brief == CameraBrief::Right   ? t.camBriefRight
+                       : brief == CameraBrief::Off     ? t.camBriefOff
+                       : brief == CameraBrief::Warming ? t.camBriefWarming
+                                                       : t.camBriefWaiting;
+    const bool good = brief == CameraBrief::Both || brief == CameraBrief::Left || brief == CameraBrief::Right;
+    const double dx = kControlX + switchW + 20;
+    drawDot(pen.cr, dx + 5, y + h / 2, 5.5, good ? kSuccess : kTextMuted);
+    const double tx = dx + 18;
+    const double size = fitSize(pen, text, 17, 11, kInnerRight - tx, good);
+    pen.text(tx, centerBaseline(y, h, size), ellipsize(pen, text, size, good, kInnerRight - tx, false), size,
+             good ? kText : kTextMuted, good);
+}
+
+double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& v, double y, bool camera) {
     const bool locked = v.locked(key::kOutput);
     const int selected = argOfOutput(v.text(key::kOutput));
     // The title, and after it what "sync" on the cards means (or the lock note). The cards take the whole width
@@ -1877,12 +1988,20 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
         std::string text;
     };
     std::vector<Line> lines[3];
+    double cameraLineSize[3] = {lineSize, lineSize, lineSize};  // the widening line without the cameras (one line)
     size_t most = 0;
     for (int c = 0; c < 3; ++c) {
         for (int k = 0; k < 3; ++k) {
             std::string rest;
             const LineMark mark = splitMark(t.outputMarks[marks[c]][k], rest);
             const double indent = mark == LineMark::None ? 0 : markW;
+            if (k == 0 && !camera) {
+                // Widening comes from the eye cameras: said after it, never wrapped
+                rest += t.outputCameraSuffix;
+                cameraLineSize[c] = fitSize(pen, rest, lineSize, 11, innerW - indent, false);
+                lines[c].push_back({mark, mark != LineMark::None, rest});
+                continue;
+            }
             const std::vector<std::string> wrapped = wrapText(pen, rest, lineSize, false, innerW - indent, 2);
             for (size_t i = 0; i < wrapped.size(); ++i) {
                 lines[c].push_back({i == 0 ? mark : LineMark::None, mark != LineMark::None, wrapped[i]});
@@ -1918,12 +2037,18 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
         const Color lineColor = locked ? kTextDisabled : (isSelected || pointer > 0 ? kText : kTextMuted);
         pen.text(cx + pad, top + pad + cardTitleSize * 0.9, titles[c], cardTitleSize, titleColor, true);
         double baseline = top + pad + cardTitleSize + 10 + lineSize * 0.9;
-        for (const Line& line : lines[c]) {
+        for (size_t i = 0; i < lines[c].size(); ++i) {
+            const Line& line = lines[c][i];
+            // The widening line without the cameras: dimmer, and on one line
+            const bool dim = i == 0 && !camera;
+            const double size = dim ? cameraLineSize[c] : lineSize;
+            const Color color = !dim ? lineColor : (!locked && (isSelected || pointer > 0) ? kTextMuted : kTextDisabled);
             const double tx = cx + pad + (line.indent ? markW : 0);
             const double midY = baseline - lineSize * 0.36;
-            if (line.mark == LineMark::Check) drawCheck(pen.cr, cx + pad + markW * 0.4, midY, lineSize, kText);
-            if (line.mark == LineMark::Cross) drawCross(pen.cr, cx + pad + markW * 0.4, midY, lineSize, kText);
-            pen.text(tx, baseline, line.text, lineSize, lineColor);
+            const Color markColor = dim ? color : kText;
+            if (line.mark == LineMark::Check) drawCheck(pen.cr, cx + pad + markW * 0.4, midY, lineSize, markColor);
+            if (line.mark == LineMark::Cross) drawCross(pen.cr, cx + pad + markW * 0.4, midY, lineSize, markColor);
+            pen.text(tx, baseline, line.text, size, color);
             baseline += lineStep;
         }
         // The recommended one gets a tag on its top edge
@@ -1948,17 +2073,18 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const std::string output = v.text(key::kOutput);
     const bool livelink = output == kOutputLivelink;
     const bool etvr = output == kOutputEtvr;
+    // The pupils come from the eye cameras: their rows only while those are in use (with the badge), else one line
+    const bool camera = eyecam::inUse(m.eyecam, v.flag(key::kCameraLids));
 
     // Wherever the pupils go straight to VRChat: how the avatar takes them, a float or that many bits (pupil_bits). The
     // hint under the control, like the examples above
     const auto pupilBits = [&](double rowY) {
-        const PupilBitsRow row = pupilBitsRow(output, m.eyecam.visible, v.flag(key::kCameraLids),
-                                              v.flag(key::kPupilsToVrchat));
+        const PupilBitsRow row = pupilBitsRow(output, camera, v.flag(key::kPupilsToVrchat));
         if (row == PupilBitsRow::Hidden) return rowY;
         const bool locked = v.locked(key::kPupilBits);
         const bool usable = row == PupilBitsRow::Usable;
         const int bits = static_cast<int>(std::lround(v.number(key::kPupilBits)));
-        drawRowLabel(pen, t, rowY, kRowH, t.rowPupilBits, "", locked);
+        drawRowLabel(pen, t, rowY, kRowH, t.rowPupilBits, "", locked, 0, true);
         std::vector<Option> options;
         for (int n = 0; n <= 4; ++n) {
             options.push_back({n == 0 ? std::string(t.pupilBitsFloat) : std::to_string(n),
@@ -2072,19 +2198,24 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
                      fitSize(pen, t.hintNativeEyes, 15, 11, kControlW, false), kTextMuted);
         }
         y += kRowH + 24;
-        pupilBits(y);
+        if (pupilsLineShown(output, camera)) {
+            drawCameraLine(pen, t.cameraLinePupils, y + 2);
+        } else {
+            pupilBits(y);
+        }
         return;
     }
 
     // LiveLink with the eye cameras: their pupils straight to VRChat (the LiveLink module has none). The hint and where
     // they go now under the control, like the VRChat rows' examples
-    if (livelink && pupilsRowShown(output, m.eyecam.visible)) {
+    if (livelink && pupilsLineShown(output, camera)) y += drawCameraLine(pen, t.cameraLinePupils, y + 2) + 4;
+    if (livelink && pupilsRowShown(output, camera)) {
         const bool locked = v.locked(key::kPupilsToVrchat);
         const bool on = v.flag(key::kPupilsToVrchat);
         // (where they go now under its title, once frameeyeosc says)
         const std::string target =
             on && s.running && !s.pupilTarget.empty() ? formatText(t.pupilsTargetFormat, s.pupilTarget) : std::string();
-        drawRowLabel(pen, t, y, kRowH, t.rowPupils, target, locked);
+        drawRowLabel(pen, t, y, kRowH, t.rowPupils, target, locked, 0, true);
         drawSegmented(pen, kControlX, y + cy, 300, kControlH,
                       {{t.on, {PanelAction::SetBool, key::kPupilsToVrchat, 1}},
                        {t.off, {PanelAction::SetBool, key::kPupilsToVrchat, 0}}},
@@ -2691,27 +2822,27 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
     const double cy = (kRowH - kControlH) / 2;
     double y = top;
 
-    // Where the eyelids come from now, and where that is switched
+    // The eye cameras in use (set up and switched on, on the Basic tab): widening is theirs
+    const bool camera = eyecam::inUse(m.eyecam, v.flag(key::kCameraLids));
+    // Where the eyelids come from now, and where the cameras are switched on and off (once they are set up)
     {
         const double h = 52;
-        const bool used[2] = {s.running && s.camera.used[0], s.running && s.camera.used[1]};
-        const bool camera = used[0] || used[1];
+        const bool used[2] = {camera && s.running && s.camera.used[0], camera && s.running && s.camera.used[1]};
         fillRounded(pen, kInnerX, y, kInnerRight - kInnerX, h, 12, kBg);
         if (camera) {
-            drawCameraIcon(pen, kInnerX + 30, y + h / 2, kSuccess);
+            drawCameraIcon(pen, kInnerX + 30, y + h / 2, used[0] || used[1] ? kSuccess : kTextMuted);
         } else {
             drawEyeIcon(pen, kInnerX + 30, y + h / 2, kTextMuted);
         }
-        const char* source = used[0] && used[1] ? t.lidsNowBoth
-                             : used[0]          ? t.lidsNowLeft
-                             : used[1]          ? t.lidsNowRight
-                                                : t.lidsNowValve;
-        // The eye cameras are set up (their tab shows their page): switched there; else not set up
-        const bool setUp = m.eyecam.visible && eyecam::setupScreen(m.eyecam) == eyecam::SetupScreen::Camera;
-        const char* note = camera || setUp ? t.lidsNowSwitch : t.lidsNowNoCamera;
+        const char* source = !camera                ? t.lidsNowValve
+                             : used[0] && used[1] ? t.lidsNowBoth
+                             : used[0]            ? t.lidsNowLeft
+                             : used[1]            ? t.lidsNowRight
+                                                  : t.lidsNowWaiting;
+        const char* note = eyecam::setUp(m.eyecam) ? t.lidsNowSwitch : "";
         const double noteSize = 14;
-        const double noteW = pen.measure(note, noteSize, false);
-        pen.text(kInnerRight - 16, centerBaseline(y, h, noteSize), note, noteSize, kTextMuted, false, true);
+        const double noteW = note[0] == '\0' ? 0.0 : pen.measure(note, noteSize, false);
+        if (noteW > 0) pen.text(kInnerRight - 16, centerBaseline(y, h, noteSize), note, noteSize, kTextMuted, false, true);
         double x = kInnerX + 52;
         x += pen.text(x, centerBaseline(y, h, 15), t.lidsNowLabel, 15, kTextMuted) + 12;
         const double room = kInnerRight - 16 - noteW - 16 - x;
@@ -2719,10 +2850,10 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         pen.text(x, centerBaseline(y, h, size), source, size, kText, true);
         y += h + 10;
     }
-    // How easily widening shows: one slider, whatever drives it
-    if (widen.control == WidenControl::Saturated) {
+    // How easily widening shows: one slider, whatever drives it (only with the eye cameras: a line at the end otherwise)
+    if (camera && widen.control == WidenControl::Saturated) {
         // Nothing to widen by on this SteamOS without the cameras: one row saying so, and the way to the cameras
-        drawRowLabel(pen, t, y, kRowH, t.rowWidenEase, t.widenHintSaturated, false);
+        drawRowLabel(pen, t, y, kRowH, t.rowWidenEase, t.widenHintSaturated, false, 0, true);
         double textRight = kInnerRight;
         if (eyecamTab_) {
             const double bh = 46;
@@ -2738,13 +2869,13 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         const double size = fitSize(pen, t.widenSaturated, 17, 11, textRight - tx, false);
         pen.text(tx, centerBaseline(y, kRowH, size), t.widenSaturated, size, kText);
         y += kRowH;
-    } else {
+    } else if (camera) {
         const double h = 78;
         const bool locked = widen.control == WidenControl::Valve && v.locked(key::kLidWiden);
         const char* hint = widen.control == WidenControl::Camera  ? t.widenHintCamera
                            : widen.control == WidenControl::Mixed ? t.widenHintMixed
                                                                   : t.widenHintValve;
-        drawRowLabel(pen, t, y, h, t.rowWidenEase, hint, locked);
+        drawRowLabel(pen, t, y, h, t.rowWidenEase, hint, locked, 0, true);
         drawWidenSlider(pen, t, m, v, widen, kControlX, kInnerRight, y + 6, 40);
         const char* note = widen.unfittedNote                   ? t.widenNoteUnfitted
                            : widen.control == WidenControl::Valve ? t.widenNoteValve
@@ -2752,7 +2883,7 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         pen.text(kControlX, y + 66, note, fitSize(pen, note, 14, 11, kInnerRight - kControlX, false), kTextMuted);
         y += h;
     }
-    drawRowDivider(pen, y);
+    if (camera) drawRowDivider(pen, y);
     // Eyelid smoothing: three presets (the two values themselves on "Fine-tune")
     {
         const bool locked = v.locked(key::kLidMinCutoff) || v.locked(key::kLidBeta);
@@ -2774,6 +2905,8 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         y += kRowH;
         drawRowDivider(pen, y);
     }
+    // Without the eye cameras: what they would add here
+    if (!camera) drawCameraLine(pen, t.cameraLineWiden, y + 16);
 }
 
 void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
@@ -2822,15 +2955,18 @@ void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel&
         y += kRowH;
         drawRowDivider(pen, y);
     }
-    // The lowest eyelid while an eye camera sees the eye open (camera_lid_floor; 0 = off). Always there, so it can be
-    // set before the cameras know the eyes; without an eye on the cameras the note says when it takes effect
-    {
+    // The lowest eyelid while an eye camera sees the eye open (camera_lid_floor; 0 = off): while the eye cameras are in
+    // use (before they know the eyes too, so it can be set; without an eye on them the note says when it takes effect).
+    // Otherwise a line saying what they would add
+    if (!eyecam::inUse(m.eyecam, v.flag(key::kCameraLids))) {
+        drawCameraLine(pen, t.cameraLineFloor, y + 16);
+    } else {
         const bool onCameras = s.running && (s.camera.used[0] || s.camera.used[1]);
         const bool locked = v.locked(key::kCameraLidFloor);
         // A v2 rule: faded in v1, with why and the way to the switch beside it
         const bool v1 = eyesV1(v);
         if (v1) cairo_push_group(pen.cr);
-        drawRowLabel(pen, t, y, kRowH, t.rowLidFloor, t.lidFloorHint, locked);
+        drawRowLabel(pen, t, y, kRowH, t.rowLidFloor, t.lidFloorHint, locked, 0, true);
         const double stepperW = 196;
         const double floor = v.number(key::kCameraLidFloor);
         drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kCameraLidFloor, floor,
@@ -4755,6 +4891,11 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
 }
 
 void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
+    // Not set up and nothing of the setup done yet: what they add, and "Get started" into the checklist
+    if (eyecam::introShown(m.eyecam, setupBegun_)) {
+        drawCameraIntro(pen, t);
+        return;
+    }
     const eyecam::SetupScreen screen = eyecam::setupScreen(m.eyecam);
     if (screen != eyecam::SetupScreen::Camera) {
         drawSetup(pen, t, m, screen);
@@ -4772,6 +4913,53 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m, 
         case eyecam::PageScreen::Page: break;
     }
     drawCameraPage(pen, t, m, v);
+}
+
+void EyePanel::drawCameraIntro(const Pen& pen, const UiText& t) {
+    const double x0 = kInnerX;
+    const double x1 = kInnerRight;
+    // The title with a camera before it
+    double y = kContentY + 46;
+    drawCameraIcon(pen, x0 + 14, y - 8, kAccent);
+    pen.text(x0 + 38, y, t.camIntroTitle, fitSize(pen, t.camIntroTitle, 22, 15, x1 - x0 - 38, true), kText, true);
+    y += 22;
+    // What they add, a check each
+    for (const char* item : t.camIntro) {
+        const std::vector<std::string> lines = wrapText(pen, item, 18, false, x1 - x0 - 44, 2);
+        y += 14;
+        for (size_t i = 0; i < lines.size(); ++i) {
+            y += 26;
+            if (i == 0) drawCheck(pen.cr, x0 + 16, y - 6, 16, kSuccess);
+            pen.text(x0 + 36, y, lines[i], 18, kText);
+        }
+    }
+    // The one-time setup, and the eye video staying in the Frame
+    {
+        y += 24;
+        const double pad = 18;
+        const std::vector<std::string> lines = wrapText(pen, t.camIntroBox, 16, false, x1 - x0 - pad * 2 - 30, 3);
+        const double boxH = pad * 2 + lines.size() * 24 - 4;
+        fillRounded(pen, x0, y, x1 - x0, boxH, 12, kBg);
+        drawInfoIcon(pen, x0 + pad + 8, y + pad + 9, kAccent);
+        double baseline = y + pad + 15;
+        for (const std::string& line : lines) {
+            pen.text(x0 + pad + 30, baseline, line, 16, kText);
+            baseline += 24;
+        }
+        y += boxH;
+    }
+    // "Get started": the setup checklist (password, the tool in Konsole, the calibration)
+    const double bh = 56;
+    const double bw = std::max(300.0, pen.measure(t.camIntroButton, 20, true) + 64);
+    const double by = std::min(y + 26, kContentY + kContentH - 24 - bh - 30);
+    drawButton(pen, x0, by, bw, bh, t.camIntroButton, {PanelAction::SetupBegin, nullptr, 0}, true, true, 20);
+    const double nx = x0 + bw + 20;
+    const std::vector<std::string> note = wrapText(pen, t.camIntroNote, 15, false, x1 - nx, 2);
+    double baseline = by + bh / 2 + 5 - (static_cast<double>(note.size()) - 1) * 10;
+    for (const std::string& line : note) {
+        pen.text(nx, baseline, line, 15, kTextMuted);
+        baseline += 20;
+    }
 }
 
 void EyePanel::drawPageCalib(const Pen& pen, const UiText& t, const PanelModel& m, eyecam::SetupScreen screen) {
@@ -5686,18 +5874,6 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
             }
             pen.text(tx, centerBaseline(py, pillH, pillSize), pillText, pillSize, learned ? kSuccess : kText);
         }
-        y += h;
-        divider(y);
-    }
-    // The camera eyelids for frameeyeosc
-    {
-        const double h = 68;
-        const bool locked = v.locked(key::kCameraLids);
-        drawRowLabel(pen, t, y, h, t.rowCameraLids, t.camRowLidsHint, locked);
-        drawSegmented(pen, kControlX, y + (h - kControlH) / 2, 246, kControlH,
-                      {{t.on, {PanelAction::SetBool, key::kCameraLids, 1}},
-                       {t.off, {PanelAction::SetBool, key::kCameraLids, 0}}},
-                      v.flag(key::kCameraLids) ? 0 : 1, 20, locked);
         y += h;
         divider(y);
     }
