@@ -45,19 +45,22 @@ const PUPIL_SETTLE_S: f64 = 0.3;
 pub const PRIOR_RESET_S: f64 = 10.0 / FPS;
 /// Closed needs no pupil for this long (3 frames at 90 fps; at least 2 frames).
 const CLOSED_NO_PUPIL_S: f64 = 3.0 / FPS;
-/// A pupil lost while the last one seen had its nasal edge (small x) within this many px of the search window's left
-/// edge ran into the nasal shading, not under a lid: an eye turned 20 degrees or more toward the nose merges the pupil
-/// with the shading (a blob too big to be one), and the iris box, cut by the window's edge, takes in sclera and skin
-/// and reads 1.31-1.50 x its open level. Such an eye is not closed; its eyelid, widen and squint keep their last
-/// values until the pupil is seen again, as long as the lids measured there are still apart (`EDGE_OPEN_AP`): an
-/// eye that really closes after a glance toward the nose (the last pupil stays at the edge) still closes. On the
-/// features of the 2026-10-03/04 and 10-08 eye videos: 53 of the 55 frames falsely closed toward the nose (Valve's
-/// openness 0.9 or more) no longer closed, none of the 6118 closed frames (Valve's below 0.5); replays of the 10-07 to
-/// 10-09 videos: one of 9148 closed frames lost (the last of a blink's, which still closed).
-const EDGE_LOST_PX: f64 = 12.0;
-/// The aperture (iris radii, 5-frame median) down to which an eye lost at the window's nasal edge is held open.
-/// Closed eyes measure 0.3-0.8 (99% below 1.03 on 2026-10-03/08, below 1.2 on 10-09), the eyes falsely closed toward
-/// the nose 1.06-1.59 (95% above 1.27).
+/// A pupil lost while the last one seen had its small-x edge within this many px of the search window's left edge ran
+/// out of the lit part of the picture, not under a lid. The small-x side of both upright pictures is the temporal one
+/// (toward the ear; the 2026-10-09 recordings: an eye turning outward moves its pupil there, one turning inward toward
+/// the lens-edge band at large x), and it is dark: an eye turned 25 degrees or more outward takes its pupil into that
+/// shading, where it merges with it (a blob too big to be one), and the iris box, cut by the window's edge, takes in
+/// sclera and skin and reads 1.31-1.50 x its open level. Such an eye is not closed; its eyelid, widen and squint keep
+/// their last values until the pupil is seen again, as long as the lids measured there are still apart
+/// (`EDGE_OPEN_AP`): an eye that really closes after an outward glance (the last pupil stays at the edge) still closes.
+/// 12 px missed a right look of 35 degrees on 2026-10-09 15:23 (the right eye's last pupil 15 px from the edge, 9 s
+/// falsely closed). On the features of the 2026-10-03/04 and 10-08 eye videos: 53 of the 55 frames falsely closed
+/// looking outward (Valve's openness 0.9 or more) no longer closed, none of the 6118 closed frames (Valve's below 0.5);
+/// replays of the 10-07 to 10-09 videos: 3 of 10515 closed frames lost (blinks' last frames; the blinks still closed).
+const EDGE_LOST_PX: f64 = 16.0;
+/// The aperture (iris radii, 5-frame median) down to which an eye lost at the window's edge is held open. Closed eyes
+/// measure 0.3-0.8 (99% below 1.03 on 2026-10-03/08, below 1.2 on 10-09), the eyes falsely closed looking outward
+/// 1.06-1.59 (95% above 1.27).
 const EDGE_OPEN_AP: f64 = 1.2;
 /// The lid features are causal medians over this long (5 frames at 90 fps; an odd number, at least 3).
 const MEDIAN_S: f64 = 5.0 / FPS;
@@ -167,7 +170,7 @@ pub struct Tune {
     pub track: bool,
     /// Hold EyeWide at 0 after a downward glance.
     pub gaze_drop: bool,
-    /// Not closed while the pupil is lost at the window's nasal edge (see EDGE_LOST_PX).
+    /// Not closed while the pupil is lost at the window's (temporal) edge (see EDGE_LOST_PX).
     pub edge_hold: bool,
 }
 
@@ -214,9 +217,9 @@ pub struct Out {
     pub xmax: f64,
     /// The pupil search's left edge (`feat::search_x_min`).
     pub x_min: f64,
-    /// px from the last pupil seen's nasal edge to `x_min` (NaN before the first pupil).
+    /// px from the last pupil seen's small-x (temporal) edge to `x_min` (NaN before the first pupil).
     pub edge_gap: f64,
-    /// No pupil, the last one at the window's nasal edge: not closed, the eyelid values held (see EDGE_LOST_PX).
+    /// No pupil, the last one at the window's (temporal) edge: not closed, the eyelid values held (see EDGE_LOST_PX).
     pub edge_held: bool,
     /// The levels in use for this frame (calibrated, or the automatic baseline + stored step).
     pub b_n: f64,
@@ -366,8 +369,8 @@ pub struct EyeEngine {
     last_sq: f64,
     last_open: f64,
     last_pd: f64,
-    /// The last eyelid, widen and squint reported for an open eye, kept while the pupil is lost at the window's nasal
-    /// edge.
+    /// The last eyelid, widen and squint reported for an open eye, kept while the pupil is lost at the window's
+    /// (temporal) edge.
     last_out: (f64, f64, f64),
     base: AutoBase,
     /// Time of this wear's first frame.
@@ -695,7 +698,7 @@ impl EyeEngine {
 
         // Closed: lid skin covers the box (brighter than the open-eye level) and no pupil for CLOSED_NO_PUPIL_S (3
         // frames at 90 fps).
-        // Not while the pupil is lost at the window's nasal edge with the lids still apart (EDGE_LOST_PX).
+        // Not while the pupil is lost at the window's (temporal) edge with the lids still apart (EDGE_LOST_PX).
         let no_pupil_long = self.nopupil >= frames_in(CLOSED_NO_PUPIL_S, fps, 2);
         let edge_gap = self.prev_p.map_or(f64::NAN, |q| q.cx - q.a - self.x_min);
         let edge_held = params.tune.edge_hold && !f.ok_pupil && edge_gap < EDGE_LOST_PX && ap >= EDGE_OPEN_AP;
@@ -2593,7 +2596,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pupil_lost_at_the_nasal_edge_with_the_lids_apart_is_not_closed() {
+    fn a_pupil_lost_at_the_temporal_edge_with_the_lids_apart_is_not_closed() {
         // The pupil gone, the iris box all sclera (brighter than the open eye's), the lids where they were.
         let lost = lid_frame(None, true);
         let shut = lid_frame(None, false);
@@ -2603,7 +2606,7 @@ mod tests {
         let (closed, o) = closes(&mut e, &p, t, &lost);
         assert!(closed && !o.edge_held, "{o:?}");
         assert_eq!(o.x_min, feat::X_MIN_LO);
-        // Lost with its nasal edge 3 px from the window's: not closed, the open eye's values held.
+        // Lost with its small-x edge 3 px from the window's: not closed, the open eye's values held.
         let (mut e, p, t) = seen_at(edge, Tune::default());
         let before = e.process(&lid_frame(Some(edge), true), f64::NAN, t + 0.5 / FPS, &p);
         let (closed, o) = closes(&mut e, &p, t + 0.5 / FPS, &lost);
@@ -2622,6 +2625,10 @@ mod tests {
         e.process(&lid_frame(Some(edge), true), f64::NAN, t + 1.5, &p);
         let (closed, o) = closes(&mut e, &p, t + 1.5, &lost);
         assert!(!closed && o.edge_held && o.eye_lid > 0.5, "{o:?}");
+        // 14 px from the edge (the right eye on 2026-10-09 15:23 was lost at 15): held too.
+        let (mut e, p, t) = seen_at((139.0, 200.0), Tune::default());
+        let (closed, o) = closes(&mut e, &p, t, &lost);
+        assert!(!closed && o.edge_held && (o.edge_gap - 14.0).abs() < 1.0, "{o:?}");
         // The old rule (--no-edge-hold): closed.
         let (mut e, p, t) = seen_at(edge, Tune { edge_hold: false, ..Tune::default() });
         let (closed, o) = closes(&mut e, &p, t, &lost);

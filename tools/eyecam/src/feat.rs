@@ -15,13 +15,14 @@ use crate::vision::{self, CcBufs, Component, Ellipse, GaussBufs, H, MorphBufs, Q
 const NRAY: usize = 64;
 /// Median margin - skin line offset (px) when the margin itself is not found (feat2.MARGIN_OFF).
 pub const MARGIN_OFF: f64 = 7.0;
-/// Left edge of every search region in the prototype. The small-x side of both upright images is the NASAL side
-/// (pupils move toward it when the eyes converge); it is dark shading there, as dark as the pupil.
+/// Left edge of every search region in the prototype. The small-x side of both upright images is the TEMPORAL side
+/// (toward the ear: a pupil moves toward it as the eye turns outward, and toward large x as it turns inward; the
+/// 2026-10-09 recordings against Valve's gaze); it is dark shading there, as dark as the pupil.
 pub const X_MIN: f64 = 186.0;
 /// The live search's left edge adapts per wear (`search_x_min`) within these bounds.
 pub const X_MIN_LO: f64 = 100.0;
 /// The prototype's opening is computed from this column on (exact from 8 columns further), the blurred image from
-/// OPF_X0. The leftmost samples ever taken are the iris rays on the nasal side, 95 px left of a pupil that is right
+/// OPF_X0. The leftmost samples ever taken are the iris rays on the temporal side, 95 px left of a pupil that is right
 /// of X_MIN. The live search starts them `OPEN_BEFORE` columns left of its own left edge instead (room for a pupil
 /// centred up to 20 px left of it, cut by the window; each 10 columns cost about 1% of the frame time).
 const OPEN_X0: usize = 72;
@@ -173,24 +174,24 @@ impl Default for Features {
     }
 }
 
-/// The lens-edge column: where the black band on the temporal (large-x) side starts (feat2.occluder_x), from column
+/// The lens-edge column: where the black band on the nasal (large-x) side starts (feat2.occluder_x), from column
 /// means over rows 60..340 of a frame or of a mean image.
 pub fn occluder_x(col_mean: &[f64]) -> f64 {
     let first = col_mean[280..].iter().position(|&m| m < 25.0).unwrap_or(120);
     (280 + first) as f64 - 3.0
 }
 
-/// Column mean that counts as out of the dark nasal shading (`search_x_min`).
+/// Column mean that counts as out of the dark temporal shading (`search_x_min`).
 const SHADE_END_LEVEL: f64 = 40.0;
 /// How far into the shading the live search may start, px.
 const SHADE_MARGIN: f64 = 10.0;
 
 /// The live search's left edge for this wear, from the same column means as `occluder_x`: where the dark shading
-/// on the nasal side ends, minus `SHADE_MARGIN`, within [X_MIN_LO, X_MIN]. The end is that of the bright region the
+/// on the temporal side ends, minus `SHADE_MARGIN`, within [X_MIN_LO, X_MIN]. The end is that of the bright region the
 /// iris is in: from X_MIN + SHADE_MARGIN (it and the next 3 columns at `SHADE_END_LEVEL` or brighter, else the
 /// shading reaches past it and the edge stays at X_MIN) leftwards to the last column at that level, x = 60 at the
-/// most. Something bright further toward the nose (a lit nose bridge) with shading between it and the iris does not
-/// pull the window over the shading. The shading follows the face: when the eyes sit further toward the nose in the
+/// most. Something bright further out (lit skin beyond the shading) with shading between it and the iris does not
+/// pull the window over the shading. The shading follows the face: when the eyes sit further toward small x in the
 /// image, so does it, and the window follows. The prototype's X_MIN is the upper bound (the developer's recordings
 /// all give it).
 pub fn search_x_min(col_mean: &[f64]) -> f64 {
@@ -542,8 +543,8 @@ impl Extractor {
     }
 
     /// Iris radius from limbus crossings on rays to the left and right (top and bottom excluded), mapped into the
-    /// pupil ellipse's frame; crossings on the right (large x: the temporal side of both upright images, dark iris ->
-    /// bright sclera) are preferred (feat2 calls them "nasal"). (R, inliers).
+    /// pupil ellipse's frame; crossings on the right (large x: the nasal side of both upright images, dark iris ->
+    /// bright sclera) are preferred (feat2 calls them "nasal", its comments "temporal"). (R, inliers).
     fn iris_fit(&self, p: &Pupil, xmax: f64) -> (f64, u32) {
         let (cx, cy) = (p.cx, p.cy);
         let t = p.ell.angle_deg.to_radians();
@@ -582,11 +583,11 @@ impl Extractor {
                     (a + prof[i] + c) / 3.0
                 })
                 .collect();
-            let temporal = d.0 > 0.0;
+            let large_x = d.0 > 0.0;
             let gg: Vec<f64> = (0..n - 3)
                 .map(|i| {
                     let g = sm[i + 3] - sm[i];
-                    if temporal || g > 0.0 { g } else { -0.8 * g }
+                    if large_x || g > 0.0 { g } else { -0.8 * g }
                 })
                 .collect();
             let mut k = 2;
@@ -595,19 +596,19 @@ impl Extractor {
                     k = i;
                 }
             }
-            if gg[k] < if temporal { 12.0 } else { 9.0 } {
+            if gg[k] < if large_x { 12.0 } else { 9.0 } {
                 continue;
             }
             let r = rok[k + 1] + 0.375;
             let v = (d.0 * r, d.1 * r);
             let (ra, rb) = (v.0 * ua.0 + v.1 * ua.1, v.0 * ub.0 + v.1 * ub.1);
-            res.push((ra.hypot(rb / ratio), temporal));
+            res.push((ra.hypot(rb / ratio), large_x));
         }
         if res.len() < 4 {
             return (f64::NAN, 0);
         }
-        let temporal_n = res.iter().filter(|r| r.1).count();
-        let mut rho: Vec<f64> = res.iter().filter(|r| temporal_n < 4 || r.1).map(|r| r.0).collect();
+        let large_x_n = res.iter().filter(|r| r.1).count();
+        let mut rho: Vec<f64> = res.iter().filter(|r| large_x_n < 4 || r.1).map(|r| r.0).collect();
         let med = vision::median(&mut rho.clone());
         rho.retain(|&r| (r - med).abs() < 6.0);
         let n = rho.len() as u32;
@@ -879,7 +880,7 @@ mod tests {
         assert!((f2.box_mean - 120.0).abs() < 1e-9);
     }
 
-    /// Nasal shading: everything left of x = 186 as dark as a pupil, with a 40 x 70 bulge into the search window.
+    /// Temporal shading: everything left of x = 186 as dark as a pupil, with a 40 x 70 bulge into the search window.
     fn shade(img: &mut [u8]) {
         for y in 0..H {
             for x in 0..W {
@@ -948,17 +949,17 @@ mod tests {
     }
 
     #[test]
-    fn the_search_window_follows_the_nasal_shading() {
+    fn the_search_window_follows_the_temporal_shading() {
         let profile = |end: usize| (0..W).map(|x| if x < end { 8.0 } else { 80.0 }).collect::<Vec<f64>>();
         assert_eq!(search_x_min(&profile(198)), X_MIN, "the developer's recordings: the prototype's edge");
         assert_eq!(search_x_min(&profile(150)), 140.0);
         assert_eq!(search_x_min(&profile(40)), X_MIN_LO);
         assert_eq!(search_x_min(&vec![10.0; W]), X_MIN, "no bright columns: the prototype's edge");
         assert_eq!(search_x_min(&profile(230)), X_MIN, "shading past the prototype's edge: it stays");
-        // A lit nose bridge at x 60..100 with shading between it and the iris: the shading's end counts.
-        let mut nose = profile(150);
-        nose[60..100].fill(90.0);
-        assert_eq!(search_x_min(&nose), 140.0);
+        // Lit skin at x 60..100 with shading between it and the iris: the shading's end counts.
+        let mut beyond = profile(150);
+        beyond[60..100].fill(90.0);
+        assert_eq!(search_x_min(&beyond), 140.0);
         assert_eq!(Search::live(20.0).x_min, X_MIN_LO);
         // A pupil left of the prototype's window is found with the window moved left.
         let mut img = synthetic_eye(170.0, 200.0, 24.0);
