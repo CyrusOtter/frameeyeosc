@@ -15,7 +15,8 @@
 //!
 //! No per-wear calibration is needed: after the HMD goes on, the open-eye levels (skin line and aperture, in pixels)
 //! are the mode of the first 30 s of usable frames (pupil seen, eye open, gaze within 15 degrees of the wearer's
-//! typical pitch), and from then on they follow slowly (60 s time constant, frames with EyeWide < 0.2 only). The widen
+//! typical pitch), and from then on they follow slowly (skin line: 60 s time constant, frames with EyeWide < 0.2;
+//! aperture: 20 s, frames with EyeWide < 0.2 and EyeSquint < 0.6; see TRACK_AP_TAU_S). The widen
 //! step and the closed aperture come from the median of the user's past wear calibrations (in iris radii) times the
 //! current iris radius, or population defaults when there is none. A wear calibration only sets the starting levels
 //! (and adds its step to the history). EyeWide is 0 while warming up and for 0.3 s after the gaze drops by 8 degrees
@@ -90,11 +91,21 @@ const WIDE_OFF: f64 = 0.3;
 pub const WARMUP_S: f64 = 30.0;
 /// Usable frames for the baseline: Valve pitch within this many degrees of the wearer's typical pitch.
 const PITCH_GATE: f64 = 15.0;
-/// After warm-up the baselines follow the open-eye levels with this time constant (s), using only frames with
-/// EyeWide below `TRACK_MAX_WIDE` (and EyeSquint below it, for the aperture). Faster (20 s) followed the lid down
-/// during downward glances and widened falsely more.
+/// After warm-up the skin line's baseline follows the open-eye level with this time constant (s), using only frames
+/// with EyeWide below `TRACK_MAX_WIDE`. Faster (20 s) followed the lid down during downward glances and widened falsely
+/// more.
 const TRACK_TAU_S: f64 = 60.0;
 const TRACK_MAX_WIDE: f64 = 0.2;
+/// The aperture's baseline follows faster (`TRACK_AP_TAU_S`), through frames with EyeSquint up to
+/// `TRACK_AP_MAX_SQUINT`. It used to follow only frames below 0.2: an upper lid that settled lower after the warm-up
+/// (2026-10-09 16:37, both eyes 13-14 px lower from 40 s on, at the same pupil position and gaze; the frames show
+/// the lids relaxed) read as squint 0.4-0.5 from then on, and as squinting it never taught the baseline (113 -> 112 px
+/// over 2 minutes): eyelid 0.55 / 0.53 for good, while the skin line's baseline followed. Through frames up to 0.6 at
+/// 20 s: 0.72 / 0.73 (squint 0.07 / 0.03) over that part, the other sessions' normal parts the same or nearer 0.75,
+/// and the squint steps of the protocol sessions unchanged (2026-10-07 squint 1.00 / 1.00, 10-08 0.50 / 0.79). A
+/// squint held longer than that, at under 0.6, fades into the baseline.
+const TRACK_AP_TAU_S: f64 = 20.0;
+const TRACK_AP_MAX_SQUINT: f64 = 0.6;
 /// For this long after a wear starts the iris radius is taken from the history (the running estimate is settling).
 const R_PRIOR_S: f64 = 10.0;
 /// When Valve's pitch falls by `GAZE_DROP_DEG` within `GAZE_DROP_WINDOW` s, EyeWide is 0 for `GAZE_DROP_HOLD` s: the
@@ -738,8 +749,13 @@ impl EyeEngine {
             if self.last_wide < TRACK_MAX_WIDE {
                 self.base.b += (skin_px - self.base.b).clamp(-0.5 * step_px, 0.5 * step_px) * k;
             }
-            if self.last_wide < TRACK_MAX_WIDE && self.last_sq < TRACK_MAX_WIDE && ap_px.is_finite() && self.base.ap_n.is_finite() {
-                self.base.ap_n += (ap_px - self.base.ap_n).clamp(-0.25 * gap_px, 0.25 * gap_px) * k;
+            let k_ap = 1.0 / (TRACK_AP_TAU_S * fps);
+            if self.last_wide < TRACK_MAX_WIDE
+                && self.last_sq < TRACK_AP_MAX_SQUINT
+                && ap_px.is_finite()
+                && self.base.ap_n.is_finite()
+            {
+                self.base.ap_n += (ap_px - self.base.ap_n).clamp(-0.25 * gap_px, 0.25 * gap_px) * k_ap;
             }
         }
         let ready = self.base.ready;
@@ -2546,13 +2562,18 @@ mod tests {
     /// Lid skin (150) with the eye open between rows 130 and 270 (sclera 110), the iris (70) and pupil (12) at `pupil`
     /// (radius 25) if any, and the lens-edge band; `open` false: lid skin all over (a closed eye).
     fn lid_frame(pupil: Option<(f64, f64)>, open: bool) -> Vec<u8> {
+        lid_frame_between(pupil, if open { 130..270 } else { 0..0 })
+    }
+
+    /// `lid_frame` with the eye open between the rows of `opening`.
+    fn lid_frame_between(pupil: Option<(f64, f64)>, opening: std::ops::Range<usize>) -> Vec<u8> {
         let mut img = vec![150u8; vision::W * vision::H];
         for y in 0..vision::H {
             for x in 0..vision::W {
                 let v = &mut img[y * vision::W + x];
                 if x >= 350 {
                     *v = 4;
-                } else if open && (130..270).contains(&y) {
+                } else if opening.contains(&y) {
                     *v = 110;
                     if let Some((px, py)) = pupil {
                         let d = (x as f64 - px).hypot(y as f64 - py);
@@ -2633,6 +2654,38 @@ mod tests {
         let (mut e, p, t) = seen_at(edge, Tune { edge_hold: false, ..Tune::default() });
         let (closed, o) = closes(&mut e, &p, t, &lost);
         assert!(closed && !o.edge_held, "{o:?}");
+    }
+
+    #[test]
+    fn the_aperture_baseline_follows_lids_that_settle_lower_but_not_a_squint() {
+        // A user calibration (squint and the eyelid from the aperture), 15 frames a second
+        let p = Params { user: Some(UserParams::default()), ..Params::default() };
+        let mut e = EyeEngine::default();
+        let mut t = 0.0;
+        let mut run = |e: &mut EyeEngine, opening: std::ops::Range<usize>, seconds: f64| {
+            let mut last = None;
+            for _ in 0..(seconds * 15.0) as usize {
+                t += 1.0 / 15.0;
+                last = Some(e.process(&lid_frame_between(Some((250.0, 200.0)), opening.clone()), f64::NAN, t, &p));
+            }
+            last.unwrap()
+        };
+        let o = run(&mut e, 130..270, 7.0);
+        e.seed_px(o.skin_up * o.r, o.aperture * o.r);
+        let (_, ap_open) = e.baseline_px().unwrap();
+        let o = run(&mut e, 130..270, 2.0);
+        assert!(o.eye_lid > 0.74 && o.eye_squint < 0.01, "{o:?}");
+        // The upper lid settles 14 px lower: a mild squint at first, then the baseline follows (20 s time constant)
+        let o = run(&mut e, 144..270, 1.0);
+        assert!((0.2..0.6).contains(&o.eye_squint), "{o:?}");
+        let o = run(&mut e, 144..270, 45.0);
+        let (_, ap_low) = e.baseline_px().unwrap();
+        assert!(ap_open - ap_low > 0.8 * 14.0, "{ap_open} -> {ap_low}");
+        assert!(o.eye_lid > 0.7 && o.eye_squint < 0.1, "{o:?}");
+        // A real squint (lids 50 px nearer) shows and does not move the baseline
+        let o = run(&mut e, 160..250, 3.0);
+        assert!(o.eye_squint > 0.9 && o.eye_lid < 0.3, "{o:?}");
+        assert!((e.baseline_px().unwrap().1 - ap_low).abs() < 0.5);
     }
 
     #[test]
