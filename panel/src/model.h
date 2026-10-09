@@ -344,6 +344,53 @@ void lidMarkBounds(const std::string& name, const SettingsView& view, double& lo
 std::string formatSetting(const std::string& name, double value);
 
 /**
+ * A multiplier as a percentage, to the nearest whole one (1.0 -> "100%", 0.25 -> "25%").
+ * @param value the multiplier
+ * @return the text ("—" for NaN)
+ */
+std::string formatPercent(double value);
+
+/** The gaze scale keys in their linked pairs: [0] left and right, [1] up and down (the first of each leads). */
+extern const char* const kGazeScaleKeys[2][2];
+
+/**
+ * Which linked pair a gaze scale key is in.
+ * @param name a key
+ * @return 0 (left / right), 1 (up / down), or -1 for any other key
+ */
+int gazeScalePair(const std::string& name);
+
+/**
+ * Whether a pair's lock shows closed (linked) when the panel starts: as it was left, but open when the two values
+ * differ (a closed lock means they are the same).
+ * @param saved the lock as remembered (panel.json)
+ * @param first the pair's first value (left / up)
+ * @param second its second value (right / down)
+ * @return true to show it linked
+ */
+bool gazeScaleLinkShown(bool saved, double first, double second);
+
+/**
+ * What − / ＋ on a gaze scale writes: the key one step on, and while its pair is linked the other key to the same
+ * value (unless that one is locked by the command line).
+ * @param view the settings
+ * @param name the key pressed
+ * @param direction -1 or +1
+ * @param linked its pair's lock is closed
+ * @return the changes (empty if nothing moves)
+ */
+std::vector<SettingChange> gazeScaleStep(const SettingsView& view, const std::string& name, int direction, bool linked);
+
+/**
+ * What closing a pair's lock writes: the second value set to the first (right := left, down := up), unless they are
+ * the same already or the second is locked by the command line.
+ * @param view the settings
+ * @param pair 0 (left / right) or 1 (up / down)
+ * @return the changes (empty if nothing changes)
+ */
+std::vector<SettingChange> gazeScaleRelink(const SettingsView& view, int pair);
+
+/**
  * The IP part of an "IP:PORT" target ("[v6]:port" loses its brackets).
  * @param target the target
  * @return the host, or "" if there is none

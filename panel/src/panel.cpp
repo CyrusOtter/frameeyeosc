@@ -295,6 +295,45 @@ void drawLock(const Pen& pen, double x, double baseline, double s, Color c) {
 }
 
 /**
+ * Draw the gaze scale's link: a padlock, closed (the pair linked) or with its shackle lifted off the right (open).
+ * @param pen drawing tools
+ * @param cx center x
+ * @param cy center y
+ * @param s size (px)
+ * @param open the shackle lifted
+ * @param c color
+ * @param hole the keyhole's color (the button's fill)
+ */
+void drawLinkLock(const Pen& pen, double cx, double cy, double s, bool open, Color c, Color hole) {
+    cairo_t* cr = pen.cr;
+    const double bodyW = s * 0.72;
+    const double bodyH = s * 0.52;
+    const double bodyTop = cy + s * 0.5 - bodyH;
+    fillRounded(pen, cx - bodyW / 2, bodyTop, bodyW, bodyH, s * 0.1, c);
+    // The keyhole
+    pen.color(hole);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, bodyTop + bodyH * 0.42, s * 0.07, 0, 2 * M_PI);
+    cairo_fill(cr);
+    cairo_rectangle(cr, cx - s * 0.03, bodyTop + bodyH * 0.42, s * 0.06, bodyH * 0.3);
+    cairo_fill(cr);
+    // The shackle: both legs in the body, or lifted with its right leg out
+    const double r = bodyW * 0.32;
+    const double legH = s * 0.16;
+    const double lift = open ? s * 0.16 : 0.0;
+    const double arcY = bodyTop - legH - lift;
+    pen.color(c);
+    cairo_set_line_width(cr, s * 0.13);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_BUTT);
+    cairo_new_path(cr);
+    cairo_move_to(cr, cx - r, bodyTop + 1);
+    cairo_line_to(cr, cx - r, arcY);
+    cairo_arc(cr, cx, arcY, r, M_PI, 2 * M_PI);
+    cairo_line_to(cr, cx + r, open ? arcY + legH * 0.75 : bodyTop + 1);
+    cairo_stroke(cr);
+}
+
+/**
  * Draw a horizontal line (a minus sign) or a cross (a plus sign).
  * @param cr cairo
  * @param cx center x
@@ -881,6 +920,16 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             recordOpen_.clear();
             recordsAllOpen_ = false;
             return {};
+        case PanelAction::GazePage:
+            if (hit.arg < 0 || hit.arg > static_cast<int>(GazePage::Glitch)) return {};
+            setTab(PanelTab::Gaze);
+            setGazePage(static_cast<GazePage>(hit.arg));
+            return {};
+        case PanelAction::GazeScaleLink:
+            // Opened or closed here; the caller writes the second value once it is closed
+            if (hit.arg < 0 || hit.arg > 1) return {};
+            gazeScaleLinked_[hit.arg] = !gazeScaleLinked_[hit.arg];
+            return hit;
         case PanelAction::RecordOpen:
             // The caller reads it
             if (hit.arg < 0 || hit.arg >= static_cast<int>(recordNames_.size())) return {};
@@ -2104,7 +2153,23 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
 }
 
 void EyePanel::drawGaze(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
-    double y = kRowTop;
+    // Three sub-tabs, drawn as the Eyelids and Advanced tabs' (the first time "Motion", then the one open last)
+    const GazePage pages[3] = {GazePage::Motion, GazePage::Reach, GazePage::Glitch};
+    const char* labels[3] = {t.gazeMotion, t.gazeReach, t.gazeGlitch};
+    std::vector<Option> options;
+    for (int i = 0; i < 3; ++i) {
+        options.push_back({labels[i], {PanelAction::GazePage, nullptr, static_cast<int>(pages[i])}});
+    }
+    drawPageSwitch(pen, kSubTabY, kSubTabH, options, static_cast<int>(gazePage_), -1);
+    switch (gazePage_) {
+        case GazePage::Motion: drawGazeMotion(pen, t, v, kAdvPageTop); break;
+        case GazePage::Reach: drawGazeReach(pen, t, m, v, kAdvPageTop); break;
+        case GazePage::Glitch: drawGazeGlitch(pen, t, v, kAdvPageTop); break;
+    }
+}
+
+void EyePanel::drawGazeMotion(const Pen& pen, const UiText& t, const SettingsView& v, double top) {
+    double y = top;
     const double cy = (kRowH - kControlH) / 2;
     const bool raw = v.flag(key::kRaw);
 
@@ -2155,7 +2220,73 @@ void EyePanel::drawGaze(const Pen& pen, const UiText& t, const PanelModel& m, co
         drawRowLabel(pen, t, y, kRowH, t.rowDeadzone, t.hintDeadzone, locked);
         drawStepper(pen, kControlX, y + cy, 260, kControlH, key::kGazeDeadzone, value, text, true, locked);
     }
-    y += kRowH + kRowGap;
+}
+
+void EyePanel::drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
+                             double top) {
+    double y = top;
+    const double cy = (kRowH - kControlH) / 2;
+    // The gaze scale: left [−  100%  ＋] lock right [...], then up and down the same way. A closed lock (accent)
+    // changes both of its pair together; open (grey), each on its own; closing it again sets the second to the first
+    {
+        const double lineH = kCaptionRowH;
+        // The title, and the hint under it in as many lines as it takes (three at most)
+        {
+            const double titleSize = fitSize(pen, t.rowGazeScale, 20, 14, kLabelW, true);
+            pen.text(kInnerX, y + 38, t.rowGazeScale, titleSize, kText, true);
+            const std::vector<std::string> lines = wrapText(pen, t.hintGazeScale, 15, false, kLabelW, 3);
+            double baseline = y + 38 + 26;
+            for (const std::string& line : lines) {
+                pen.text(kInnerX, baseline, line, 15, kTextMuted);
+                baseline += 21;
+            }
+        }
+        const double lockW = 52;
+        const double gap = 14;
+        const double stepW = (kControlW - lockW - gap * 2) / 2;
+        const char* captions[2][2] = {{t.capScaleLeft, t.capScaleRight}, {t.capScaleUp, t.capScaleDown}};
+        for (int pair = 0; pair < 2; ++pair) {
+            const double ly = y + pair * lineH;
+            const double sy = ly + 28;
+            for (int side = 0; side < 2; ++side) {
+                const char* name = kGazeScaleKeys[pair][side];
+                const double x = kControlX + side * (stepW + lockW + gap * 2);
+                const bool locked = v.locked(name);
+                drawCaption(pen, x + 4, ly + 17, captions[pair][side], 0, locked);
+                const double value = v.number(name);
+                drawStepper(pen, x, sy, stepW, kControlH, name, value, formatPercent(value), true, locked);
+            }
+            // The lock between them; not while either is locked by the command line
+            const bool usable = !v.locked(kGazeScaleKeys[pair][0]) && !v.locked(kGazeScaleKeys[pair][1]);
+            const bool linked = gazeScaleLinked_[pair];
+            const PanelHit hit {PanelAction::GazeScaleLink, nullptr, pair};
+            const double lx = kControlX + stepW + gap;
+            const int pointer = usable ? pointerState(hit) : 0;
+            const Color fill = pointer == 2 ? kAccentPressed : (pointer == 1 ? kControlHover : kControl);
+            fillRounded(pen, lx, sy, lockW, kControlH, kControlH / 2, fill);
+            if (usable) strokeRounded(pen, lx, sy, lockW, kControlH, kControlH / 2, linked ? kAccent : kBorder, 2);
+            const Color icon = !usable ? kTextDisabled : pointer == 2 ? kOnAccent : linked ? kAccent : kTextMuted;
+            drawLinkLock(pen, lx + lockW / 2, sy + kControlH / 2 + 1, 24, !linked, icon, fill);
+            addButton(hit, lx, sy, lockW, kControlH, usable);
+        }
+        y += lineH * 2 + kRowGap;
+    }
+    // Independent eyes; while the Frame tracks one eye alone, both eyes get its gaze either way
+    {
+        const bool locked = v.locked(key::kIndependentEyes);
+        const bool oneEye = m.status.running && !m.status.dominantEye.empty();
+        const char* hint = oneEye ? t.hintIndependentOneEye : eyesV1(v) ? t.hintIndependentV1 : t.hintIndependent;
+        drawRowLabel(pen, t, y, kRowH, t.rowIndependent, hint, locked);
+        drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+                      {{t.on, {PanelAction::SetBool, key::kIndependentEyes, 1}},
+                       {t.off, {PanelAction::SetBool, key::kIndependentEyes, 0}}},
+                      v.flag(key::kIndependentEyes) ? 0 : 1, 20, locked);
+    }
+}
+
+void EyePanel::drawGazeGlitch(const Pen& pen, const UiText& t, const SettingsView& v, double top) {
+    double y = top;
+    const double cy = (kRowH - kControlH) / 2;
     // Hold gaze while blinking (0 = off) and its threshold
     {
         const bool locked = v.locked(key::kGazeHoldBelow);
@@ -2168,18 +2299,6 @@ void EyePanel::drawGaze(const Pen& pen, const UiText& t, const PanelModel& m, co
                       on ? 0 : 1, 20, locked);
         drawStepper(pen, kControlX + 212, y + cy, 220, kControlH, key::kGazeHoldBelow, value,
                     on ? formatSetting(key::kGazeHoldBelow, value) : std::string("—"), on, locked);
-    }
-    y += kRowH + kRowGap;
-    // Independent eyes; while the Frame tracks one eye alone, both eyes get its gaze either way
-    {
-        const bool locked = v.locked(key::kIndependentEyes);
-        const bool oneEye = m.status.running && !m.status.dominantEye.empty();
-        const char* hint = oneEye ? t.hintIndependentOneEye : eyesV1(v) ? t.hintIndependentV1 : t.hintIndependent;
-        drawRowLabel(pen, t, y, kRowH, t.rowIndependent, hint, locked);
-        drawSegmented(pen, kControlX, y + cy, 300, kControlH,
-                      {{t.on, {PanelAction::SetBool, key::kIndependentEyes, 1}},
-                       {t.off, {PanelAction::SetBool, key::kIndependentEyes, 0}}},
-                      v.flag(key::kIndependentEyes) ? 0 : 1, 20, locked);
     }
     y += kRowH + kRowGap;
     // Skip an eye's gaze while its covariance is high (0 = off) and the limit

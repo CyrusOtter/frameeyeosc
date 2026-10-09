@@ -63,6 +63,11 @@ enum class PanelAction {
     FitDetailsPage,    ///< show arg (0 gaze, 1 eyelids) under "Fine-tune" (handled inside the panel)
     LidsPage,          ///< show the Eyelids tab's sub-tab arg (LidsPage; handled inside the panel, which opens the tab;
                        ///< the caller remembers it, see lidsPage)
+    GazePage,          ///< show the Gaze tab's sub-tab arg (GazePage; handled inside the panel, which opens the tab;
+                       ///< the caller remembers it, see gazePage)
+    GazeScaleLink,     ///< the gaze scale's lock for pair arg (0 left / right, 1 up / down): the panel opens or closes
+                       ///< it (gazeScaleLinked); the caller, once it is closed, sets the second value to the first
+                       ///< (gazeScaleRelink) and remembers the locks
     SetLidWiden,       ///< lid_widen = kLidWidenModes[arg]
     LidPreset,         ///< eyelid smoothing preset arg (0 light, 1 medium, 2 strong)
     NumberSlider,      ///< a setting's slider (key): pressed and dragged inside the panel; the caller takes the value
@@ -227,6 +232,31 @@ public:
      * @param page the sub-tab
      */
     void setLidsPage(LidsPage page) { lidsPage_ = page; }
+
+    /** @return the Gaze tab's sub-tab (shown whenever the tab is; kept while other tabs show) */
+    GazePage gazePage() const { return gazePage_; }
+
+    /**
+     * Choose the Gaze tab's sub-tab (the one remembered from before, at start; or for --gaze-page).
+     * @param page the sub-tab
+     */
+    void setGazePage(GazePage page) { gazePage_ = page; }
+
+    /**
+     * Whether a pair of the gaze scale is linked (its lock closed): changing one changes the other to the same value.
+     * @param pair 0 (left / right) or 1 (up / down)
+     * @return true if linked
+     */
+    bool gazeScaleLinked(int pair) const { return pair >= 0 && pair < 2 && gazeScaleLinked_[pair]; }
+
+    /**
+     * Link or unlink a pair of the gaze scale (at start: as remembered, but open while its values differ).
+     * @param pair 0 (left / right) or 1 (up / down)
+     * @param linked whether linked
+     */
+    void setGazeScaleLinked(int pair, bool linked) {
+        if (pair >= 0 && pair < 2) gazeScaleLinked_[pair] = linked;
+    }
 
     /**
      * Show a record on the Advanced tab ("Having trouble"), as its "View" does (for --record).
@@ -506,6 +536,8 @@ private:
     bool advScrollable_ = false;        ///< the last draw showed the page scrolled, with ▲ / ▼ (it didn't fit)
     AdvPage advPage_ = AdvPage::Version;  ///< the Advanced tab's sub-tab
     LidsPage lidsPage_ = LidsPage::Look;  ///< the Eyelids tab's sub-tab
+    GazePage gazePage_ = GazePage::Motion;  ///< the Gaze tab's sub-tab
+    bool gazeScaleLinked_[2] = {true, true};  ///< the gaze scale's locks: left / right, up / down
     SnapMark snapMark_;                   ///< mark ⑤ as last drawn
     std::string recordOpen_;            ///< the record shown on the Advanced tab ("" = none)
     bool recordsAllOpen_ = false;       ///< all records are listed on the Advanced tab (a record may be open over them)
@@ -613,13 +645,42 @@ private:
     void drawOutput(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
 
     /**
-     * The Gaze tab.
+     * The Gaze tab: its sub-tabs, and under them the one chosen.
      * @param pen drawing tools
      * @param t texts
      * @param model what is shown (the status, for the one-eye hint)
      * @param view the settings shown
      */
     void drawGaze(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The Gaze tab's "Motion": smoothing on / off, its presets, the three One Euro values and the deadzone.
+     * @param pen drawing tools
+     * @param t texts
+     * @param view the settings shown
+     * @param top where it starts
+     */
+    void drawGazeMotion(const Pen& pen, const UiText& t, const SettingsView& view, double top);
+
+    /**
+     * The Gaze tab's "Reach": the gaze scale (left / right and up / down, each pair with its lock) and moving the eyes
+     * separately.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model what is shown (the status, for the one-eye hint)
+     * @param view the settings shown
+     * @param top where it starts
+     */
+    void drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view, double top);
+
+    /**
+     * The Gaze tab's "Glitch guard": holding the gaze while blinking, skipping unreliable gaze, and the despike.
+     * @param pen drawing tools
+     * @param t texts
+     * @param view the settings shown
+     * @param top where it starts
+     */
+    void drawGazeGlitch(const Pen& pen, const UiText& t, const SettingsView& view, double top);
 
     /**
      * The Eye fit tab: one button for the whole fit (gaze and eyelids), re-centering, the result, and the values

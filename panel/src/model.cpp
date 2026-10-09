@@ -473,6 +473,53 @@ std::string formatSetting(const std::string& name, double value) {
     return text;
 }
 
+std::string formatPercent(double value) {
+    if (!std::isfinite(value)) return "—";
+    char text[32];
+    std::snprintf(text, sizeof(text), "%ld%%", std::lround(value * 100.0));
+    return text;
+}
+
+const char* const kGazeScaleKeys[2][2] = {{key::kGazeScaleLeft, key::kGazeScaleRight},
+                                          {key::kGazeScaleUp, key::kGazeScaleDown}};
+
+int gazeScalePair(const std::string& name) {
+    for (int pair = 0; pair < 2; ++pair) {
+        if (name == kGazeScaleKeys[pair][0] || name == kGazeScaleKeys[pair][1]) return pair;
+    }
+    return -1;
+}
+
+bool gazeScaleLinkShown(bool saved, double first, double second) {
+    return saved && std::isfinite(first) && std::isfinite(second) && std::fabs(first - second) < 1e-9;
+}
+
+std::vector<SettingChange> gazeScaleStep(const SettingsView& view, const std::string& name, int direction,
+                                         bool linked) {
+    const int pair = gazeScalePair(name);
+    const SettingSpec* spec = findSetting(name);
+    if (pair < 0 || spec == nullptr || view.locked(name)) return {};
+    const double current = view.number(name);
+    const double next = stepValue(*spec, current, direction, -1e9, 1e9);
+    const char* own = kGazeScaleKeys[pair][name == kGazeScaleKeys[pair][0] ? 0 : 1];
+    const char* other = kGazeScaleKeys[pair][own == kGazeScaleKeys[pair][0] ? 1 : 0];
+    std::vector<SettingChange> changes;
+    if (std::fabs(next - current) >= 1e-12) changes.push_back({own, JsonValue::makeNumber(next)});
+    if (linked && !view.locked(other) && std::fabs(view.number(other) - next) >= 1e-12) {
+        changes.push_back({other, JsonValue::makeNumber(next)});
+    }
+    return changes;
+}
+
+std::vector<SettingChange> gazeScaleRelink(const SettingsView& view, int pair) {
+    if (pair < 0 || pair > 1) return {};
+    const char* first = kGazeScaleKeys[pair][0];
+    const char* second = kGazeScaleKeys[pair][1];
+    const double value = view.number(first);
+    if (view.locked(second) || !std::isfinite(value) || std::fabs(view.number(second) - value) < 1e-12) return {};
+    return {{second, JsonValue::makeNumber(value)}};
+}
+
 std::string hostOfTarget(const std::string& target) {
     if (target.empty()) return "";
     if (target[0] == '[') {

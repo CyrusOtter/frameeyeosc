@@ -717,6 +717,15 @@ struct UiText {
     const char* lidsLook;  ///< the Eyelids tab's sub-tabs: the look (widening, smoothing, sync)
     const char* lidsBlinks;  ///< ...blinks and squints
     const char* lidsFine;  ///< ...the values by hand
+    const char* gazeMotion;  ///< the Gaze tab's sub-tabs: how the gaze moves (smoothing, deadzone)
+    const char* gazeReach;  ///< ...how far it goes (the gaze scale, each eye on its own)
+    const char* gazeGlitch;  ///< ...guarding against glitches (blinks, unreliable gaze, dropouts)
+    const char* rowGazeScale;  ///< the gaze scale row (gaze_scale_*)
+    const char* hintGazeScale;  ///< ...its hint: after the eye fit, kept by fitting again
+    const char* capScaleLeft;  ///< ...the captions over its four steppers
+    const char* capScaleRight;
+    const char* capScaleUp;
+    const char* capScaleDown;
     const char* lidsNowLabel;  ///< the Eyelids tab (案E): the band at the top of "Look", "now"
     const char* lidsNowBoth;  ///< ...from both cameras
     const char* lidsNowLeft;  ///< ...the left camera, Valve for the right

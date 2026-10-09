@@ -87,6 +87,7 @@ struct Options {
     bool fitDetails = false;      ///< --fit-details: "Fine-tune" open on the Eye fit tab
     int fitDetailsPage = 0;       ///< --fit-details lids: its eyelid page
     std::string lidsPage;         ///< --lids-page (--lid-marks: fine): the Eyelids tab's sub-tab (look, blinks, fine)
+    std::string gazePage;         ///< --gaze-page: the Gaze tab's sub-tab (motion, reach, glitch)
     bool history = false;         ///< --history: the version history open (on the Advanced tab)
     std::string historyOpen;      ///< --history-open: the version whose row is open ("" = the installed one)
     double historyScroll = -1.0;  ///< --history-scroll: px it is scrolled (-1 = as opened)
@@ -136,6 +137,7 @@ struct Options {
     std::string fakeFit;          ///< a made-up eye fit state (see printUsage)
     std::string fakeRecord;       ///< a made-up eye log state: "recording", "failed" or "autostopped"
     std::string fakeWiden;        ///< lid_widen in the made-up config ("" = the default)
+    std::vector<double> fakeGazeScale;  ///< --fake-gaze-scale: gaze_scale_left, _right, _up, _down (empty = defaults)
     std::string fakeEyecam;       ///< a made-up eyecam-rec state (see printUsage and parseFakeEyecam)
     std::string fakeCamera;       ///< --fake-camera: the eye cameras as frameeyeosc reports them (see printUsage)
     std::string fakePassword = "set";  ///< --fake-password: the setup's password check
@@ -234,6 +236,7 @@ void printUsage() {
         "                        or with --fake-eyecam)\n"
         "      --fit-details [gaze|lids]  Open \"Fine-tune\" on the Eye fit tab (default: its gaze page)\n"
         "      --lids-page look|blinks|fine  The Eyelids tab's sub-tab (default look)\n"
+        "      --gaze-page motion|reach|glitch  The Gaze tab's sub-tab (default motion)\n"
         "      --lid-marks       The same as --lids-page fine (the lid marks)\n"
         "      --history         Open the version history (Advanced tab)\n"
         "      --history-open VERSION  ...with this version's row open instead of the installed one\n"
@@ -266,6 +269,8 @@ void printUsage() {
         "      --fake-custom     Gaze smoothing values that match no preset\n"
         "      --fake-independent  Move eyes separately (the left column shows each eye's gaze)\n"
         "      --fake-v1         The eyes move as up to 0.7.5 (eye_behavior 1)\n"
+        "      --fake-gaze-scale L,R,U,D  The gaze scale (gaze_scale_left, _right, _up, _down; 0.25..1.5). A pair whose\n"
+        "                        two values differ shows its lock open\n"
         "      --fake-dominant-eye left|right  \"Track Dominant Eye Only\" is on with that eye\n"
         "      --fake-openness-saturated  A relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through\n"
         "      --fake-prompt vrchat|etvr|livelink  The recommended-settings question\n"
@@ -560,6 +565,13 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.diag = true;
         } else if (arg == "--adv-scroll" && hasNext) {
             options.advScroll = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--gaze-page" && hasNext) {
+            options.gazePage = argv[++i];
+            GazePage page;
+            if (!ui_state::parseGazePage(options.gazePage, page)) {
+                std::fprintf(stderr, "--gaze-page must be motion, reach or glitch: %s\n", options.gazePage.c_str());
+                return false;
+            }
         } else if (arg == "--adv-page" && hasNext) {
             options.advPage = argv[++i];
             AdvPage page;
@@ -676,6 +688,26 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeIndependent = true;
         } else if (arg == "--fake-v1") {
             options.fake = options.fakeV1 = true;
+        } else if (arg == "--fake-gaze-scale" && hasNext) {
+            const std::string value = argv[++i];
+            std::vector<double> scales;
+            size_t start = 0;
+            while (start <= value.size()) {
+                const size_t comma = value.find(',', start);
+                const std::string part = value.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+                char* end = nullptr;
+                const double scale = std::strtod(part.c_str(), &end);
+                if (part.empty() || end == nullptr || *end != '\0' || !(scale >= 0.25 && scale <= 1.5)) break;
+                scales.push_back(scale);
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+            if (scales.size() != 4 || std::count(value.begin(), value.end(), ',') != 3) {
+                std::fprintf(stderr, "--fake-gaze-scale takes four values 0.25..1.5 (L,R,U,D), not %s\n", value.c_str());
+                return false;
+            }
+            options.fake = true;
+            options.fakeGazeScale = scales;
         } else if (arg == "--fake-dominant-eye" && hasNext) {
             options.fakeDominantEye = argv[++i];
             if (options.fakeDominantEye != "left" && options.fakeDominantEye != "right") {
@@ -1281,6 +1313,9 @@ PanelModel fakeModel(const Options& options) {
     if (options.fakeBroken) m.config.error = "expected , or } between members (near character 212)";
     if (options.fakeIndependent) root.set(key::kIndependentEyes, JsonValue::makeBool(true));
     if (options.fakeV1) root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
+    for (size_t i = 0; i < options.fakeGazeScale.size() && i < 4; ++i) {
+        root.set(kGazeScaleKeys[i / 2][i % 2], JsonValue::makeNumber(options.fakeGazeScale[i]));
+    }
     if (options.fakeRecord == "recording") {
         m.recording.recording = true;
         m.recording.elapsedSec = 83.4;
@@ -1742,6 +1777,15 @@ int runDumpPng(const Options& options) {
         panel.setTab(options.tab);
         if (AdvPage page; ui_state::parsePage(options.advPage, page)) panel.setAdvPage(page);
         if (LidsPage page; ui_state::parseLidsPage(options.lidsPage, page)) panel.setLidsPage(page);
+        if (GazePage page; ui_state::parseGazePage(options.gazePage, page)) panel.setGazePage(page);
+        // The gaze scale's locks as at a start with them left closed: open where the two values differ
+        {
+            const SettingsView view(model);
+            for (int pair = 0; pair < 2; ++pair) {
+                panel.setGazeScaleLinked(pair, gazeScaleLinkShown(true, view.number(kGazeScaleKeys[pair][0]),
+                                                                  view.number(kGazeScaleKeys[pair][1])));
+            }
+        }
         if (options.recordsAll) panel.openRecordsAll();
         if (!options.record.empty()) {
             std::string folder = options.record;
@@ -2282,6 +2326,16 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             const SettingSpec* spec = findSetting(hit.key);
             if (spec == nullptr) return;
             const std::string name = hit.key;
+            // The gaze scale: with its pair linked, the other one goes to the same value
+            if (const int pair = gazeScalePair(name); pair >= 0) {
+                const std::vector<SettingChange> changes =
+                    gazeScaleStep(view, name, hit.arg, panel.gazeScaleLinked(pair));
+                if (changes.empty()) return;
+                change = [changes](JsonValue& root) {
+                    for (const SettingChange& c : changes) root.set(c.key, c.value);
+                };
+                break;
+            }
             double current = view.number(name);
             if (name == key::kPort && !std::isfinite(current)) current = view.port();
             if ((name == key::kLidScaleLeft || name == key::kLidScaleRight) && !std::isfinite(current)) {
@@ -2514,7 +2568,20 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::HistoryOpen:
             loadHistory(model);
             return;
+        case PanelAction::GazeScaleLink: {
+            // Closed again: the second value takes the first (right := left, down := up)
+            std::fprintf(stderr, "[action] gaze scale %s %s\n", hit.arg == 0 ? "left / right" : "up / down",
+                         panel.gazeScaleLinked(hit.arg) ? "linked" : "unlinked");
+            if (!panel.gazeScaleLinked(hit.arg)) return;
+            const std::vector<SettingChange> changes = gazeScaleRelink(view, hit.arg);
+            if (changes.empty()) return;
+            change = [changes](JsonValue& root) {
+                for (const SettingChange& c : changes) root.set(c.key, c.value);
+            };
+            break;
+        }
         case PanelAction::AdvancedPage:
+        case PanelAction::GazePage:
         case PanelAction::LidsPage:
         case PanelAction::RecordBack: return;  // handled inside the panel
         case PanelAction::RecordOpen: openRecordView(model, panel.recordShown()); return;
@@ -2897,6 +2964,16 @@ int runOverlay(const Options& options) {
     panel.setAdvPage(savedPage);
     LidsPage savedLidsPage = ui_state::readLidsPage(uiStatePath);
     panel.setLidsPage(savedLidsPage);
+    GazePage savedGazePage = ui_state::readGazePage(uiStatePath);
+    panel.setGazePage(savedGazePage);
+    // The gaze scale's locks as left, but open where the two values differ (a closed lock means they are the same)
+    bool savedLinks[2] = {true, true};
+    ui_state::readGazeScaleLinks(uiStatePath, savedLinks);
+    for (int pair = 0; pair < 2; ++pair) {
+        savedLinks[pair] = gazeScaleLinkShown(savedLinks[pair], model.config.number(kGazeScaleKeys[pair][0]),
+                                              model.config.number(kGazeScaleKeys[pair][1]));
+        panel.setGazeScaleLinked(pair, savedLinks[pair]);
+    }
     model.records.dir = options.reportsDir;
     AutostartWorker autostart;
     autostart.start();
@@ -3560,6 +3637,23 @@ int runOverlay(const Options& options) {
             savedLidsPage = panel.lidsPage();
             std::string error;
             if (!ui_state::writeLidsPage(uiStatePath, savedLidsPage, error)) {
+                std::fprintf(stderr, "[panel] %s\n", error.c_str());
+            }
+        }
+        // ...and the Gaze tab's
+        if (panel.gazePage() != savedGazePage) {
+            savedGazePage = panel.gazePage();
+            std::string error;
+            if (!ui_state::writeGazePage(uiStatePath, savedGazePage, error)) {
+                std::fprintf(stderr, "[panel] %s\n", error.c_str());
+            }
+        }
+        // ...and the gaze scale's locks
+        if (panel.gazeScaleLinked(0) != savedLinks[0] || panel.gazeScaleLinked(1) != savedLinks[1]) {
+            savedLinks[0] = panel.gazeScaleLinked(0);
+            savedLinks[1] = panel.gazeScaleLinked(1);
+            std::string error;
+            if (!ui_state::writeGazeScaleLinks(uiStatePath, savedLinks, error)) {
                 std::fprintf(stderr, "[panel] %s\n", error.c_str());
             }
         }

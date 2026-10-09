@@ -12,6 +12,8 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <utility>
+#include <vector>
 
 namespace ui_state {
 
@@ -20,6 +22,9 @@ namespace {
 /** The members the sub-tabs are kept in. */
 constexpr const char* kPageKey = "advanced_page";
 constexpr const char* kLidsPageKey = "lids_page";
+constexpr const char* kGazePageKey = "gaze_page";
+/** Whether the gaze scale's left / right and up / down are linked (true / false). */
+constexpr const char* kGazeScaleLinkKeys[2] = {"gaze_scale_link_x", "gaze_scale_link_y"};
 
 /**
  * Make a folder and the ones above it.
@@ -53,21 +58,21 @@ JsonValue readObject(const std::string& path) {
 }
 
 /**
- * Set one member of the file (the others are kept; written through a temporary file and rename).
+ * Set members of the file (the others are kept; written through a temporary file and rename).
  * @param path the file (its folder is made if missing)
- * @param key the member
- * @param value its text
+ * @param members the members and their values
  * @param error why it failed
  * @return true if written
  */
-bool writeMember(const std::string& path, const char* key, const char* value, std::string& error) {
+bool writeMembers(const std::string& path, const std::vector<std::pair<const char*, JsonValue>>& members,
+                  std::string& error) {
     const size_t slash = path.find_last_of('/');
     if (slash != std::string::npos && !makeDirs(path.substr(0, slash))) {
         error = "can't create " + path.substr(0, slash) + ": " + std::strerror(errno);
         return false;
     }
     JsonValue root = readObject(path);
-    root.set(key, JsonValue::makeString(value));
+    for (const auto& [key, value] : members) root.set(key, value);
     const std::string text = writeJson(root);
     const std::string temp = path + ".tmp";
     {
@@ -86,6 +91,18 @@ bool writeMember(const std::string& path, const char* key, const char* value, st
         return false;
     }
     return true;
+}
+
+/**
+ * Set one string member of the file (as writeMembers).
+ * @param path the file
+ * @param key the member
+ * @param value its text
+ * @param error why it failed
+ * @return true if written
+ */
+bool writeMember(const std::string& path, const char* key, const char* value, std::string& error) {
+    return writeMembers(path, {{key, JsonValue::makeString(value)}}, error);
 }
 
 }  // namespace
@@ -163,6 +180,52 @@ LidsPage readLidsPage(const std::string& path) {
 
 bool writeLidsPage(const std::string& path, LidsPage page, std::string& error) {
     return writeMember(path, kLidsPageKey, lidsPageName(page), error);
+}
+
+const char* gazePageName(GazePage page) {
+    switch (page) {
+        case GazePage::Motion: return "motion";
+        case GazePage::Reach: return "reach";
+        case GazePage::Glitch: return "glitch";
+    }
+    return "motion";
+}
+
+bool parseGazePage(const std::string& name, GazePage& page) {
+    for (const GazePage p : {GazePage::Motion, GazePage::Reach, GazePage::Glitch}) {
+        if (name == gazePageName(p)) {
+            page = p;
+            return true;
+        }
+    }
+    return false;
+}
+
+GazePage readGazePage(const std::string& path) {
+    const JsonValue root = readObject(path);
+    const JsonValue* value = root.get(kGazePageKey);
+    GazePage page = GazePage::Motion;
+    if (value != nullptr && value->isString()) parseGazePage(value->text, page);
+    return page;
+}
+
+bool writeGazePage(const std::string& path, GazePage page, std::string& error) {
+    return writeMember(path, kGazePageKey, gazePageName(page), error);
+}
+
+void readGazeScaleLinks(const std::string& path, bool linked[2]) {
+    const JsonValue root = readObject(path);
+    for (int pair = 0; pair < 2; ++pair) {
+        const JsonValue* value = root.get(kGazeScaleLinkKeys[pair]);
+        linked[pair] = value == nullptr || !value->isBool() || value->boolean;
+    }
+}
+
+bool writeGazeScaleLinks(const std::string& path, const bool linked[2], std::string& error) {
+    return writeMembers(path,
+                        {{kGazeScaleLinkKeys[0], JsonValue::makeBool(linked[0])},
+                         {kGazeScaleLinkKeys[1], JsonValue::makeBool(linked[1])}},
+                        error);
 }
 
 }  // namespace ui_state

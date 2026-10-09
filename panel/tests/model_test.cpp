@@ -885,7 +885,105 @@ void testUpdateNotes() {
  * Run the tests.
  * @return 0 if all passed
  */
+/**
+ * A model with the gaze scale at these values (and these keys locked by the command line).
+ * @param values left, right, up, down
+ * @param locked keys locked
+ * @return the model
+ */
+PanelModel scaleModel(const double (&values)[4], const std::vector<std::string>& locked = {}) {
+    PanelModel m;
+    m.config.exists = true;
+    m.config.root.type = JsonValue::Type::Object;
+    for (int i = 0; i < 4; ++i) m.config.root.set(kGazeScaleKeys[i / 2][i % 2], JsonValue::makeNumber(values[i]));
+    m.status.present = m.status.running = true;  // (keys are locked only while frameeyeosc runs)
+    m.status.locked = locked;
+    return m;
+}
+
+/**
+ * The value a change list writes for a key.
+ * @param changes the changes
+ * @param name the key
+ * @return it, or NaN if the key isn't written
+ */
+double written(const std::vector<SettingChange>& changes, const char* name) {
+    for (const SettingChange& change : changes) {
+        if (std::string(change.key) == name && change.value.isNumber()) return change.value.number;
+    }
+    return NAN;
+}
+
+/** The gaze scale: shown as percent, its pairs, the locks at start, − / ＋ with the lock closed or open, re-linking. */
+void testGazeScale() {
+    CHECK(formatPercent(1.0) == "100%" && formatPercent(0.25) == "25%" && formatPercent(1.5) == "150%");
+    CHECK(formatPercent(0.95) == "95%" && formatPercent(1.05) == "105%" && formatPercent(0.55) == "55%");
+    CHECK(formatPercent(NAN) == "—");
+    // Its range and step, and the default where the file has none
+    for (const auto& pair : kGazeScaleKeys) {
+        for (const char* name : pair) {
+            const SettingSpec* spec = findSetting(name);
+            CHECK(spec != nullptr && spec->min == 0.25 && spec->max == 1.5 && spec->step == 0.05);
+            CHECK(spec != nullptr && spec->defaultNumber == 1.0);
+        }
+    }
+    PanelModel plain;
+    plain.config.exists = true;
+    plain.config.root.type = JsonValue::Type::Object;
+    CHECK(SettingsView(plain).number(key::kGazeScaleDown) == 1.0);
+    // ...so a file from before it needs nothing done
+    plain.config.root.set(key::kVersion, JsonValue::makeNumber(kConfigVersion, true));
+    plain.config.root.set(key::kLidWiden, JsonValue::makeString("normal"));
+    CHECK(!configNeedsMigration(plain.config.root));
+    // The pairs
+    CHECK(gazeScalePair(key::kGazeScaleLeft) == 0 && gazeScalePair(key::kGazeScaleRight) == 0);
+    CHECK(gazeScalePair(key::kGazeScaleUp) == 1 && gazeScalePair(key::kGazeScaleDown) == 1);
+    CHECK(gazeScalePair(key::kGazeGainUp) == -1);
+    // At start: closed as left, but open while the two differ
+    CHECK(gazeScaleLinkShown(true, 1.0, 1.0) && gazeScaleLinkShown(true, 0.8, 0.8));
+    CHECK(!gazeScaleLinkShown(true, 1.2, 0.9) && !gazeScaleLinkShown(false, 1.0, 1.0));
+    // ＋ on the left, linked: both go to 105%; open: the left alone
+    const PanelModel ones = scaleModel({1.0, 1.0, 1.0, 1.0});
+    const SettingsView view(ones);
+    std::vector<SettingChange> changes = gazeScaleStep(view, key::kGazeScaleLeft, 1, true);
+    CHECK(changes.size() == 2 && std::fabs(written(changes, key::kGazeScaleLeft) - 1.05) < 1e-9 &&
+          std::fabs(written(changes, key::kGazeScaleRight) - 1.05) < 1e-9);
+    changes = gazeScaleStep(view, key::kGazeScaleLeft, 1, false);
+    CHECK(changes.size() == 1 && std::fabs(written(changes, key::kGazeScaleLeft) - 1.05) < 1e-9);
+    // − on the second of a pair, linked, moves the first too
+    changes = gazeScaleStep(view, key::kGazeScaleDown, -1, true);
+    CHECK(changes.size() == 2 && std::fabs(written(changes, key::kGazeScaleUp) - 0.95) < 1e-9 &&
+          std::fabs(written(changes, key::kGazeScaleDown) - 0.95) < 1e-9 && std::isnan(written(changes, key::kGazeScaleLeft)));
+    // At the ends: nothing moves
+    const PanelModel ends = scaleModel({0.25, 0.25, 1.5, 1.5});
+    CHECK(gazeScaleStep(SettingsView(ends), key::kGazeScaleRight, -1, true).empty());
+    CHECK(gazeScaleStep(SettingsView(ends), key::kGazeScaleUp, 1, true).empty());
+    // Linked, with the other one locked by the command line: only the one pressed; the one pressed locked: nothing
+    const PanelModel locked = scaleModel({1.0, 1.0, 1.0, 1.0}, {key::kGazeScaleRight});
+    changes = gazeScaleStep(SettingsView(locked), key::kGazeScaleLeft, 1, true);
+    CHECK(changes.size() == 1 && std::string(changes[0].key) == key::kGazeScaleLeft);
+    CHECK(gazeScaleStep(SettingsView(locked), key::kGazeScaleRight, 1, true).empty());
+    CHECK(gazeScaleStep(view, key::kGazeGainUp, 1, true).empty());
+    // Closing a lock again: the second takes the first (right := left, down := up); nothing when they are the same
+    const PanelModel apart = scaleModel({1.2, 0.9, 0.75, 1.1});
+    changes = gazeScaleRelink(SettingsView(apart), 0);
+    CHECK(changes.size() == 1 && std::fabs(written(changes, key::kGazeScaleRight) - 1.2) < 1e-9);
+    changes = gazeScaleRelink(SettingsView(apart), 1);
+    CHECK(changes.size() == 1 && std::fabs(written(changes, key::kGazeScaleDown) - 0.75) < 1e-9);
+    CHECK(gazeScaleRelink(view, 0).empty() && gazeScaleRelink(view, 1).empty() && gazeScaleRelink(view, 2).empty());
+    CHECK(gazeScaleRelink(SettingsView(scaleModel({1.2, 0.9, 1.0, 1.0}, {key::kGazeScaleRight})), 0).empty());
+    // The eye fit leaves it alone: neither "Reset" nor a fit's values touch it
+    const std::vector<std::string> keys = fitResetKeys();
+    for (const auto& pair : kGazeScaleKeys) {
+        for (const char* name : pair) CHECK(std::find(keys.begin(), keys.end(), name) == keys.end());
+    }
+    JsonValue root = scaleModel({1.2, 0.9, 0.75, 1.1}).config.root;
+    applyFitValues(root, measured(true), gaze_fit::Mode::Full);
+    CHECK(std::fabs(numberIn(root, key::kGazeScaleLeft) - 1.2) < 1e-9 && std::fabs(numberIn(root, key::kGazeScaleDown) - 1.1) < 1e-9);
+}
+
 int main() {
+    testGazeScale();
     testFitResetsScales();
     testResetClearsScales();
     testRecenterDefault();

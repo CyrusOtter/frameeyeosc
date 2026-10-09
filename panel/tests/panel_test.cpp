@@ -772,6 +772,135 @@ void testLidsPages(const FontSet& fonts) {
     }
 }
 
+/**
+ * The usable sub-tab buttons of the Gaze tab as last drawn.
+ * @param panel the panel
+ * @return their args (the pages)
+ */
+std::vector<int> gazeTabs(const EyePanel& panel) {
+    std::vector<int> args;
+    for (const EyePanel::HitArea& area : hits(panel, PanelAction::GazePage)) {
+        if (area.y < 200) args.push_back(area.hit.arg);
+    }
+    return args;
+}
+
+void testGazePages(const FontSet& fonts) {
+    // The Gaze tab's three sub-tabs: each with its own rows and none of the others', everything inside the card
+    // (no scrolling), in both languages, with keys locked by the command line or not, v1 or v2, one eye or both
+    const char* scaleKeys[4] = {key::kGazeScaleLeft, key::kGazeScaleRight, key::kGazeScaleUp, key::kGazeScaleDown};
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const bool locked : {false, true}) {
+            for (const bool v1 : {false, true}) {
+                PanelModel m = modelWith(Lids::Valve, false);
+                m.language = language;
+                if (locked) m.status.locked = {"raw", "independent_eyes", "gaze_hold_below", "gaze_scale_right"};
+                if (v1) m.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
+                if (v1) m.status.dominantEye = "left";
+                EyePanel basic(fonts);
+                basic.render(m);
+                const std::vector<uint8_t> plain = belowCard(basic);
+                EyePanel panel(fonts);
+                panel.setTab(PanelTab::Gaze);
+                for (const GazePage page : {GazePage::Motion, GazePage::Reach, GazePage::Glitch}) {
+                    panel.setGazePage(page);
+                    panel.render(m);
+                    std::vector<int> others;
+                    for (int i = 0; i < 3; ++i) {
+                        if (i != static_cast<int>(page)) others.push_back(i);
+                    }
+                    CHECK(gazeTabs(panel) == others);
+                    const bool motion = page == GazePage::Motion;
+                    const bool reach = page == GazePage::Reach;
+                    const bool glitch = page == GazePage::Glitch;
+                    // Motion: smoothing on / off, the presets, the three values, the deadzone
+                    CHECK(hits(panel, PanelAction::SetBool, key::kRaw).size() == (motion && !locked ? 2u : 0u));
+                    CHECK(hits(panel, PanelAction::Preset).size() == (motion ? 3u : 0u));
+                    for (const char* name : {key::kGazeMinCutoff, key::kGazeBeta, key::kGazeDCutoff, key::kGazeDeadzone}) {
+                        CHECK(hits(panel, PanelAction::Step, name).empty() == !motion);
+                    }
+                    // Reach: the four scales at 100% (both ways), the two locks, moving the eyes separately
+                    for (const char* name : scaleKeys) {
+                        const bool pinned = locked && std::string(name) == key::kGazeScaleRight;
+                        CHECK(hits(panel, PanelAction::Step, name).size() == (reach && !pinned ? 2u : 0u));
+                    }
+                    const std::vector<EyePanel::HitArea> locks = hits(panel, PanelAction::GazeScaleLink);
+                    CHECK(locks.size() == (reach ? (locked ? 1u : 2u) : 0u));
+                    for (const EyePanel::HitArea& area : locks) CHECK(area.w >= 44 && area.h >= 44);
+                    if (reach && locked && locks.size() == 1) CHECK(locks[0].hit.arg == 1);
+                    CHECK(hits(panel, PanelAction::SetBool, key::kIndependentEyes).size() == (reach && !locked ? 2u : 0u));
+                    // Glitch guard: the hold, skipping unreliable gaze, the despike
+                    CHECK(hits(panel, PanelAction::NumberOff, key::kGazeHoldBelow).size() ==
+                          (glitch && !locked ? 1u : 0u));
+                    CHECK(hits(panel, PanelAction::NumberOn, key::kGazeQualityLimit).size() == (glitch ? 1u : 0u));
+                    CHECK(hits(panel, PanelAction::SetBool, key::kDespike).size() == (glitch ? 2u : 0u));
+                    // Every button besides the tab row: inside the card, from the sub-tabs down; nothing below it
+                    for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                        if (area.hit.action == PanelAction::Tab && area.y < 100) continue;
+                        CHECK(area.x >= 400 && area.y >= 110 && area.y + area.h <= 676 && area.x + area.w <= 1176);
+                        if (area.hit.action == PanelAction::Step) CHECK(area.w >= 44 && area.h >= 44);
+                    }
+                    CHECK(belowCard(panel) == plain);
+                }
+            }
+        }
+    }
+}
+
+void testGazeScaleLocks(const FontSet& fonts) {
+    PanelModel m = modelWith(Lids::Valve, false);
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Gaze);
+    panel.render(m);
+    // The first time: "Motion"; the locks closed
+    CHECK(panel.gazePage() == GazePage::Motion && panel.gazeScaleLinked(0) && panel.gazeScaleLinked(1));
+    CHECK((gazeTabs(panel) == std::vector<int> {1, 2}));
+    CHECK(pressArg(panel, PanelAction::GazePage, static_cast<int>(GazePage::Reach)).action == PanelAction::None);
+    CHECK(panel.gazePage() == GazePage::Reach && panel.tab() == PanelTab::Gaze);
+    panel.render(m);
+    // A lock opens and closes in the panel; the press goes on to the caller (which writes the second value)
+    PanelHit hit = pressArg(panel, PanelAction::GazeScaleLink, 0);
+    CHECK(hit.action == PanelAction::GazeScaleLink && hit.arg == 0);
+    CHECK(!panel.gazeScaleLinked(0) && panel.gazeScaleLinked(1));
+    panel.render(m);
+    hit = pressArg(panel, PanelAction::GazeScaleLink, 1);
+    CHECK(hit.action == PanelAction::GazeScaleLink && !panel.gazeScaleLinked(1));
+    panel.render(m);
+    CHECK(pressArg(panel, PanelAction::GazeScaleLink, 0).action == PanelAction::GazeScaleLink);
+    CHECK(panel.gazeScaleLinked(0) && !panel.gazeScaleLinked(1));
+    // Open and closed draw differently (the padlock's shackle)
+    panel.render(m);
+    const std::vector<uint8_t> closed = panel.toRgba();
+    panel.setGazeScaleLinked(0, false);
+    panel.render(m);
+    CHECK(panel.toRgba() != closed);
+    // − / ＋ go to the caller as Step on their own key
+    const std::vector<EyePanel::HitArea> plus = hits(panel, PanelAction::Step, key::kGazeScaleUp);
+    CHECK(plus.size() == 2 && plus[0].hit.arg == -1 && plus[1].hit.arg == 1);
+    // 100% shows as "100%"; at 25% only ＋ can be pressed
+    m.config.root.set(key::kGazeScaleDown, JsonValue::makeNumber(0.25));
+    panel.render(m);
+    const std::vector<EyePanel::HitArea> down = hits(panel, PanelAction::Step, key::kGazeScaleDown);
+    CHECK(down.size() == 1 && down[0].hit.arg == 1);
+    // Kept while another tab shows, shown again when the tab is chosen again; the Eyelids tab's sub-tab is its own
+    pressTab(panel, PanelTab::Basic);
+    panel.render(m);
+    CHECK(gazeTabs(panel).empty() && panel.gazePage() == GazePage::Reach && !panel.gazeScaleLinked(0));
+    pressTab(panel, PanelTab::Lids);
+    panel.render(m);
+    pressArg(panel, PanelAction::LidsPage, static_cast<int>(LidsPage::Fine));
+    CHECK(panel.lidsPage() == LidsPage::Fine && panel.gazePage() == GazePage::Reach);
+    pressTab(panel, PanelTab::Gaze);
+    CHECK(panel.tab() == PanelTab::Gaze && panel.gazePage() == GazePage::Reach);
+    // As remembered from before (the caller sets it at start)
+    EyePanel next(fonts);
+    next.setGazePage(GazePage::Glitch);
+    next.setTab(PanelTab::Gaze);
+    next.render(m);
+    CHECK((gazeTabs(next) == std::vector<int> {0, 1}));
+    CHECK(hits(next, PanelAction::SetBool, key::kDespike).size() == 2);
+}
+
 void testLidsRemembered(const FontSet& fonts) {
     const PanelModel m = modelWith(Lids::Valve, false);
     EyePanel panel(fonts);
@@ -1533,6 +1662,8 @@ int main() {
     testSnapMark(fonts);
     testEyeBehavior(fonts);
     testLidsRemembered(fonts);
+    testGazePages(fonts);
+    testGazeScaleLocks(fonts);
     testSliderMoved(fonts);
     testNumberSlider(fonts);
     testPupilBitsRow(fonts);

@@ -101,6 +101,11 @@ constexpr const char* kGazeOffsetXLeft = "gaze_offset_x_left";
 constexpr const char* kGazeOffsetXRight = "gaze_offset_x_right";
 constexpr const char* kGazeGainXLeft = "gaze_gain_x_left";
 constexpr const char* kGazeGainXRight = "gaze_gain_x_right";
+/** The user's own multipliers on how far the gaze goes each way, after the eye fit (which never changes them). */
+constexpr const char* kGazeScaleLeft = "gaze_scale_left";
+constexpr const char* kGazeScaleRight = "gaze_scale_right";
+constexpr const char* kGazeScaleUp = "gaze_scale_up";
+constexpr const char* kGazeScaleDown = "gaze_scale_down";
 constexpr const char* kGazeDebugDots = "gaze_debug_dots";
 /** The panel's own: how far ahead the debug gaze dots are (m; frameeyeosc ignores it). */
 constexpr const char* kGazeDebugDotsDistanceM = "gaze_debug_dots_distance_m";
