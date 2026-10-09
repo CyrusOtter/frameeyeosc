@@ -248,6 +248,19 @@ const VALVE_WIDEN_FADE: f32 = 0.1;
 const CAMERA_OUTWARD_DEG: f32 = 15.0;
 const CAMERA_OUTWARD_SHUT: f32 = 0.5;
 const CAMERA_OUTWARD_SHUT_RECENT: f64 = 0.15;
+// The camera's eyelid wobbles by 0.1-0.4 at 2-3 times a second while the eye is open (the right eye on 2026-10-09 15:23:
+// median 0.68, p10-p90 0.32-0.75), and an eyelid raised to it (raised_to_camera) followed every wobble: that eye went out
+// between 0.55 and 0.70 for 40 s of 105, trembling. So the eye server's eyelid is raised to the camera's highest over
+// the last CAMERA_RAISE_PEAK_S instead (RaisePeak), and to the camera's own one again from the moment the camera sees
+// the eye closed or the eye server reads it below CAMERA_RAISE_SHUT, so a blink or wink goes as before. Only the
+// raising: where the camera's eyelid stands for the eye's (CameraOpen, the ceiling, widening) it is the camera's own.
+// Replayed over eleven recordings and fourteen eye videos: that right eye partly closed (0.25-0.72 while the eye server
+// read 0.8 or more) 19.9 -> 12.6 s of 105, its change from sample to sample while open 0.0041 -> 0.0024 (all
+// recordings 0.0022 -> 0.0017 for the right eye, 0.0025 -> 0.0020 for the left); blinks and winks the same (1817 ->
+// 1815 and 1453 -> 1452 sent below 0.3, from the same sample, p90 22 ms either way). Averaging instead (0.1-0.3 s)
+// kept the wobble's low points: 15-50% more time partly closed.
+const CAMERA_RAISE_PEAK_S: f64 = 0.3;
+const CAMERA_RAISE_SHUT: f32 = 0.5;
 // The camera's own eyelid goes nearly to 0 in a hard squint (0.00-0.06 with its squint at 1.0 on 2026-10-07), which
 // looks closed on an avatar, so an eye the camera sees open is held at --camera-lid-floor (camera_lid_floor) and the
 // squint parameter carries the rest; see Smoother::check_lids for when.
@@ -700,6 +713,8 @@ struct Smoother {
     camera_gap: [CameraGap; 2],
     // The camera's "closed" doubted while looking outward (see CAMERA_OUTWARD_DEG).
     outward: OutwardCheck,
+    // The camera's eyelid the eye server's is raised to (see CAMERA_RAISE_PEAK_S).
+    raise_peak: RaisePeak,
 }
 
 impl Smoother {
@@ -724,6 +739,7 @@ impl Smoother {
             ceiling_since: [None; 2],
             camera_gap: [CameraGap::default(); 2],
             outward: OutwardCheck::default(),
+            raise_peak: RaisePeak::default(),
         }
     }
 
@@ -827,6 +843,7 @@ impl Smoother {
         self.ceiling_since = [None; 2];
         self.camera_gap = [CameraGap::default(); 2];
         self.outward = OutwardCheck::default();
+        self.raise_peak = RaisePeak::default();
     }
 
     /// Start over what only --eye-behavior 2 keeps (the camera's eyelid's doubt and gaps, the ceiling rule, the
@@ -837,6 +854,7 @@ impl Smoother {
         self.cross_eye = CrossEye::default();
         self.camera_gap = [CameraGap::default(); 2];
         self.outward = OutwardCheck::default();
+        self.raise_peak = RaisePeak::default();
     }
 
     /// Each eye's camera eyelid at `time` with its short gaps bridged, and the one held through a gap (see
@@ -860,7 +878,7 @@ impl Smoother {
     /// ceiling_share; for CEILING_JUMP) is lowered toward the camera's eyelid where that is clearly narrowed (see
     /// lowered_at_ceiling); the agreeing above goes by the eye server's reading all the same, so a jump to 1.000 during
     /// a squint counts as before. Otherwise an eye the eye server reads open but below relaxed open goes no lower than
-    /// the camera's eyelid (see raised_to_camera).
+    /// the camera's eyelid (see raised_to_camera), or `raise_to` where given (RaisePeak).
     fn check_lids(
         &mut self,
         time: f64,
@@ -868,6 +886,7 @@ impl Smoother {
         mapped: [f32; 2],
         ceiling: [f32; 2],
         camera: [Option<CameraLid>; 2],
+        raise_to: [Option<f32>; 2],
         settings: &Settings,
     ) -> ([f32; 2], [LidFrom; 2], [bool; 2]) {
         let line = doubt_line(settings);
@@ -925,7 +944,7 @@ impl Smoother {
                     from[eye] = LidFrom::CameraAtCeiling;
                     lid
                 } else {
-                    let (lid, raised) = raised_to_camera(lid, camera.lid, line);
+                    let (lid, raised) = raised_to_camera(lid, raise_to[eye].unwrap_or(camera.lid), line);
                     if raised {
                         from[eye] = LidFrom::CameraRaised;
                     }
@@ -1168,6 +1187,33 @@ impl OutwardCheck {
             } else {
                 Some(lid)
             }
+        })
+    }
+}
+
+/// The camera's eyelid to raise the eye server's to, per eye (see CAMERA_RAISE_PEAK_S): the highest of the last
+/// CAMERA_RAISE_PEAK_S of open eyelids, forgotten whenever the camera sees the eye closed or the eye server reads it
+/// below CAMERA_RAISE_SHUT; through a gap in the camera's values, what is left of them.
+#[derive(Clone, Debug, Default)]
+struct RaisePeak {
+    recent: [VecDeque<(f64, f32)>; 2],
+}
+
+impl RaisePeak {
+    /// At `time`, with the eye server's `openness` and the camera's eyelids (`camera`): the eyelid each eye is raised
+    /// to, None where there is none (the camera's own then).
+    fn step(&mut self, time: f64, openness: [f32; 2], camera: [Option<CameraLid>; 2]) -> [Option<f32>; 2] {
+        std::array::from_fn(|eye| {
+            let recent = &mut self.recent[eye];
+            match camera[eye] {
+                Some(lid) if lid.closed || openness[eye] < CAMERA_RAISE_SHUT => recent.clear(),
+                Some(lid) => recent.push_back((time, lid.lid)),
+                None => {}
+            }
+            while recent.front().is_some_and(|(at, _)| time - at > CAMERA_RAISE_PEAK_S || *at > time) {
+                recent.pop_front();
+            }
+            recent.iter().map(|(_, lid)| *lid).reduce(f32::max)
         })
     }
 }
@@ -2722,6 +2768,7 @@ fn process(
         // After advance(), which starts the smoothing over after a gap
         let (camera_lids, camera) = smoother.camera.take(settings, camera, true);
         let camera_lids = outward_checked(smoother, data, camera_lids, v2);
+        let raise_to = if v2 { smoother.raise_peak.step(data.sample_time, data.openness, camera_lids) } else { [None; 2] };
         // With --eye-behavior 2 short gaps in the camera's eyelid are bridged (see CAMERA_GAP_HOLD)
         let (camera_lids, held) =
             if v2 { smoother.steady_camera(data.sample_time, camera_lids) } else { (camera_lids, [None; 2]) };
@@ -2771,14 +2818,14 @@ fn process(
         let at_ceiling = ceiling_eyes(settings, saturated);
         let ceiling = [0, 1].map(|eye| if at_ceiling[eye] { ceiling_share(openness[eye]) } else { 0.0 });
         let (mapped, mut lid_from, floored) = if v2 {
-            smoother.check_lids(data.sample_time, dt, mapped, ceiling, camera_lids, settings)
+            smoother.check_lids(data.sample_time, dt, mapped, ceiling, camera_lids, raise_to, settings)
         } else {
             (mapped, [LidFrom::EyeServer; 2], [false; 2])
         };
         // Through a short gap in the camera's eyelid, the eye server's is still raised to the camera's last one
         let mapped = [0, 1].map(|eye| match held[eye] {
             Some(camera) => {
-                let (lid, raised) = raised_to_camera(mapped[eye], camera, doubt_line(settings));
+                let (lid, raised) = raised_to_camera(mapped[eye], raise_to[eye].unwrap_or(camera), doubt_line(settings));
                 if raised {
                     lid_from[eye] = LidFrom::CameraRaised;
                 }
@@ -7349,6 +7396,47 @@ mod tests {
         check.step(2.0, [0.3, 0.9], [20.0; 2], [None; 2]);
         assert_eq!(check.step(2.1, [0.9; 2], [20.0; 2], [lid(0.0, true); 2]), [lid(0.0, true), lid(0.7, false)]);
         assert_eq!(check.step(2.2, [0.9; 2], [20.0; 2], [lid(0.0, true), None]), [lid(0.62, false), None]);
+    }
+
+    #[test]
+    fn the_raise_peak_keeps_the_cameras_highest_open_eyelid_of_the_last_0_3_s() {
+        let lid = |lid: f32, closed: bool| Some(CameraLid { lid, closed, frame: 0.011 });
+        let mut peak = RaisePeak::default();
+        assert_eq!(peak.step(1.0, [0.9; 2], [lid(0.7, false), None]), [Some(0.7), None]);
+        assert_eq!(peak.step(1.1, [0.9; 2], [lid(0.4, false), None]), [Some(0.7), None]);
+        assert_eq!(peak.step(1.29, [0.9; 2], [lid(0.5, false), None]), [Some(0.7), None]);
+        // 0.7 is 0.31 s old: gone
+        assert_eq!(peak.step(1.31, [0.9; 2], [lid(0.45, false), None]), [Some(0.5), None]);
+        // Through a gap, what is left
+        assert_eq!(peak.step(1.35, [0.9; 2], [None; 2]), [Some(0.5), None]);
+        assert_eq!(peak.step(1.65, [0.9; 2], [None; 2]), [None; 2]);
+        // Forgotten when the camera sees the eye closed, or the eye server reads it shut (that eye only)
+        peak.step(2.0, [0.9; 2], [lid(0.7, false); 2]);
+        assert_eq!(peak.step(2.01, [0.9; 2], [lid(0.0, true), lid(0.3, false)]), [None, Some(0.7)]);
+        assert_eq!(peak.step(2.02, [0.9, 0.4], [lid(0.3, false); 2]), [Some(0.3), None]);
+    }
+
+    #[test]
+    fn an_eyelid_raised_to_a_wobbling_camera_does_not_tremble_and_still_blinks() {
+        let settings = camera_settings();
+        // The eye server reads the left eye open but low; the camera's eyelid wobbles between 0.72 and 0.42 three times
+        // a second; a blink at samples 200-209
+        let openness = |i: usize| if (200..209).contains(&i) { [0.05; 2] } else { [0.6, 0.9] };
+        let cameras = |i: usize| {
+            let wobble = if (i / 15) % 2 == 0 { 0.72 } else { 0.42 };
+            Some(camera_eyes([(wobble, 0.0, false), (0.75, 0.0, false)]))
+        };
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 3.0, openness, cameras);
+        let steady: Vec<f32> = sent[100..195].iter().map(|sample| sample.lids[0]).collect();
+        let (lo, hi) = steady.iter().fold((1.0f32, 0.0f32), |(lo, hi), lid| (lo.min(*lid), hi.max(*lid)));
+        assert!(hi - lo < 0.02 && lo > 0.68, "{lo} - {hi}");
+        assert!(sent[100..195].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraRaised));
+        // The blink closes from its first sample through the 3-sample median, as without the camera
+        assert!(sent[201..210].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", sent[201].lids);
+        let mut alone = Smoother::new(&settings);
+        let without = camera_samples(&settings, &mut alone, 100.0, 3.0, openness, |_| None);
+        assert!(without[201..210].iter().all(|sample| sample.lids == [0.0; 2]));
     }
 
     #[test]
