@@ -7530,6 +7530,28 @@ mod tests {
     }
 
     #[test]
+    fn a_few_low_camera_readings_at_a_jump_to_the_ceiling_make_no_dip() {
+        let settings = Settings {
+            lid_sync: 0.0,
+            ..camera_settings()
+        };
+        // The right eye's reading goes between 0.9 and 1.000 every 5 samples; the camera sees it relaxed open but for
+        // three low readings (33 ms) at the jump at sample 95 (it went down to 0.37 when the rule took the camera's own),
+        // and narrowed from sample 130 on
+        let openness = |i: usize| if i % 10 < 5 { [1.0, 0.9] } else { [1.0; 2] };
+        let cameras = |i: usize| {
+            let right = if (95..98).contains(&i) || i >= 130 { 0.3 } else { LID_RELAXED };
+            Some(camera_eyes([(LID_RELAXED, 0.0, false), (right, 0.0, false)]))
+        };
+        let mut smoother = saturated_smoother(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 2.0, openness, cameras);
+        let low = sent[90..125].iter().map(|sample| sample.lids[1]).fold(1.0f32, f32::min);
+        assert!(low > 0.65, "{low}");
+        // Held narrowed past CAMERA_RAISE_PEAK_S, a jump is lowered to it as before
+        assert!(sent[165..180].iter().any(|sample| sample.lid_from[1] == LidFrom::CameraAtCeiling && sample.lids[1] < 0.5), "{:?}", sent[170].lids);
+    }
+
+    #[test]
     fn a_jump_to_the_ceiling_keeps_the_cameras_half_closed_eyelid() {
         let settings = Settings {
             lid_sync: 0.0,
