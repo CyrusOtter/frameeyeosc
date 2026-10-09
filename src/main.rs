@@ -239,15 +239,28 @@ const VALVE_WIDEN_FADE: f32 = 0.1;
 // recordings of 2026-10-08/09 (81 minutes) the left eye went out closed for 231 s in 1114 stretches while the eye
 // server read both eyes open, 22 of them 2 s or longer (31 s at most). eyecam-rec no longer does (its EDGE_LOST_PX), but
 // as a safety net (an older eyecam-rec, a face that shades differently): while the eye server reads an eye looking more
-// than CAMERA_OUTWARD_DEG outward, the camera's "closed" for that eye is taken as its last open eyelid, unless the eye
-// server read that same eye below CAMERA_OUTWARD_SHUT within CAMERA_OUTWARD_SHUT_RECENT (a blink, a wink). Only that
-// eye: on 2026-10-09 15:23 the left eye's winks while looking right let the right eye's false close through for 3.3 s
-// when either eye counted. See OutwardCheck. Replayed: the left eye 40 s in 538 stretches (0.2 s at most), the right
-// eye 60 s (not looking outward, as before), the 15:23 right look's right eye 9.0 -> 0.8 s; blinks sent below 0.3
-// 1814 -> 1817 (left) and 1454 -> 1453 (right) of 2094 / 1687, winks the same.
-const CAMERA_OUTWARD_DEG: f32 = 15.0;
-const CAMERA_OUTWARD_SHUT: f32 = 0.5;
-const CAMERA_OUTWARD_SHUT_RECENT: f64 = 0.15;
+// than CAMERA_SIDE_DEG to the side, the camera's "closed" for that eye is taken as its last open eyelid, unless the eye
+// server read that same eye below CAMERA_SIDE_SHUT within CAMERA_SIDE_SHUT_RECENT (a blink, a wink). Only that eye: on
+// 2026-10-09 15:23 the left eye's winks while looking right let the right eye's false close through for 3.3 s when
+// either eye counted. Replayed: the left eye 40 s in 538 stretches (0.2 s at most), the right eye 60 s (not looking
+// outward, as before), the 15:23 right look's right eye 9.0 -> 0.8 s; blinks sent below 0.3 1814 -> 1817 (left) and
+// 1454 -> 1453 (right) of 2094 / 1687, winks the same.
+// Inward too: on 2026-10-09 18:34 (the headset worn deeper) the right eye turned 30 degrees inward lost its pupil well
+// before the lens-edge band (its last one 27-54 px from it, the lids 0.95-1.26 iris radii apart, as narrow as a closing
+// eye's there), and eyecam-rec read it closed for 0.88, 0.33 and 0.52 s while the eye server read both eyes open.
+// A blink the eye server reads in the other eye only (it read the eye in question 0.64-0.86 through three blinks on
+// 2026-10-09 18:17 while the camera saw it shut for 0.09-0.13 s) still closes: the camera's "closed" goes through while
+// it began within CAMERA_SIDE_BLINK_SYNC of the other eye's closing, for at most CAMERA_SIDE_BLINK_MAX from its start,
+// and only while the other eye's closing has lasted no longer than that (a wink is longer). See SideCheck.
+// Replayed (fourteen recordings, seventeen eye videos): looking inward, false closes 31.0 -> 0.1 s (right) and 2.0 -> 0.1 s
+// (left), the videos' 7.3 / 3.3 s -> 0; 18:34's right eye 1.06 / 0.41 / 0.62 -> 0 s; 18:17's three blinks back
+// (0.11-0.13 s each). A long false close that starts with the other eye's closing still goes out for its first
+// CAMERA_SIDE_BLINK_MAX (15:23: three of 1.1-2.6 s went out for 0.31-0.39 s).
+const CAMERA_SIDE_DEG: f32 = 15.0;
+const CAMERA_SIDE_SHUT: f32 = 0.5;
+const CAMERA_SIDE_SHUT_RECENT: f64 = 0.15;
+const CAMERA_SIDE_BLINK_SYNC: f64 = 0.15;
+const CAMERA_SIDE_BLINK_MAX: f64 = 0.3;
 // The camera's eyelid wobbles by 0.1-0.4 at 2-3 times a second while the eye is open (the right eye on 2026-10-09 15:23:
 // median 0.68, p10-p90 0.32-0.75), and an eyelid raised to it (raised_to_camera) followed every wobble: that eye went out
 // between 0.55 and 0.70 for 40 s of 105, trembling. So the eye server's eyelid is raised to the camera's highest over
@@ -715,8 +728,8 @@ struct Smoother {
     ceiling_since: [Option<f64>; 2],
     // Per eye: the camera's eyelid held through short gaps (see CAMERA_GAP_HOLD).
     camera_gap: [CameraGap; 2],
-    // The camera's "closed" doubted while looking outward (see CAMERA_OUTWARD_DEG).
-    outward: OutwardCheck,
+    // The camera's "closed" doubted while looking to the side (see CAMERA_SIDE_DEG).
+    side: SideCheck,
     // The camera's eyelid the eye server's is raised to (see CAMERA_RAISE_PEAK_S).
     raise_peak: RaisePeak,
 }
@@ -742,7 +755,7 @@ impl Smoother {
             lid_doubt: [LidDoubt::default(); 2],
             ceiling_since: [None; 2],
             camera_gap: [CameraGap::default(); 2],
-            outward: OutwardCheck::default(),
+            side: SideCheck::default(),
             raise_peak: RaisePeak::default(),
         }
     }
@@ -846,7 +859,7 @@ impl Smoother {
         self.lid_doubt = [LidDoubt::default(); 2];
         self.ceiling_since = [None; 2];
         self.camera_gap = [CameraGap::default(); 2];
-        self.outward = OutwardCheck::default();
+        self.side = SideCheck::default();
         self.raise_peak = RaisePeak::default();
     }
 
@@ -857,7 +870,7 @@ impl Smoother {
         self.ceiling_since = [None; 2];
         self.cross_eye = CrossEye::default();
         self.camera_gap = [CameraGap::default(); 2];
-        self.outward = OutwardCheck::default();
+        self.side = SideCheck::default();
         self.raise_peak = RaisePeak::default();
     }
 
@@ -1157,19 +1170,25 @@ impl CameraGap {
     }
 }
 
-/// The eye camera's "closed" doubted for an eye that looks far outward (see CAMERA_OUTWARD_DEG).
+/// The eye camera's "closed" doubted for an eye that looks far to the side (see CAMERA_SIDE_DEG).
 #[derive(Clone, Copy, Debug, Default)]
-struct OutwardCheck {
-    // When the eye server last read each eye below CAMERA_OUTWARD_SHUT.
+struct SideCheck {
+    // Per eye: when the eye server last read it below CAMERA_SIDE_SHUT, since when it has (or last had) in a row, and
+    // whether it did at the last sample.
     shut_at: [Option<f64>; 2],
+    shut_since: [Option<f64>; 2],
+    shut: [bool; 2],
+    // Per eye: since when the camera has read it closed.
+    closed_since: [Option<f64>; 2],
     // Each eye's last camera eyelid that was not closed.
     open_lid: [Option<f32>; 2],
 }
 
-impl OutwardCheck {
+impl SideCheck {
     /// At `time`, with the eye server's `openness` and how far each eye looks outward (`outward_deg`, see
-    /// outward_degrees): the camera's eyelids as read (`camera`), with a "closed" of an eye looking outward that the eye
-    /// server has not read shut lately turned into that eye's last open one (relaxed open if there was none).
+    /// outward_degrees; inward is negative): the camera's eyelids as read (`camera`), with a "closed" of an eye looking
+    /// to the side turned into that eye's last open one (relaxed open if there was none), unless the eye server read
+    /// that eye shut lately or the other eye closing with it in a blink (see CAMERA_SIDE_BLINK_SYNC).
     fn step(
         &mut self,
         time: f64,
@@ -1177,21 +1196,50 @@ impl OutwardCheck {
         outward_deg: [f32; 2],
         camera: [Option<CameraLid>; 2],
     ) -> [Option<CameraLid>; 2] {
-        std::array::from_fn(|eye| {
-            if openness[eye] < CAMERA_OUTWARD_SHUT {
+        for eye in 0..2 {
+            let shut = openness[eye] < CAMERA_SIDE_SHUT;
+            if shut {
+                if !self.shut[eye] {
+                    self.shut_since[eye] = Some(time);
+                }
                 self.shut_at[eye] = Some(time);
             }
-            let shut = self.shut_at[eye].is_some_and(|at| time - at <= CAMERA_OUTWARD_SHUT_RECENT);
+            self.shut[eye] = shut;
+            match camera[eye] {
+                Some(lid) if lid.closed => {
+                    self.closed_since[eye].get_or_insert(time);
+                }
+                _ => self.closed_since[eye] = None,
+            }
+        }
+        std::array::from_fn(|eye| {
             let lid = camera[eye]?;
             if !lid.closed {
                 self.open_lid[eye] = Some(lid.lid);
-                Some(lid)
-            } else if outward_deg[eye] > CAMERA_OUTWARD_DEG && !shut {
+                return Some(lid);
+            }
+            let shut = self.shut_at[eye].is_some_and(|at| time - at <= CAMERA_SIDE_SHUT_RECENT);
+            if outward_deg[eye].abs() > CAMERA_SIDE_DEG && !shut && !self.blink_with_other(eye, time) {
                 Some(CameraLid { lid: self.open_lid[eye].unwrap_or(LID_RELAXED), closed: false, ..lid })
             } else {
                 Some(lid)
             }
         })
+    }
+
+    /// Whether `eye`'s camera "closed" at `time` goes with a blink the eye server reads in the other eye: it began within
+    /// CAMERA_SIDE_BLINK_SYNC of the other eye's closing, CAMERA_SIDE_BLINK_MAX ago at most, and the other eye's closing
+    /// has lasted no longer than that.
+    fn blink_with_other(&self, eye: usize, time: f64) -> bool {
+        let other = 1 - eye;
+        let (Some(closed), Some(start), Some(last)) = (self.closed_since[eye], self.shut_since[other], self.shut_at[other])
+        else {
+            return false;
+        };
+        let end = if self.shut[other] { time } else { last };
+        time - closed <= CAMERA_SIDE_BLINK_MAX
+            && (start - closed).abs() <= CAMERA_SIDE_BLINK_SYNC
+            && end - start <= CAMERA_SIDE_BLINK_MAX
     }
 }
 
@@ -2720,7 +2768,7 @@ fn process(
     let mut cross_eye = false;
     let (gaze, lids, gaze_held, openness_scaled, camera, lid_from) = if settings.raw {
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
-        let camera_lids = outward_checked(smoother, data, camera_lids, v2);
+        let camera_lids = side_checked(smoother, data, camera_lids, v2);
         let corrected = correct_gaze(raw_gaze, settings);
         let gaze = choose_gaze(corrected, [true; 2], settings.independent_eyes, v2);
         let zoned = camera_lids.map(|camera| v2 && camera.is_none());
@@ -2771,7 +2819,7 @@ fn process(
         let dt = smoother.advance(data.sample_time);
         // After advance(), which starts the smoothing over after a gap
         let (camera_lids, camera) = smoother.camera.take(settings, camera, true);
-        let camera_lids = outward_checked(smoother, data, camera_lids, v2);
+        let camera_lids = side_checked(smoother, data, camera_lids, v2);
         let raise_to = if v2 { smoother.raise_peak.step(data.sample_time, data.openness, camera_lids) } else { [None; 2] };
         // With --eye-behavior 2 short gaps in the camera's eyelid are bridged (see CAMERA_GAP_HOLD)
         let (camera_lids, held) =
@@ -2900,15 +2948,15 @@ fn process(
     }
 }
 
-/// The camera's eyelids with a "closed" while looking outward doubted (OutwardCheck); with --eye-behavior 1 (`v2` false)
+/// The camera's eyelids with a "closed" while looking to the side doubted (SideCheck); with --eye-behavior 1 (`v2` false)
 /// as read.
-fn outward_checked(
+fn side_checked(
     smoother: &mut Smoother,
     data: &EyeData,
     camera: [Option<CameraLid>; 2],
     v2: bool,
 ) -> [Option<CameraLid>; 2] {
-    if v2 { smoother.outward.step(data.sample_time, data.openness, outward_degrees(data), camera) } else { camera }
+    if v2 { smoother.side.step(data.sample_time, data.openness, outward_degrees(data), camera) } else { camera }
 }
 
 /// The eyelids with the eye camera's widening mixed in (`camera`, each eye's camera eyelid while it may be used), from
@@ -7325,56 +7373,59 @@ mod tests {
         assert!(slow[91..127].iter().all(|sample| sample.lids[0] == 0.0 && sample.lid_from[0] == LidFrom::EyeServer));
     }
 
+    /// 4 s of samples with both eyes looking `left_deg` to the left (the left eye outward), the eye server reading each
+    /// eye shut over `shut[eye]` (else 0.9), and the camera seeing the left eye closed over `cam` (else at 0.6).
+    fn side_samples(
+        settings: &Settings,
+        left_deg: f32,
+        shut: [std::ops::Range<usize>; 2],
+        cam: std::ops::Range<usize>,
+    ) -> Vec<Sample> {
+        let mut smoother = Smoother::new(settings);
+        let direction = [-left_deg.to_radians().tan(), 0.0, -1.0];
+        (0..360)
+            .map(|i| {
+                let data = EyeData {
+                    sample_time: 100.0 + i as f64 / 90.0,
+                    gaze: [direction; 2],
+                    fixation_point: direction,
+                    openness: [0, 1].map(|eye| if shut[eye].contains(&i) { 0.1 } else { 0.9 }),
+                    ..EyeData::default()
+                };
+                let closed = cam.contains(&i);
+                let camera = camera_eyes([(if closed { 0.0 } else { 0.6 }, 0.0, closed), (0.75, 0.0, false)]);
+                process(settings, &mut smoother, [1.0; 2], &data, Some(&camera))
+            })
+            .collect()
+    }
+
     #[test]
-    fn the_cameras_closed_is_doubted_while_looking_outward() {
+    fn the_cameras_closed_is_doubted_while_looking_to_the_side() {
         let settings = camera_settings();
-        // Both eyes looking `left_deg` to the left (the left eye outward), the eye server reading them open except for
-        // `shut` samples (both eyes, or only the right one with `right_only`); the camera sees the left eye closed from
-        // sample 90 to 270 (2 s)
-        let run = |left_deg: f32, shut: std::ops::Range<usize>, right_only: bool| {
-            let mut smoother = Smoother::new(&settings);
-            let direction = [-left_deg.to_radians().tan(), 0.0, -1.0];
-            (0..360)
-                .map(|i| {
-                    let openness = match (shut.contains(&i), right_only) {
-                        (false, _) => [0.9; 2],
-                        (true, false) => [0.1; 2],
-                        (true, true) => [0.9, 0.1],
-                    };
-                    let data = EyeData {
-                        sample_time: 100.0 + i as f64 / 90.0,
-                        gaze: [direction; 2],
-                        fixation_point: direction,
-                        openness,
-                        ..EyeData::default()
-                    };
-                    let closed = (90..270).contains(&i);
-                    let camera = camera_eyes([(if closed { 0.0 } else { 0.6 }, 0.0, closed), (0.75, 0.0, false)]);
-                    process(&settings, &mut smoother, [1.0; 2], &data, Some(&camera))
-                })
-                .collect::<Vec<_>>()
-        };
+        let run = |deg: f32, shut: [std::ops::Range<usize>; 2]| side_samples(&settings, deg, shut, 90..270);
         // gaze_angles' x is positive to the right: looking left is the left eye outward, the right eye inward
         let left = EyeData { gaze: [[-(25f32.to_radians().tan()), 0.0, -1.0]; 2], ..EyeData::default() };
         assert!(gaze_angles(left.gaze[0])[0] < 0.0);
         assert_eq!(outward_degrees(&left).map(f32::round), [25.0, -25.0]);
-        // 25° outward: the camera's last open eyelid instead
-        let sent = run(25.0, 0..0, false);
-        assert!(sent[90..270].iter().all(|sample| sample.lids[0] > 0.5 && sample.lid_from[0] != LidFrom::CameraClosed), "{:?}", sent[100].lids);
-        // Straight ahead, 10°, or looking right (the left eye inward): closed, as before
-        for deg in [0.0, 10.0, -25.0] {
-            let sent = run(deg, 0..0, false);
+        // 25° outward or inward: the camera's last open eyelid instead
+        for deg in [25.0, -25.0] {
+            let sent = run(deg, [0..0, 0..0]);
+            assert!(sent[90..270].iter().all(|sample| sample.lids[0] > 0.5 && sample.lid_from[0] != LidFrom::CameraClosed), "{deg}: {:?}", sent[100].lids);
+        }
+        // Straight ahead or 10° to the side: closed, as before
+        for deg in [0.0, 10.0, -10.0] {
+            let sent = run(deg, [0..0, 0..0]);
             assert!(sent[90..270].iter().all(|sample| sample.lids[0] == 0.0), "{deg}: {:?}", sent[100].lids);
             assert_eq!(sent[90].lid_from[0], LidFrom::CameraClosed, "{deg}");
         }
-        // A blink while looking outward (the eye server reading both eyes shut) still closes, and for
-        // CAMERA_OUTWARD_SHUT_RECENT after it the camera's closed stands
-        let sent = run(25.0, 150..160, false);
+        // A blink the eye server reads in that eye still closes, and for CAMERA_SIDE_SHUT_RECENT after it the camera's
+        // closed stands
+        let sent = run(25.0, [150..160, 150..160]);
         assert!(sent[151..161].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", sent[155].lids);
         assert!(sent[161..173].iter().all(|sample| sample.lids[0] == 0.0), "{:?}", sent[170].lids);
         assert!(sent[200..270].iter().all(|sample| sample.lids[0] > 0.5), "{:?}", sent[200].lids);
-        // The other eye's wink does not let it through
-        let sent = run(25.0, 150..170, true);
+        // The other eye closing does not let a closed that began long before through
+        let sent = run(25.0, [0..0, 150..170]);
         assert!(sent[152..170].iter().all(|sample| sample.lids[1] == 0.0), "{:?}", sent[160].lids);
         assert!(sent[90..270].iter().all(|sample| sample.lids[0] > 0.5), "{:?}", sent[160].lids);
         // --eye-behavior 1 never closed an eye on the camera's word, and still does not
@@ -7382,24 +7433,55 @@ mod tests {
         let mut smoother = Smoother::new(&v1);
         let sent = camera_samples(&v1, &mut smoother, 100.0, 2.0, |_| [0.9; 2], |_| Some(camera_eyes([(0.0, 0.0, true), (0.75, 0.0, false)])));
         assert!(sent[90..].iter().all(|sample| sample.lids[0] > 0.5));
-        assert!(smoother.outward.open_lid == [None; 2] && smoother.outward.shut_at == [None; 2], "not even kept with 1");
+        assert!(smoother.side.open_lid == [None; 2] && smoother.side.shut_at == [None; 2], "not even kept with 1");
     }
 
     #[test]
-    fn the_outward_check_takes_the_last_open_camera_eyelid() {
+    fn a_blink_the_eye_server_reads_in_the_other_eye_only_still_closes_a_side_looking_eye() {
+        let settings = camera_settings();
+        // 2026-10-09 18:17: the camera sees the left eye shut for 0.1 s with the right eye's blink; the eye server reads
+        // the left eye open
+        let sent = side_samples(&settings, 25.0, [0..0, 150..161], 150..159);
+        assert!(sent[150..159].iter().all(|sample| sample.lids[0] == 0.0), "{:?}", sent[152].lids);
+        // The camera's closed starting 0.1 s after the other eye's closing: still the blink
+        let sent = side_samples(&settings, 25.0, [0..0, 150..161], 159..168);
+        assert!(sent[159..168].iter().all(|sample| sample.lids[0] == 0.0), "{:?}", sent[160].lids);
+        // ... 0.3 s after it: not
+        let sent = side_samples(&settings, 25.0, [0..0, 150..161], 177..186);
+        assert!(sent[177..186].iter().all(|sample| sample.lids[0] > 0.5), "{:?}", sent[180].lids);
+        // The other eye winking (0.55 s): through for CAMERA_SIDE_BLINK_MAX at most, then the last open eyelid
+        let sent = side_samples(&settings, 25.0, [0..0, 150..200], 150..200);
+        assert!(sent[150..170].iter().all(|sample| sample.lids[0] == 0.0), "{:?}", sent[160].lids);
+        assert!(sent[190..200].iter().all(|sample| sample.lids[0] > 0.45), "{:?}", sent[195].lids);
+        // A closed of the camera's longer than CAMERA_SIDE_BLINK_MAX with a blink: the rest held open
+        let sent = side_samples(&settings, 25.0, [0..0, 150..161], 150..230);
+        assert!(sent[205..230].iter().all(|sample| sample.lids[0] > 0.5), "{:?}", sent[210].lids);
+    }
+
+    #[test]
+    fn the_side_check_takes_the_last_open_camera_eyelid() {
         let lid = |lid: f32, closed: bool| Some(CameraLid { lid, closed, frame: 0.011 });
-        let mut check = OutwardCheck::default();
+        let mut check = SideCheck::default();
         // No open one yet: relaxed open
         assert_eq!(check.step(1.0, [0.9; 2], [20.0; 2], [lid(0.0, true), None]), [lid(LID_RELAXED, false), None]);
         assert_eq!(check.step(1.01, [0.9; 2], [20.0; 2], [lid(0.62, false), lid(0.7, false)]), [lid(0.62, false), lid(0.7, false)]);
-        // Only for the eye looking outward
-        assert_eq!(check.step(1.02, [0.9; 2], [20.0, -20.0], [lid(0.0, true); 2]), [lid(0.62, false), lid(0.0, true)]);
+        // Outward and inward alike
+        assert_eq!(check.step(1.02, [0.9; 2], [20.0, -20.0], [lid(0.0, true); 2]), [lid(0.62, false), lid(0.7, false)]);
         // Not at the line itself, nor without a gaze
-        assert_eq!(check.step(1.03, [0.9; 2], [CAMERA_OUTWARD_DEG, f32::NAN], [lid(0.0, true); 2]), [lid(0.0, true); 2]);
-        // Not within CAMERA_OUTWARD_SHUT_RECENT of that eye reading shut; the other eye's doesn't count
+        assert_eq!(check.step(1.03, [0.9; 2], [CAMERA_SIDE_DEG, f32::NAN], [lid(0.0, true); 2]), [lid(0.0, true); 2]);
+        // Not within CAMERA_SIDE_SHUT_RECENT of that eye reading shut
+        let mut check = SideCheck { open_lid: [Some(0.62), Some(0.7)], ..SideCheck::default() };
         check.step(2.0, [0.3, 0.9], [20.0; 2], [None; 2]);
-        assert_eq!(check.step(2.1, [0.9; 2], [20.0; 2], [lid(0.0, true); 2]), [lid(0.0, true), lid(0.7, false)]);
+        assert_eq!(check.step(2.1, [0.9; 2], [20.0; 2], [lid(0.0, true), None]), [lid(0.0, true), None]);
         assert_eq!(check.step(2.2, [0.9; 2], [20.0; 2], [lid(0.0, true), None]), [lid(0.62, false), None]);
+        // The other eye's closing: a closed of the camera's that began with it goes through, one from long before not
+        let mut check = SideCheck { open_lid: [Some(0.62), Some(0.7)], ..SideCheck::default() };
+        assert_eq!(check.step(3.0, [0.9; 2], [20.0; 2], [lid(0.0, true), None]), [lid(0.62, false), None]);
+        assert_eq!(check.step(3.1, [0.9, 0.2], [20.0; 2], [lid(0.0, true), None]), [lid(0.0, true), None]);
+        assert_eq!(check.step(3.31, [0.9, 0.2], [20.0; 2], [lid(0.0, true), None]), [lid(0.62, false), None], "0.31 s");
+        let mut check = SideCheck { open_lid: [Some(0.62), Some(0.7)], ..SideCheck::default() };
+        assert_eq!(check.step(4.0, [0.9; 2], [20.0; 2], [lid(0.0, true), None]), [lid(0.62, false), None]);
+        assert_eq!(check.step(4.2, [0.9, 0.2], [20.0; 2], [lid(0.0, true), None]), [lid(0.62, false), None], "0.2 s apart");
     }
 
     #[test]
