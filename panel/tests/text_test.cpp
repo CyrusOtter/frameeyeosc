@@ -116,7 +116,7 @@ void testFailureTexts() {
     SAME(failureDetailText(en, fit),
          "Eyes closed: 20 of 45 samples usable · L 0.62 (needs below 0.56) · R 0.40 (needs below 0.53) · 3 tries");
 
-    // A point that hardly moved, and an eye's own sideways fit
+    // A point that hardly moved
     fit = gaze_fit::View();
     fit.failure = Failure::NoMovement;
     fit.point = Point::Up;
@@ -125,11 +125,10 @@ void testFailureTexts() {
     SAME(failureDetailText(ja, fit), "上の点: 動いたのは 2.1°（3.8° 以上が必要）");
     SAME(failureDetailText(en, fit), "Up dot: moved 2.1° (needs 3.8°)");
     fit.point = Point::Right;
-    fit.detail.eye = 0;
-    fit.detail.movedDeg = 5.0;
-    fit.detail.neededDeg = 10.0;
-    SAME(failureDetailText(ja, fit), "左目の左右: 動いたのは 5.0°（10.0° 以上が必要）");
-    SAME(failureDetailText(en, fit), "Left eye sideways: moved 5.0° (needs 10.0°)");
+    fit.detail.movedDeg = 1.0;
+    fit.detail.neededDeg = 5.0;
+    SAME(failureDetailText(ja, fit), "右の点: 動いたのは 1.0°（5.0° 以上が必要）");
+    SAME(failureDetailText(en, fit), "Right dot: moved 1.0° (needs 5.0°)");
 
     // Eyelids that barely changed: which eye and reading
     fit = gaze_fit::View();
@@ -158,7 +157,7 @@ void testFailureTexts() {
     SAME(failureText(en, fit), "Stopped: the dashboard was opened");
     // The fit's words no longer ask to close the dashboard (the intro says it can stay open)
     for (const UiText* t : {&ja, &en}) {
-        for (const char* text : {t->fitHowTo, t->fitHowToCenter, t->fitHowToTilt, t->fitRunningTitle}) {
+        for (const char* text : {t->fitHowTo, t->fitHowToCenter, t->fitRunningTitle}) {
             const std::string s = text;
             CHECK(s.find("ダッシュボード") == std::string::npos && s.find("dashboard") == std::string::npos);
         }
@@ -212,7 +211,6 @@ void testFitRecord() {
     fit.mode = gaze_fit::Mode::Center;
     fit.values.offsetX = 0.021;
     fit.values.offsetY = -0.013;
-    fit.values.rollDeg = 1.2;
     CHECK(!fitStopped(fit));
     fillFitResult(s, fit);
     CHECK(s.result == report::Result::Ok);

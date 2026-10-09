@@ -38,11 +38,14 @@ constexpr const char* kBoldFontPath = "/usr/share/fonts/noto-cjk/NotoSansCJK-Bol
 
 /**
  * config.json's "version": 2 from the 0.7.0 gaze presets (see migrateGazePresets), 3 from one sideways zero point for
- * both eyes (see migrateEyeOffsets); an older file is brought up to date once. frameeyeosc does not read it.
+ * both eyes (see migrateEyeOffsets), 4 from the eye fit that keeps only the zero point and the up gain (see
+ * migrateFitPolicy); an older file is brought up to date once. frameeyeosc does not read it.
  */
-constexpr int kConfigVersion = 3;
+constexpr int kConfigVersion = 4;
 /** The version that has the 0.7.0 gaze presets. */
 constexpr int kGazePresetsVersion = 2;
+/** The version with one sideways zero point for both eyes. */
+constexpr int kEyeOffsetsVersion = 3;
 
 /** Keys the panel writes (the names are shared with frameeyeosc). */
 namespace key {
@@ -111,8 +114,8 @@ constexpr const char* kGazeDebugDots = "gaze_debug_dots";
 constexpr const char* kGazeDebugDotsDistanceM = "gaze_debug_dots_distance_m";
 /** The panel's own: play sound cues during the eye fit (frameeyeosc ignores it). */
 constexpr const char* kFitSounds = "fit_sounds";
-/** The panel's own: the fit run by itself when the headset is put on, "center" (the default), "tilt" or "off"
- *  (see kAutoRecenterModes; frameeyeosc ignores it). */
+/** The panel's own: the fit run by itself when the headset is put on, "center" (the default) or "off" (see
+ *  kAutoRecenterModes; frameeyeosc ignores it). "tilt" from before 0.7.7 reads as "center". */
 constexpr const char* kAutoRecenter = "auto_recenter";
 /** How easily an eye with an eye fit widens: see kLidWidenModes. */
 constexpr const char* kLidWiden = "lid_widen";
@@ -137,9 +140,9 @@ constexpr const char* kOutputEtvr = "etvr";
 constexpr const char* kOutputLivelink = "livelink";  ///< Live Link Face packets for VRCFaceTracking's LiveLink module
 /** eye_tracking_active values: how EyeTrackingActive is sent in VRChat mode */
 constexpr const char* kActiveTypes[3] = {"bool", "float", "off"};
-/** auto_recenter values, in the order the Eye fit tab's "When put on" row shows them: nothing, one dot (the
- *  default), the dot and the up / down dots */
-constexpr const char* kAutoRecenterModes[3] = {"off", "center", "tilt"};
+/** auto_recenter values, in the order the Eye fit tab's "When put on" row shows them: nothing, or one dot (the
+ *  default) */
+constexpr const char* kAutoRecenterModes[2] = {"off", "center"};
 /** lid_widen values, in the order the Eyelids tab shows them: never, less, normal (the default), more */
 constexpr const char* kLidWidenModes[4] = {"off", "low", "normal", "high"};
 /** Default ports of the output types (used while "port" is null). */

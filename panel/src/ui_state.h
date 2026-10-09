@@ -1,10 +1,12 @@
 // What the panel remembers of itself between starts (not a setting): which sub-tab of the Gaze, Eyelids and Advanced
-// tabs was open last, and whether the gaze scale's pairs are linked (their locks).
+// tabs was open last, whether the gaze scale's pairs are linked (their locks), and the up gains the last whole eye fits
+// measured (the fit writes their mean, gaze_fit::meanUpGain).
 // Kept in its own small file, $XDG_STATE_HOME/frameeyeosc/panel.json (~/.local/state/frameeyeosc/panel.json), next to
 // the records, so config.json isn't rewritten for it: frameeyeosc never sees it, and "Reset all" leaves it alone.
 #pragma once
 
 #include <string>
+#include <vector>
 
 /** The Advanced tab's sub-tabs, in the order the segmented control shows them. */
 enum class AdvPage { Version, Trouble, Tools, Files };
@@ -125,5 +127,21 @@ void readGazeScaleLinks(const std::string& path, bool linked[2]);
  * @return true if written
  */
 bool writeGazeScaleLinks(const std::string& path, const bool linked[2], std::string& error);
+
+/**
+ * The up gains the last whole eye fits measured ("fit_up_gains"), oldest first.
+ * @param path the file
+ * @return them (empty the first time, or when the file is missing or broken; numbers outside 0.5..2 are left out)
+ */
+std::vector<double> readUpGains(const std::string& path);
+
+/**
+ * Remember the up gains of the last whole eye fits (the file's other members are kept).
+ * @param path the file (its folder is made if missing)
+ * @param gains oldest first (empty: forget them, after "Reset" on the Eye fit tab)
+ * @param error why it failed
+ * @return true if written
+ */
+bool writeUpGains(const std::string& path, const std::vector<double>& gains, std::string& error);
 
 }  // namespace ui_state

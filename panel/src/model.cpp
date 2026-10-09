@@ -6,6 +6,7 @@
 #include <iterator>
 #include <cstdio>
 #include <limits>
+#include <utility>
 
 namespace {
 
@@ -254,7 +255,7 @@ bool migrateEyeOffsets(JsonValue& root, std::string& log) {
     log.clear();
     if (root.type != JsonValue::Type::Object) return false;
     const JsonValue* version = root.get(key::kVersion);
-    if (version != nullptr && version->isNumber() && version->number >= kConfigVersion) return false;
+    if (version != nullptr && version->isNumber() && version->number >= kEyeOffsetsVersion) return false;
     const JsonValue* left = root.get(key::kGazeOffsetXLeft);
     const JsonValue* right = root.get(key::kGazeOffsetXRight);
     if (left != nullptr && right != nullptr && left->isNumber() && right->isNumber() &&
@@ -266,6 +267,44 @@ bool migrateEyeOffsets(JsonValue& root, std::string& log) {
         log = text;
         root.set(key::kGazeOffsetXLeft, JsonValue::makeNumber(mean));
         root.set(key::kGazeOffsetXRight, JsonValue::makeNumber(mean));
+    }
+    root.set(key::kVersion, JsonValue::makeNumber(kEyeOffsetsVersion, true));
+    return true;
+}
+
+bool migrateFitPolicy(JsonValue& root, std::string& log) {
+    log.clear();
+    if (root.type != JsonValue::Type::Object) return false;
+    const JsonValue* version = root.get(key::kVersion);
+    if (version != nullptr && version->isNumber() && version->number >= kConfigVersion) return false;
+    const auto note = [&log](const std::string& text) { log += (log.empty() ? "" : ", ") + text; };
+    char text[160];
+    // The tilt and the sideways and down gains back to their defaults; the zero point and the up gain stay
+    const std::pair<const char*, double> defaults[3] = {
+        {key::kGazeRollDeg, 0.0}, {key::kGazeGainX, 1.0}, {key::kGazeGainDown, 1.0}};
+    for (const auto& [name, value] : defaults) {
+        const JsonValue* now = root.get(name);
+        if (now == nullptr || !now->isNumber() || std::fabs(now->number - value) < 1e-9) continue;
+        std::snprintf(text, sizeof(text), "%s %g -> %g", name, now->number, value);
+        note(text);
+        root.set(name, JsonValue::makeNumber(value));
+    }
+    // Each eye's own sideways zero point and gain: out
+    for (const char* name : {key::kGazeOffsetXLeft, key::kGazeOffsetXRight, key::kGazeGainXLeft, key::kGazeGainXRight}) {
+        const JsonValue* now = root.get(name);
+        if (now == nullptr || now->isNull()) continue;
+        if (now->isNumber()) {
+            std::snprintf(text, sizeof(text), "%s %g -> null", name, now->number);
+            note(text);
+        } else {
+            note(std::string(name) + " -> null");
+        }
+        root.set(name, JsonValue::makeNull());
+    }
+    const JsonValue* recenter = root.get(key::kAutoRecenter);
+    if (recenter != nullptr && recenter->isString() && recenter->text == "tilt") {
+        note("auto_recenter \"tilt\" -> \"center\"");
+        root.set(key::kAutoRecenter, JsonValue::makeString(kAutoRecenterModes[1]));
     }
     root.set(key::kVersion, JsonValue::makeNumber(kConfigVersion, true));
     return true;
@@ -341,36 +380,18 @@ WidenState widenState(const SettingsView& view) {
 AutoRecenter autoRecenter(const ConfigFile& config) {
     const JsonValue* written = config.root.get(key::kAutoRecenter);
     if (written != nullptr && written->isBool()) return written->boolean ? AutoRecenter::Center : AutoRecenter::Off;
-    const std::string mode = config.text(key::kAutoRecenter);
-    if (mode == kAutoRecenterModes[0]) return AutoRecenter::Off;
-    if (mode == kAutoRecenterModes[2]) return AutoRecenter::Tilt;
-    return AutoRecenter::Center;
-}
-
-gaze_fit::Mode rewearMode(AutoRecenter kind) {
-    return kind == AutoRecenter::Tilt ? gaze_fit::Mode::Tilt : gaze_fit::Mode::Center;
+    return config.text(key::kAutoRecenter) == kAutoRecenterModes[0] ? AutoRecenter::Off : AutoRecenter::Center;
 }
 
 void applyFitValues(JsonValue& root, const gaze_fit::Values& values, gaze_fit::Mode mode) {
-    const bool full = mode == gaze_fit::Mode::Full;
-    const bool roll = mode != gaze_fit::Mode::Center;
     root.set(key::kGazeOffsetX, JsonValue::makeNumber(values.offsetX));
     root.set(key::kGazeOffsetY, JsonValue::makeNumber(values.offsetY));
-    if (roll) root.set(key::kGazeRollDeg, JsonValue::makeNumber(values.rollDeg));
-    // Each eye's own sideways values: re-centering moves their zero points; a full fit sets them, or clears them
-    // when this frameeyeosc could not measure each eye
-    const char* eyeOffsets[2] = {key::kGazeOffsetXLeft, key::kGazeOffsetXRight};
-    const char* eyeGains[2] = {key::kGazeGainXLeft, key::kGazeGainXRight};
-    for (int eye = 0; eye < 2; ++eye) {
-        if (values.hasEyeX) {
-            root.set(eyeOffsets[eye], JsonValue::makeNumber(values.eyeOffsetX[eye]));
-            root.set(eyeGains[eye], JsonValue::makeNumber(values.eyeGainX[eye]));
-        } else if (full) {
-            root.set(eyeOffsets[eye], JsonValue::makeNull());
-            root.set(eyeGains[eye], JsonValue::makeNull());
-        }
+    if (mode != gaze_fit::Mode::Full) return;
+    root.set(key::kGazeRollDeg, JsonValue::makeNumber(values.rollDeg));
+    // Each eye's own sideways values aren't fitted any more: the shared ones count for both
+    for (const char* name : {key::kGazeOffsetXLeft, key::kGazeOffsetXRight, key::kGazeGainXLeft, key::kGazeGainXRight}) {
+        root.set(name, JsonValue::makeNull());
     }
-    if (!full) return;
     root.set(key::kGazeGainX, JsonValue::makeNumber(values.gainX));
     root.set(key::kGazeGainUp, JsonValue::makeNumber(values.gainUp));
     root.set(key::kGazeGainDown, JsonValue::makeNumber(values.gainDown));
@@ -419,16 +440,6 @@ FitInConfig fitInConfig(const SettingsView& view) {
         v.lidDown[eye] = readings[3];
     }
     v.hasLids = fit.lidsFitted[0] && fit.lidsFitted[1];
-    const double eyeX[4] = {view.number(key::kGazeOffsetXLeft), view.number(key::kGazeOffsetXRight),
-                            view.number(key::kGazeGainXLeft), view.number(key::kGazeGainXRight)};
-    fit.eyeXFitted = std::all_of(std::begin(eyeX), std::end(eyeX), [](double value) { return std::isfinite(value); });
-    if (fit.eyeXFitted) {
-        v.hasEyeX = true;
-        v.eyeOffsetX[0] = eyeX[0];
-        v.eyeOffsetX[1] = eyeX[1];
-        v.eyeGainX[0] = eyeX[2];
-        v.eyeGainX[1] = eyeX[3];
-    }
     return fit;
 }
 

@@ -701,17 +701,23 @@ private:
     void drawEyeFitRunning(const Pen& pen, const UiText& t, const gaze_fit::View& fit);
 
     /**
-     * "Fine-tune" on the Eye fit tab, gaze page: the zero point, the gains, the far-down hold and each eye's own
-     * sideways values.
+     * "Fine-tune" on the Eye fit tab, gaze page: the zero point, the gains and the far-down hold.
      * @param pen drawing tools
      * @param t texts
      * @param view the settings shown
-     * @param saved the fit in config.json
      * @param busy a fit is running (nothing can be changed)
      * @param y top
      */
-    void drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& view, const FitInConfig& saved, bool busy,
-                        double y);
+    void drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& view, bool busy, double y);
+
+    /**
+     * The Eye fit tab's box under "Fine-tune" while that is folded: how fitting works (each wear the middle dot, the
+     * whole fit at first and when something is off, no tilt any more). Left out when there is no room.
+     * @param pen drawing tools
+     * @param t texts
+     * @param y top
+     */
+    void drawEyeFitInfo(const Pen& pen, const UiText& t, double y);
 
     /**
      * "Fine-tune" on the Eye fit tab, eyelid page: each eye's four lid readings.

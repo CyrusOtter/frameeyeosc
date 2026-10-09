@@ -717,19 +717,6 @@ std::string offsetText(double value) {
 }
 
 /**
- * The headset's tilt as shown: 1 decimal and degrees ("+6.7°"; zero without a sign).
- * @param deg the setting
- * @return the text
- */
-std::string rollText(double deg) {
-    if (!std::isfinite(deg)) return "—";
-    const double shown = std::fabs(deg) < 0.05 ? 0.0 : deg;
-    char text[32];
-    std::snprintf(text, sizeof(text), shown == 0.0 ? "%.1f°" : "%+.1f°", shown);
-    return text;
-}
-
-/**
  * What to do while a fit runs.
  * @param t texts
  * @param mode the fit
@@ -738,7 +725,6 @@ std::string rollText(double deg) {
 const char* howToText(const UiText& t, gaze_fit::Mode mode) {
     switch (mode) {
         case gaze_fit::Mode::Center: return t.fitHowToCenter;
-        case gaze_fit::Mode::Tilt: return t.fitHowToTilt;
         case gaze_fit::Mode::Full: break;
     }
     return t.fitHowTo;
@@ -2360,18 +2346,16 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
     const bool canRun = m.status.running && !anyLocked;
     const AutoRecenter rewear = autoRecenter(m.config);
 
-    // The one button to press: fit (again); and the re-wear fit, the kind auto_recenter runs by itself when the
-    // headset is put on (see auto_recenter.h), re-centering only when that is off
+    // The one button to press: fit (again); and the re-wear fit (the middle dot), the one auto_recenter runs by itself
+    // when the headset is put on (see auto_recenter.h)
     {
         drawRowLabel(pen, t, y, kRowH, t.rowFit, t.hintFit, false);
         const double gap = 12;
-        const double smallW = std::max({190.0, pen.measure(t.fitCenterOnly, 19, true) + 32,
-                                        pen.measure(t.fitCenterTilt, 19, true) + 32});
+        const double smallW = std::max(190.0, pen.measure(t.fitCenterOnly, 19, true) + 32);
         const double bigW = kControlW - smallW - gap;
         drawButton(pen, kControlX, y + cy, bigW, kControlH, anyFitted ? t.fitAgain : t.fitStart,
                    {PanelAction::FitStart, nullptr, 0}, canRun, true);
-        drawButton(pen, kControlX + bigW + gap, y + cy, smallW, kControlH,
-                   rewear == AutoRecenter::Tilt ? t.fitCenterTilt : t.fitCenterOnly,
+        drawButton(pen, kControlX + bigW + gap, y + cy, smallW, kControlH, t.fitCenterOnly,
                    {PanelAction::FitCenter, nullptr, 0}, canRun, false);
     }
     y += kRowH + kRowGap;
@@ -2383,8 +2367,7 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         drawRowLabel(pen, t, y, h, t.rowAutoRecenter, t.hintAutoRecenter, false);
         drawSegmented(pen, kControlX, y + (h - controlH) / 2, kControlW, controlH,
                       {{t.autoRecenterOff, {PanelAction::SetAutoRecenter, key::kAutoRecenter, 0}},
-                       {t.autoRecenterCenter, {PanelAction::SetAutoRecenter, key::kAutoRecenter, 1}},
-                       {t.autoRecenterTilt, {PanelAction::SetAutoRecenter, key::kAutoRecenter, 2}}},
+                       {t.autoRecenterCenter, {PanelAction::SetAutoRecenter, key::kAutoRecenter, 1}}},
                       static_cast<int>(rewear), 18);
         y += h + 6;
     }
@@ -2426,46 +2409,16 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                     check = true;
                     reset = true;
                     title = fit.phase != Phase::Done ? t.fitFitted
-                                                     : (fit.mode == Mode::Center ? t.fitDoneCenter
-                                                        : fit.mode == Mode::Tilt ? t.fitDoneTilt
-                                                                                 : t.fitDone);
+                                                     : (fit.mode == Mode::Center ? t.fitDoneCenter : t.fitDone);
                     const gaze_fit::Values& r = saved.values;
-                    // Right after a fit, what it noticed first: a tilt it didn't use, Valve's eyes read apart
-                    const bool noted = fit.phase == Phase::Done && (fit.notes.rollKept || fit.notes.eyeSpreadOff);
-                    if (fit.phase == Phase::Done && fit.notes.rollKept) {
-                        if (fit.notes.rollDisagreed) {
-                            std::snprintf(text, sizeof(text), t.fitRollDisagreeFormat,
-                                          rollText(fit.notes.rollUpDownDeg).c_str(),
-                                          rollText(fit.notes.rollSidesDeg).c_str());
-                        } else {
-                            std::snprintf(text, sizeof(text), t.fitRollJumpFormat,
-                                          rollText(fit.notes.rollUpDownDeg).c_str(),
-                                          rollText(fit.notes.rollPreviousDeg).c_str());
-                        }
-                        paragraphs.push_back(text);
-                    }
-                    if (fit.phase == Phase::Done && fit.notes.eyeSpreadOff) {
-                        std::snprintf(text, sizeof(text),
-                                      fit.notes.eyeGainsKept ? t.fitEyeSpreadKeptFormat : t.fitEyeSpreadFormat,
-                                      rollText(fit.notes.eyeSpreadDeg).c_str(),
-                                      rollText(fit.notes.eyeSpreadExpectedDeg).c_str());
-                        paragraphs.push_back(text);
-                    }
                     // One line each: the gaze center, the gaze range, and each eye's lid readings
                     if (saved.gazeFitted) {
                         std::snprintf(text, sizeof(text), t.fitGazeCenterFormat, offsetText(r.offsetX).c_str(),
-                                      offsetText(r.offsetY).c_str(), rollText(r.rollDeg).c_str());
+                                      offsetText(r.offsetY).c_str());
                         paragraphs.push_back(text);
                         std::snprintf(text, sizeof(text), t.fitGazeRangeFormat, twoDecimals(r.gainX).c_str(),
                                       twoDecimals(r.gainUp).c_str(), twoDecimals(r.gainDown).c_str());
                         paragraphs.push_back(text);
-                        // Each eye's own sideways values only while there is room
-                        if (r.hasEyeX && !noted) {
-                            std::snprintf(text, sizeof(text), t.fitEyeXFormat, offsetText(r.eyeOffsetX[0]).c_str(),
-                                          twoDecimals(r.eyeGainX[0]).c_str(), offsetText(r.eyeOffsetX[1]).c_str(),
-                                          twoDecimals(r.eyeGainX[1]).c_str());
-                            paragraphs.push_back(text);
-                        }
                     } else {
                         paragraphs.push_back(t.fitGazeNone);
                     }
@@ -2574,9 +2527,12 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         }
         y += 38 + 8;
     }
-    if (!fitDetails_) return;
+    if (!fitDetails_) {
+        drawEyeFitInfo(pen, t, y + 4);
+        return;
+    }
     if (fitDetailsPage_ == 0) {
-        drawEyeFitGaze(pen, t, v, saved, busy, y);
+        drawEyeFitGaze(pen, t, v, busy, y);
     } else {
         drawEyeFitLids(pen, t, v, saved, busy, y);
     }
@@ -2608,8 +2564,7 @@ void EyePanel::drawEyeFitRunning(const Pen& pen, const UiText& t, const gaze_fit
                {PanelAction::FitStop, nullptr, 0}, true, false, 32);
 }
 
-void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& v, const FitInConfig& saved,
-                              bool busy, double y) {
+void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& v, bool busy, double y) {
     const char* offsetKeys[2] = {key::kGazeOffsetX, key::kGazeOffsetY};
     const char* gainKeys[3] = {key::kGazeGainX, key::kGazeGainUp, key::kGazeGainDown};
     // A little tighter than the other tabs' caption rows, so the page fits under the Eye fit tab's rows
@@ -2655,49 +2610,28 @@ void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsVie
         const std::string text = value > 0 ? formatText(t.downHoldFormat, formatSetting(key::kGazeDownHoldXDeg, value))
                                            : std::string(t.off);
         drawStepper(pen, kControlX, y + (h - 42) / 2, 200, 42, key::kGazeDownHoldXDeg, value, text, !busy, locked);
-        // The headset's tilt, on the same row: its name and hint, then its stepper at the right
-        const bool tiltLocked = v.locked(key::kGazeRollDeg);
-        const double tilt = v.number(key::kGazeRollDeg);
-        const double stepperW = 160;
-        const double labelX = kControlX + 200 + 16;
-        const double labelW = kInnerRight - stepperW - 12 - labelX;
-        const char* hint = tiltLocked ? t.locked : t.hintTilt;
-        pen.text(labelX, y + h / 2 - 3, t.rowTilt, fitSize(pen, t.rowTilt, 20, 14, labelW, true), kText, true);
-        pen.text(labelX, y + h / 2 + 19, hint, fitSize(pen, hint, 15, 11, labelW, false), kTextMuted);
-        drawStepper(pen, kInnerRight - stepperW, y + (h - 42) / 2, stepperW, 42, key::kGazeRollDeg, tilt,
-                    rollText(tilt), !busy, tiltLocked);
-        y += h + kRowGap;
     }
-    // Each eye's own sideways zero point and gain (for --independent-eyes), across the whole width
-    {
-        const double titleSize = 18;
-        pen.text(kInnerX, y + 15, t.rowEyeX, titleSize, kText, true);
-        const double titleW = pen.measure(t.rowEyeX, titleSize, true);
-        pen.text(kInnerX + titleW + 12, y + 15, t.hintEyeX, 15, kTextMuted);
-        const char* keys[2][2] = {{key::kGazeOffsetXLeft, key::kGazeGainXLeft},
-                                  {key::kGazeOffsetXRight, key::kGazeGainXRight}};
-        const char* captions[2] = {t.rowOffset, t.rowGain};
-        const double labelW = 40;
-        const double gap = 10;
-        const double w = (kInnerRight - kInnerX - labelW - gap) / 2;
-        const double stepperH = 42;
-        for (int i = 0; i < 2; ++i) {
-            drawCaption(pen, kInnerX + labelW + i * (w + gap) + 4, y + 35, captions[i], 0,
-                        v.locked(keys[0][i]) || v.locked(keys[1][i]));
-        }
-        for (int eye = 0; eye < 2; ++eye) {
-            const double rowY = y + 41 + eye * (stepperH + 4);
-            pen.text(kInnerX + 4, centerBaseline(rowY, stepperH, 18), eye == 0 ? t.left : t.right, 18, kText, true);
-            for (int i = 0; i < 2; ++i) {
-                const char* name = keys[eye][i];
-                const double value = v.number(name);
-                const std::string text = i == 0 ? offsetText(value) : formatSetting(name, value);
-                // Set by fitting; until then each eye uses the shared values
-                drawStepper(pen, kInnerX + labelW + i * (w + gap), rowY, w, stepperH, name, value, text,
-                            !busy && saved.eyeXFitted, v.locked(name));
-            }
-        }
+}
+
+void EyePanel::drawEyeFitInfo(const Pen& pen, const UiText& t, double y) {
+    // How fitting works now, in the room under "Fine-tune" while it is folded: each wear one dot, the whole fit only
+    // at first and when something is off, and no tilt any more
+    const double x0 = kInnerX;
+    const double x1 = kInnerRight;
+    const double bottom = kContentY + kContentH - 20;
+    if (bottom - y < 120) return;
+    const double h = std::min(bottom - y, 170.0);
+    strokeRounded(pen, x0, y, x1 - x0, h, 14, kDivider, 1.5);
+    const double textX = x0 + 20;
+    const double textW = x1 - 20 - textX;
+    double baseline = y + 34;
+    pen.text(textX, baseline, t.fitInfoTitle, fitSize(pen, t.fitInfoTitle, 18, 14, textW, true), kText, true);
+    for (const char* line : {t.fitInfoRewear, t.fitInfoFull}) {
+        baseline += 32;
+        pen.text(textX, baseline, line, fitSize(pen, line, 16, 12, textW, false), kText);
     }
+    baseline += 32;
+    pen.text(textX, baseline, t.fitInfoNoTilt, fitSize(pen, t.fitInfoNoTilt, 15, 11, textW, false), kTextMuted);
 }
 
 void EyePanel::drawEyeFitLids(const Pen& pen, const UiText& t, const SettingsView& v, const FitInConfig& saved,

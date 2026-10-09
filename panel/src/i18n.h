@@ -178,8 +178,7 @@ struct UiText {
     const char* hintFit;
     const char* fitStart;            ///< the one big button before any fit
     const char* fitAgain;            ///< the same button once fitted
-    const char* fitCenterOnly;       ///< small button: re-center the gaze only...
-    const char* fitCenterTilt;       ///< ...or re-center and measure the tilt (as auto_recenter says)
+    const char* fitCenterOnly;       ///< small button: re-center the gaze only (the middle dot)
     const char* fitStop;
     const char* fitIntro;            ///< before any fit (fitHowTo follows it)
     const char* fitNeedsRunning;
@@ -187,22 +186,19 @@ struct UiText {
     const char* fitRunningTitle;     ///< while a fit runs: the one calm line ("Look at the dot")...
     const char* fitHowTo;            ///< ...and under it, what to do (full fit)
     const char* fitHowToCenter;      ///< (re-centering)
-    const char* fitHowToTilt;        ///< (re-centering and the tilt)
     const char* fitDone;             ///< right after a full fit
     const char* fitDoneCenter;       ///< right after re-centering
-    const char* fitDoneTilt;         ///< right after re-centering and the tilt
     const char* fitFitted;           ///< a fit is in config.json
     const char* fitNotYet;           ///< the folded result line before any fit
-    const char* fitGazeCenterFormat; ///< "Gaze center: L-R %s, U-D %s, tilt %s"
+    const char* fitGazeCenterFormat; ///< "Gaze center: L-R %s, U-D %s"
     const char* fitGazeRangeFormat;  ///< "Gaze range: L-R %s, up %s, down %s"
     const char* fitGazeNone;
-    const char* fitEyeXFormat;       ///< "Each eye: L %s x%s, R %s x%s" (zero point, gain)
     const char* fitLidFormat;        ///< "Eyelid %s: open %s, closed %s, looking down %s"
     const char* fitLidsNone;
-    const char* fitRollJumpFormat;      ///< re-wear tilt not used: "Tilt read %s, too far from the last one (%s)..."
-    const char* fitRollDisagreeFormat;  ///< full fit tilt not used: "Tilt read %s up/down but %s sideways..."
-    const char* fitEyeSpreadFormat;     ///< Valve's per-eye x off straight ahead: "...%s apart (%s at the dot)..."
-    const char* fitEyeSpreadKeptFormat; ///< the same, each eye's gain kept (full fit)
+    const char* fitInfoTitle;        ///< the box under "Fine-tune" while it is folded: how fitting works...
+    const char* fitInfoRewear;       ///< ...each wear: the one dot in the middle, by itself...
+    const char* fitInfoFull;         ///< ...the whole fit: the first time, and when something is off...
+    const char* fitInfoNoTilt;       ///< ...and the tilt isn't used any more
     const char* fitFailed;
     const char* failCancelled;       ///< "Stop" pressed
     const char* fitUnchanged;        ///< under a stop (Cancelled, Left, DashboardOpened): "Nothing was changed"
@@ -227,8 +223,6 @@ struct UiText {
     const char* failDetailEyeRight;
     const char* failDetailClosedFormat;   ///< "%s %.2f (needs below %.2f)"
     const char* failDetailMovedFormat;    ///< "moved %.1f° (needs %.1f°)"
-    const char* failDetailSidewaysLeft;   ///< "left eye sideways" (its own fit)
-    const char* failDetailSidewaysRight;
     const char* failDetailLidWhereFormat;  ///< "%s eyelid, %s dot"
     const char* failDetailLidFormat;      ///< "open %.2f vs shut %.2f, %.2f apart (needs %.2f)"
     const char* failDetailLidNone;        ///< no open reading
@@ -248,8 +242,7 @@ struct UiText {
     const char* rowAutoRecenter;     ///< the row for what runs when the headset is put on...
     const char* hintAutoRecenter;
     const char* autoRecenterOff;     ///< ...and its choices: nothing...
-    const char* autoRecenterCenter;  ///< ...re-centering...
-    const char* autoRecenterTilt;    ///< ...or re-centering and the tilt
+    const char* autoRecenterCenter;  ///< ...or re-centering (the middle dot)
     const char* rowOffset;
     const char* hintOffset;
     const char* rowGain;
@@ -260,8 +253,6 @@ struct UiText {
     const char* capDown;
     const char* detailsGaze;         ///< "Fine-tune" pages
     const char* detailsLids;
-    const char* rowEyeX;             ///< each eye's own sideways zero point and gain
-    const char* hintEyeX;
     const char* rowDownHold;         ///< holding the sideways gaze when looking far down
     const char* hintDownHold;
     const char* rowEyeLog;           ///< the eye log row (Advanced tab)
@@ -272,8 +263,6 @@ struct UiText {
     const char* eyeLogFailedFormat;  ///< it could not start or ended by itself ("Couldn't record: %s")
     const char* eyeLogAutoStopped;   ///< the last one was stopped by the 60-minute limit
     const char* recordingFormat;     ///< the mark in the left column while recording ("Recording 1:23")
-    const char* rowTilt;             ///< the headset's tilt (gaze_roll_deg), next to the far-down hold
-    const char* hintTilt;
     const char* downHoldFormat;      ///< "Below %s°"
     const char* rowLidFit;
     const char* hintLidFit;

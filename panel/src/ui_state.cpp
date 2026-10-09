@@ -25,6 +25,8 @@ constexpr const char* kLidsPageKey = "lids_page";
 constexpr const char* kGazePageKey = "gaze_page";
 /** Whether the gaze scale's left / right and up / down are linked (true / false). */
 constexpr const char* kGazeScaleLinkKeys[2] = {"gaze_scale_link_x", "gaze_scale_link_y"};
+/** The up gains the last whole eye fits measured, oldest first (an array of numbers). */
+constexpr const char* kUpGainsKey = "fit_up_gains";
 
 /**
  * Make a folder and the ones above it.
@@ -226,6 +228,24 @@ bool writeGazeScaleLinks(const std::string& path, const bool linked[2], std::str
                         {{kGazeScaleLinkKeys[0], JsonValue::makeBool(linked[0])},
                          {kGazeScaleLinkKeys[1], JsonValue::makeBool(linked[1])}},
                         error);
+}
+
+std::vector<double> readUpGains(const std::string& path) {
+    const JsonValue root = readObject(path);
+    const JsonValue* value = root.get(kUpGainsKey);
+    std::vector<double> gains;
+    if (value == nullptr || value->type != JsonValue::Type::Array) return gains;
+    for (const JsonValue& item : value->items) {
+        if (item.isNumber() && item.number >= 0.5 && item.number <= 2.0) gains.push_back(item.number);
+    }
+    return gains;
+}
+
+bool writeUpGains(const std::string& path, const std::vector<double>& gains, std::string& error) {
+    JsonValue list;
+    list.type = JsonValue::Type::Array;
+    for (double gain : gains) list.items.push_back(JsonValue::makeNumber(gain));
+    return writeMembers(path, {{kUpGainsKey, list}}, error);
 }
 
 }  // namespace ui_state

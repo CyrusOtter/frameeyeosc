@@ -998,6 +998,21 @@ void testUiState() {
     ui_state::readGazeScaleLinks(path, linked);
     CHECK(linked[0] && !linked[1]);
     CHECK(!exists(path + ".tmp"));
+
+    // The last whole eye fits' up gains: none the first time, kept beside the others, emptied by "Reset"
+    ::unlink(path.c_str());
+    CHECK(ui_state::readUpGains(path).empty());
+    CHECK(ui_state::writeLidsPage(path, LidsPage::Fine, error));
+    CHECK(ui_state::writeUpGains(path, {0.89, 1.01, 0.78}, error));
+    CHECK(ui_state::readUpGains(path) == std::vector<double>({0.89, 1.01, 0.78}));
+    CHECK(has(readText(path), "\"fit_up_gains\": [") && ui_state::readLidsPage(path) == LidsPage::Fine);
+    CHECK(ui_state::writeUpGains(path, {}, error) && ui_state::readUpGains(path).empty());
+    // Broken, or numbers no fit writes: left out
+    writeText(path, "{\"fit_up_gains\": [0.9, \"x\", 7, 0.3, 1.1]}");
+    CHECK(ui_state::readUpGains(path) == std::vector<double>({0.9, 1.1}));
+    writeText(path, "{\"fit_up_gains\": 0.9}");
+    CHECK(ui_state::readUpGains(path).empty());
+    CHECK(!exists(path + ".tmp"));
 }
 
 }  // namespace

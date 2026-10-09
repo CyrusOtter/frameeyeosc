@@ -1494,7 +1494,7 @@ void testFitRunning(const FontSet& fonts) {
     // Running (started with the dashboard open, so the panel shows behind the dots): one big "Stop" low in the card
     // and the tabs; nothing else can be pressed (the rest is dimmed), in every step and mode
     for (const gaze_fit::Phase phase : {gaze_fit::Phase::Settling, gaze_fit::Phase::Capturing, gaze_fit::Phase::Reopen}) {
-        for (const gaze_fit::Mode mode : {gaze_fit::Mode::Full, gaze_fit::Mode::Center, gaze_fit::Mode::Tilt}) {
+        for (const gaze_fit::Mode mode : {gaze_fit::Mode::Full, gaze_fit::Mode::Center}) {
             m.fit = gaze_fit::View();
             m.fit.phase = phase;
             m.fit.mode = mode;
@@ -1562,6 +1562,35 @@ int inkIn(cairo_surface_t* surface, int x0, int x1, int& top, int& bottom) {
         }
     }
     return count;
+}
+
+void testFitTabPolicy(const FontSet& fonts) {
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::EyeFit);
+    PanelModel m = modelWith(Lids::Valve, false);
+    m.config.root.set(key::kGazeOffsetX, JsonValue::makeNumber(0.012));
+    m.config.root.set(key::kGazeGainUp, JsonValue::makeNumber(0.88));
+    panel.render(m);
+    // The whole fit and re-centering (the middle dot)
+    CHECK(hits(panel, PanelAction::FitStart).size() == 1 && hits(panel, PanelAction::FitCenter).size() == 1);
+    // "When put on": nothing, or the middle dot; no tilt any more
+    const std::vector<EyePanel::HitArea> recenter = hits(panel, PanelAction::SetAutoRecenter);
+    CHECK(recenter.size() == 2);
+    for (const EyePanel::HitArea& area : recenter) CHECK(area.hit.arg == 0 || area.hit.arg == 1);
+    // Fine-tune: the zero point and all three gains by hand (the fit only writes the up gain now), the far-down hold;
+    // no tilt and no per-eye values
+    panel.setFitDetails(true);
+    panel.render(m);
+    for (const char* name : {key::kGazeOffsetX, key::kGazeOffsetY, key::kGazeGainX, key::kGazeGainUp,
+                             key::kGazeGainDown, key::kGazeDownHoldXDeg}) {
+        CHECK(hits(panel, PanelAction::Step, name).size() == 2);
+    }
+    for (const char* name : {key::kGazeRollDeg, key::kGazeOffsetXLeft, key::kGazeOffsetXRight, key::kGazeGainXLeft,
+                             key::kGazeGainXRight}) {
+        CHECK(hits(panel, PanelAction::Step, name).empty());
+    }
+    // Everything on the page stays inside the card
+    for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
 }
 
 void testIconText(const FontSet& fonts) {
@@ -1682,6 +1711,7 @@ int main() {
     testRecordBars(fonts);
     testPartialResult(fonts);
     testFitRunning(fonts);
+    testFitTabPolicy(fonts);
     testIconText(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);

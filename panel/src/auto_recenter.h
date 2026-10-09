@@ -1,7 +1,7 @@
 // Re-fitting by itself when the headset is put on (auto_recenter): straight ahead shifts a little each time the
-// headset is put on (up to 6.7° up-down and 3.2° sideways seen between wearings), and so does its tilt, while the
-// gains stay within a few %, so the re-wear fit (straight ahead, and the side dots for the tilt, or the one dot only)
-// is run once the eyes are tracked again. "Put on" is read from
+// headset is put on (up to 6.7° up-down and 3.2° sideways seen between wearings), and it is the one thing measured
+// in one wear that holds for the rest of it, so the re-wear fit (the one dot in the middle) is run once the eyes are
+// tracked again. "Put on" is read from
 // status.json: frameeyeosc's `tracking` goes false a second after the last eye sample, and the Frame's eye server
 // stops delivering samples while the headset is off. Nothing here talks to OpenVR or reads files, so it can be
 // tested on its own (auto_recenter_test.cpp).

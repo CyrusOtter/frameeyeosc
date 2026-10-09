@@ -279,8 +279,7 @@ void printUsage() {
         "                        A made-up update state (the version row on the Advanced tab)\n"
         "      --fake-update-notes both|en|long  With --fake-update available|manual, the new release's summary:\n"
         "                        English and Japanese, English only, or both cut at 300 characters\n"
-        "      --fake-fit running|running-center|running-tilt|running-closed|done|done-center|done-tilt|\n"
-        "                 done-tilt-kept|done-notes|fitted|fitted-gaze|\n"
+        "      --fake-fit running|running-center|running-closed|done|done-center|fitted|fitted-gaze|\n"
         "                 failed-unsteady|failed-notclosed|failed-movement|failed-lidrange|failed-cancelled|\n"
         "                 failed-left|failed-opened|failed-noresult  A made-up eye fit (Eye fit tab)\n"
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
@@ -816,10 +815,10 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (arg == "--fake-fit" && hasNext) {
             options.fakeFit = argv[++i];
             static const char* const kFitStates[] = {
-                "running",          "running-center",  "running-tilt",     "running-closed",  "done",
-                "done-center",      "done-tilt",       "done-tilt-kept",   "done-notes",      "fitted",
-                "fitted-gaze",      "failed-unsteady", "failed-notclosed", "failed-movement", "failed-lidrange",
-                "failed-cancelled", "failed-left",     "failed-opened",    "failed-noresult"};
+                "running",         "running-center",   "running-closed",   "done",
+                "done-center",     "fitted",           "fitted-gaze",      "failed-unsteady",
+                "failed-notclosed", "failed-movement", "failed-lidrange",  "failed-cancelled",
+                "failed-left",     "failed-opened",    "failed-noresult"};
             if (std::find(std::begin(kFitStates), std::end(kFitStates), options.fakeFit) == std::end(kFitStates)) {
                 std::fprintf(stderr, "--fake-fit: unknown state %s\n", options.fakeFit.c_str());
                 return false;
@@ -1330,24 +1329,15 @@ PanelModel fakeModel(const Options& options) {
         using gaze_fit::Point;
         gaze_fit::View& fit = m.fit;
         const std::string& state = options.fakeFit;
-        fit.mode = state.find("center") != std::string::npos ? gaze_fit::Mode::Center
-                   : state.find("tilt") != std::string::npos ? gaze_fit::Mode::Tilt
-                                                              : gaze_fit::Mode::Full;
+        fit.mode = state.find("center") != std::string::npos ? gaze_fit::Mode::Center : gaze_fit::Mode::Full;
         fit.count = gaze_fit::pointCount(fit.mode);
-        // The fit in config.json: the gaze of the live run on 2026-09-28, and eyelids like the worn recording
+        // The fit in config.json: the zero point of the live run on 2026-09-28, the mean up gain of five wears on
+        // 2026-10-09, and eyelids like the worn recording
         const bool saved = state.rfind("done", 0) == 0 || state.rfind("fitted", 0) == 0;
         if (saved) {
             root.set(key::kGazeOffsetX, JsonValue::makeNumber(0.012));
             root.set(key::kGazeOffsetY, JsonValue::makeNumber(-0.02));
-            root.set(key::kGazeGainX, JsonValue::makeNumber(0.93));
-            root.set(key::kGazeGainUp, JsonValue::makeNumber(0.9));
-            root.set(key::kGazeGainDown, JsonValue::makeNumber(0.88));
-            root.set(key::kGazeRollDeg, JsonValue::makeNumber(6.7));
-            // Each eye's own sideways fit (made-up numbers)
-            root.set(key::kGazeOffsetXLeft, JsonValue::makeNumber(0.031));
-            root.set(key::kGazeOffsetXRight, JsonValue::makeNumber(-0.006));
-            root.set(key::kGazeGainXLeft, JsonValue::makeNumber(0.95));
-            root.set(key::kGazeGainXRight, JsonValue::makeNumber(0.9));
+            root.set(key::kGazeGainUp, JsonValue::makeNumber(0.88));
         }
         if (saved && state != "fitted-gaze") {
             const double readings[2][4] = {{0.15, 0.93, 0.92, 0.77}, {0.26, 0.86, 0.81, 0.75}};
@@ -1362,35 +1352,12 @@ PanelModel fakeModel(const Options& options) {
             fit.attempt = 2;
         } else if (state == "running-center") {
             fit.phase = Phase::Capturing;
-        } else if (state == "running-tilt") {
-            fit.phase = Phase::Settling;
-            fit.index = 1;
-            fit.point = Point::Up;
         } else if (state == "running-closed") {
             fit.phase = Phase::Settling;
             fit.index = 5;
             fit.point = Point::Closed;
         } else if (state.rfind("done", 0) == 0) {
             fit.phase = Phase::Done;
-            // What a fit noticed: the re-wear fit's tilt jump and Valve's eyes read apart (22:44-22:45 on 2026-10-08),
-            // or the full fit's tilts disagreeing (a logged fit: +2.0° and -3.8°) with each eye's gain kept
-            gaze_fit::Notes& notes = fit.notes;
-            if (state == "done-tilt-kept") {
-                notes.rollKept = true;
-                notes.rollUpDownDeg = -9.0;
-                notes.rollPreviousDeg = -2.5;
-                notes.eyeSpreadOff = true;
-                notes.eyeSpreadDeg = 17.3;
-                notes.eyeSpreadExpectedDeg = 4.4;
-            } else if (state == "done-notes") {
-                notes.rollKept = notes.rollDisagreed = true;
-                notes.rollUpDownDeg = 2.0;
-                notes.rollSidesDeg = -3.8;
-                notes.rollPreviousDeg = 6.7;
-                notes.eyeSpreadOff = notes.eyeGainsKept = true;
-                notes.eyeSpreadDeg = 0.6;
-                notes.eyeSpreadExpectedDeg = 4.4;
-            }
         } else if (saved) {
             fit.phase = Phase::Idle;
         } else {
@@ -1676,8 +1643,8 @@ std::vector<report::Summary> fakeRecordList() {
     };
     std::vector<report::Summary> list;
     list.push_back(make(Kind::Fit, "2026-10-06 20:46:02", 21.4, Result::Ok, "", "",
-                        "合わせました。視線の正面: 左右 +0.021・上下 -0.013・傾き +1.2°",
-                        "Fitted. Gaze center: L-R +0.021, U-D -0.013, tilt +1.2°"));
+                        "合わせました。視線の正面: 左右 +0.021・上下 -0.013",
+                        "Fitted. Gaze center: L-R +0.021, U-D -0.013"));
     {
         report::Summary s = make(Kind::Fit, "2026-10-06 20:45:09", 7.9, Result::Failed,
                                  "正面の点で視線が落ち着きませんでした", "The gaze wasn't steady at the center dot",
@@ -1709,7 +1676,7 @@ std::vector<report::Summary> fakeRecordList() {
     list.push_back(make(Kind::CalibWear, "2026-10-06 19:43:02", 21.0, Result::Ok, "カメラ 72 枚/秒", "cameras 72 fps",
                         "校正できた", "Calibrated"));
     {
-        report::Summary s = make(Kind::Recenter, "2026-10-06 19:40:11", 3.2, Result::Ok, "", "", "正面を合わせ直しました",
+        report::Summary s = make(Kind::Recenter, "2026-10-06 19:40:11", 3.2, Result::Ok, "", "", "真ん中で合わせ直しました",
                                  "Re-centered");
         s.trigger = "auto";
         s.conditions.dashboardOpen = 0;
@@ -2162,8 +2129,8 @@ long long writeCaptureRequest(PanelModel& model, const char* target, double seco
 }
 
 /**
- * Bring an older config.json up to date, once (see migrateLidScales, migrateGazePresets, migrateEyeOffsets and
- * migrateLidOpenSnap), and read it again.
+ * Bring an older config.json up to date, once (see migrateLidScales, migrateGazePresets, migrateEyeOffsets,
+ * migrateFitPolicy and migrateLidOpenSnap), and read it again.
  * @param model the model (its config is re-read after a write)
  */
 void migrateConfig(PanelModel& model) {
@@ -2172,10 +2139,12 @@ void migrateConfig(PanelModel& model) {
     std::string gazeLog;
     std::string snapLog;
     std::string eyeLog;
+    std::string fitLog;
     bool lids = false;
     bool gaze = false;
     bool snap = false;
     bool eyes = false;
+    bool fitPolicy = false;
     std::string error;
     const bool ok = updateConfigFile(
         model.configPath,
@@ -2183,6 +2152,7 @@ void migrateConfig(PanelModel& model) {
             lids = migrateLidScales(root, lidLog);
             gaze = migrateGazePresets(root, gazeLog);
             eyes = migrateEyeOffsets(root, eyeLog);
+            fitPolicy = migrateFitPolicy(root, fitLog);
             snap = migrateLidOpenSnap(root, snapLog);
         },
         error);
@@ -2199,6 +2169,10 @@ void migrateConfig(PanelModel& model) {
                      gazeLog.empty() ? "own values, kept" : gazeLog.c_str());
     }
     if (eyes && !eyeLog.empty()) std::fprintf(stderr, "[config] %s\n", eyeLog.c_str());
+    if (fitPolicy) {
+        std::fprintf(stderr, "[config] eye fit from before version 4 (only the zero point and the up gain are kept): %s\n",
+                     fitLog.empty() ? "nothing else was set" : fitLog.c_str());
+    }
     if (snap) std::fprintf(stderr, "[config] %s\n", snapLog.c_str());
     model.config = readConfigFile(model.configPath);
 }
@@ -2212,19 +2186,18 @@ void migrateConfig(PanelModel& model) {
  */
 bool writeFitValues(PanelModel& model, const gaze_fit::Values& values, gaze_fit::Mode mode) {
     const bool full = mode == gaze_fit::Mode::Full;
-    std::fprintf(stderr, "[fit] done: offset %+.3f %+.3f, tilt %+.1f deg, gains %.2f %.2f %.2f%s\n", values.offsetX,
-                 values.offsetY, values.rollDeg, values.gainX, values.gainUp, values.gainDown,
-                 full ? "" : " (the rest unchanged)");
+    if (full) {
+        std::fprintf(stderr, "[fit] done: offset %+.3f %+.3f, tilt %+.1f deg, gains %.2f %.2f %.2f\n", values.offsetX,
+                     values.offsetY, values.rollDeg, values.gainX, values.gainUp, values.gainDown);
+    } else {
+        std::fprintf(stderr, "[fit] done: offset %+.3f %+.3f (the rest unchanged)\n", values.offsetX, values.offsetY);
+    }
     if (full && values.hasLids) {
         for (int eye = 0; eye < 2; ++eye) {
             std::fprintf(stderr, "[fit] %s eyelid: closed %.3f, up %.3f, ahead %.3f, down %.3f\n",
                          eye == 0 ? "left" : "right", values.lidClosed[eye], values.lidUp[eye], values.lidOpen[eye],
                          values.lidDown[eye]);
         }
-    }
-    if (values.hasEyeX) {
-        std::fprintf(stderr, "[fit] each eye sideways: left %+.3f x%.2f, right %+.3f x%.2f\n", values.eyeOffsetX[0],
-                     values.eyeGainX[0], values.eyeOffsetX[1], values.eyeGainX[1]);
     }
     return writeConfig(model, [values, mode](JsonValue& root) { applyFitValues(root, values, mode); });
 }
@@ -2264,18 +2237,19 @@ std::string hostErrorText(const UiText& t, host_entry::HostError problem) {
 /**
  * Start an eye fit session: the first target shows at once, the dashboard open or closed.
  * @param fit the session
- * @param mode the whole fit, re-centering only, or re-centering and the tilt
+ * @param mode the whole fit or re-centering only
  * @param view the settings (the fit now)
- * @param vr the connection to SteamVR, for the IPD (null: the default)
+ * @param vr the connection to SteamVR, for the IPD in the log (null: the default)
  */
 void startFit(gaze_fit::Session& fit, gaze_fit::Mode mode, const SettingsView& view, const VrOverlay* vr) {
     const double ipd = vr != nullptr ? vr->userIpdMeters() : gaze_fit::kDefaultIpdM;
-    const char* name = mode == gaze_fit::Mode::Full     ? "eye fit"
-                       : mode == gaze_fit::Mode::Center ? "re-center"
-                                                        : "re-center and tilt";
+    const char* name = mode == gaze_fit::Mode::Full ? "eye fit" : "re-center";
     std::fprintf(stderr, "[fit] %s, IPD %.1f mm, dashboard %s\n", name, ipd * 1000,
                  vr != nullptr && vr->dashboardVisible() ? "open" : "closed");
-    fit.start(mode, fitInConfig(view).values, nowSeconds(), ipd);
+    // The whole fit writes the mean up gain of the last few whole fits (panel.json keeps them)
+    const std::vector<double> upGains =
+        mode == gaze_fit::Mode::Full ? ui_state::readUpGains(ui_state::defaultPath()) : std::vector<double>();
+    fit.start(mode, fitInConfig(view).values, nowSeconds(), upGains);
 }
 
 /**
@@ -2396,7 +2370,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             break;
         }
         case PanelAction::SetAutoRecenter: {
-            if (hit.arg < 0 || hit.arg > 2) return;
+            if (hit.arg < 0 || hit.arg > 1) return;
             const std::string mode = kAutoRecenterModes[hit.arg];
             change = [mode](JsonValue& root) { root.set(key::kAutoRecenter, JsonValue::makeString(mode)); };
             break;
@@ -2521,8 +2495,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::FitCenter: {
             const bool full = hit.action == PanelAction::FitStart;
             std::fprintf(stderr, "[fit] %s: started from the panel\n", full ? "eye fit" : "re-wear fit");
-            const gaze_fit::Mode mode = full ? gaze_fit::Mode::Full : rewearMode(autoRecenter(model.config));
-            if (fit != nullptr) startFit(*fit, mode, view, vr);
+            if (fit != nullptr) startFit(*fit, full ? gaze_fit::Mode::Full : gaze_fit::Mode::Center, view, vr);
             return;
         }
         case PanelAction::FitDetails:
@@ -2667,6 +2640,13 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         model.panelError.clear();
         model.panelErrorBroken = false;
         if (!openPrompt.empty()) panel.showPrompt(openPrompt);
+        // The eye fit starts over: the up gains of the fits before don't count any more (not in --dump-png)
+        if (hit.action == PanelAction::FitReset && fit != nullptr) {
+            std::string stateError;
+            if (!ui_state::writeUpGains(ui_state::defaultPath(), {}, stateError)) {
+                std::fprintf(stderr, "[panel] %s\n", stateError.c_str());
+            }
+        }
     } else {
         std::fprintf(stderr, "[config] %s\n", error.c_str());
         model.panelError = error;
@@ -3253,7 +3233,7 @@ int runOverlay(const Options& options) {
             if (!step.log.empty()) std::fprintf(stderr, "[fit] %s\n", step.log.c_str());
             if (step.start) {
                 fitTrigger = "auto";
-                startFit(fit, rewearMode(autoRecenter(model.config)), view, &vr);
+                startFit(fit, gaze_fit::Mode::Center, view, &vr);
             }
         }
 
@@ -3263,9 +3243,7 @@ int runOverlay(const Options& options) {
             fitRun.begin(started.mode == gaze_fit::Mode::Full ? report::Kind::Fit : report::Kind::Recenter, unixNow());
             report::Summary& s = fitRun.summary();
             s.trigger = fitTrigger;
-            s.mode = started.mode == gaze_fit::Mode::Full     ? "full"
-                     : started.mode == gaze_fit::Mode::Center ? "center"
-                                                              : "tilt";
+            s.mode = started.mode == gaze_fit::Mode::Full ? "full" : "center";
             s.conditions = runConditions(model, vr, recenter);
             s.conditions.ipdMm = vr.userIpdMeters() * 1000;
             model.records.lastFit.clear();
@@ -3279,7 +3257,7 @@ int runOverlay(const Options& options) {
             dashboard.open = dashboardOpen;
             dashboard.panelShown = visible;
             const gaze_fit::Actions actions = fit.tick(nowSeconds(), dashboard, model.status);
-            // One "[fit]" line each (a try's numbers, and at the end the tilt)
+            // One "[fit]" line each (a try's numbers, and at the end the gains)
             for (size_t start = 0; start < actions.log.size();) {
                 const size_t end = std::min(actions.log.find('\n', start), actions.log.size());
                 std::fprintf(stderr, "[fit] %s\n", actions.log.substr(start, end - start).c_str());
@@ -3302,7 +3280,18 @@ int runOverlay(const Options& options) {
                 lastStamp = configStamp(model.configPath);
             }
             if (actions.writeValues) {
-                if (!writeFitValues(model, actions.values, fit.view().mode)) fit.writeFailed();
+                const gaze_fit::View done = fit.view();
+                if (!writeFitValues(model, actions.values, done.mode)) {
+                    fit.writeFailed();
+                } else if (done.mode == gaze_fit::Mode::Full && std::isfinite(done.notes.gainUp)) {
+                    // This fit's up gain joins the ones the next whole fit averages
+                    std::string error;
+                    const std::vector<double> gains =
+                        gaze_fit::nextUpGains(ui_state::readUpGains(uiStatePath), done.notes.gainUp);
+                    if (!ui_state::writeUpGains(uiStatePath, gains, error)) {
+                        std::fprintf(stderr, "[panel] %s\n", error.c_str());
+                    }
+                }
                 lastStamp = configStamp(model.configPath);
             }
             targetUp = false;

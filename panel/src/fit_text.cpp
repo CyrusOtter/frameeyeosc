@@ -116,8 +116,7 @@ std::string failureDetailText(const UiText& t, const gaze_fit::View& fit) {
         }
         case Failure::NoMovement: {
             if (!std::isfinite(d.movedDeg)) return "";
-            const std::string where = d.eye < 0 ? dot : (d.eye == 0 ? t.failDetailSidewaysLeft : t.failDetailSidewaysRight);
-            return line(where, format(t.failDetailMovedFormat, d.movedDeg, d.neededDeg));
+            return line(dot, format(t.failDetailMovedFormat, d.movedDeg, d.neededDeg));
         }
         case Failure::NoLidRange: {
             if (d.eye < 0) return "";
@@ -142,12 +141,9 @@ void fillFitResult(report::Summary& s, const gaze_fit::View& fit) {
         s.result = report::Result::Ok;
         for (int i = 0; i < 2; ++i) {
             const UiText& t = *tables[i];
-            const char* title = fit.mode == gaze_fit::Mode::Center ? t.fitDoneCenter
-                                : fit.mode == gaze_fit::Mode::Tilt ? t.fitDoneTilt
-                                                                   : t.fitDone;
+            const char* title = fit.mode == gaze_fit::Mode::Center ? t.fitDoneCenter : t.fitDone;
             const std::string line = format(t.fitGazeCenterFormat, format("%+.3f", fit.values.offsetX).c_str(),
-                                            format("%+.3f", fit.values.offsetY).c_str(),
-                                            format("%+.1f°", fit.values.rollDeg).c_str());
+                                            format("%+.3f", fit.values.offsetY).c_str());
             (i == 0 ? s.reason : s.reasonEn) = std::string(title) + t.condSeparator + line;
         }
         return;

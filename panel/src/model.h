@@ -114,7 +114,6 @@ private:
 /** The eye fit as config.json holds it (shown on the Eye fit tab even when frameeyeosc is not running). */
 struct FitInConfig {
     bool gazeFitted = false;              ///< the zero point, a gain or the tilt is not the default
-    bool eyeXFitted = false;              ///< each eye's own sideways zero point and gain are set
     bool lidsFitted[2] = {false, false};  ///< all four readings of that eye are set
     gaze_fit::Values values;              ///< hasLids when both eyes are fitted
 };
@@ -211,38 +210,40 @@ bool migrateLidOpenSnap(JsonValue& root, std::string& log);
 bool migrateEyeOffsets(JsonValue& root, std::string& log);
 
 /**
- * Whether a settings file still needs migrateLidScales, migrateGazePresets, migrateEyeOffsets or migrateLidOpenSnap
- * (no lid_widen, a version below 3, or a lid_open_snap above 0.75).
+ * Bring an eye fit from before version 4 over to what the fit keeps now, once: only the zero point (gaze_offset_x / _y)
+ * and the up gain carry over from one wear to the next, so the tilt goes to 0, the sideways and down gains to 1, and
+ * each eye's own sideways zero point and gain are taken out (null); auto_recenter "tilt" becomes "center". The same for
+ * either eye_behavior (the fit is shared). version is then written as 4, which marks the file as done. Run after
+ * migrateEyeOffsets, which only looks at files below version 3.
+ * @param root the config's root object (changed in place)
+ * @param log what was changed, for the log (empty if nothing but the version)
+ * @return true if root changed (the version was older)
+ */
+bool migrateFitPolicy(JsonValue& root, std::string& log);
+
+/**
+ * Whether a settings file still needs migrateLidScales, migrateGazePresets, migrateEyeOffsets, migrateFitPolicy or
+ * migrateLidOpenSnap (no lid_widen, a version below 4, or a lid_open_snap above 0.75).
  * @param root the config's root object
  * @return true if one of them would change it
  */
 bool configNeedsMigration(const JsonValue& root);
 
-/** The fit run by itself when the headset is put on (auto_recenter). */
-enum class AutoRecenter { Off, Center, Tilt };
+/** The fit run by itself when the headset is put on (auto_recenter): nothing, or re-centering (one dot). */
+enum class AutoRecenter { Off, Center };
 
 /**
- * auto_recenter as written: "off", "center" or "tilt". A true / false from before it had three values reads as
- * the default / "off", and anything else as the default, "center" (the tilt from one wearing's re-wear fits
- * scattered by about ±5°, as much as it corrects).
+ * auto_recenter as written: "off" or "center". A true / false from before it had a choice reads as the default /
+ * "off", and anything else ("tilt" from before 0.7.7 too) as the default, "center".
  * @param config the config
  * @return the kind
  */
 AutoRecenter autoRecenter(const ConfigFile& config);
 
 /**
- * The re-wear fit for an auto_recenter kind: the one it runs by itself, and the one the button next to "Fit again"
- * runs (re-centering only when auto_recenter is off).
- * @param kind the kind
- * @return gaze_fit::Mode::Center or gaze_fit::Mode::Tilt
- */
-gaze_fit::Mode rewearMode(AutoRecenter kind);
-
-/**
- * Write an eye fit's result into config.json: the gaze zero point; with the side dots (the whole fit, and the
- * re-wear fit with the tilt) also the tilt; each eye's sideways values when measured; for the whole fit also the
- * gains, each eye's lid readings, and lid_scale_left/right back to null when it measured the eyelids (an old
- * tweak must not sit on a new fit).
+ * Write an eye fit's result into config.json: the gaze zero point; for the whole fit also the gains (sideways and
+ * down 1), the tilt (0), each eye's own sideways values taken out (null), each eye's lid readings, and
+ * lid_scale_left/right back to null when it measured the eyelids (an old tweak must not sit on a new fit).
  * @param root the config's root object
  * @param values the result
  * @param mode the mode
