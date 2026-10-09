@@ -566,6 +566,18 @@ struct Args {
     /// The right eye's own sideways gain for per-eye gaze [default: --gaze-gain-x]
     #[arg(long)]
     gaze_gain_x_right: Option<f32>,
+    /// Your own multiplier on how far the gaze goes left, after the eye fit (0.25..1.5); the fit never changes it
+    #[arg(long, default_value_t = 1.0)]
+    gaze_scale_left: f32,
+    /// Your own multiplier on how far the gaze goes right, after the eye fit (0.25..1.5)
+    #[arg(long, default_value_t = 1.0)]
+    gaze_scale_right: f32,
+    /// Your own multiplier on how far the gaze goes up, after the eye fit (0.25..1.5)
+    #[arg(long, default_value_t = 1.0)]
+    gaze_scale_up: f32,
+    /// Your own multiplier on how far the gaze goes down, after the eye fit (0.25..1.5)
+    #[arg(long, default_value_t = 1.0)]
+    gaze_scale_down: f32,
     /// Settings file, re-read while running; options given here win over it
     /// [default: ~/.config/frameeyeosc/config.json]
     #[arg(long)]
@@ -2516,6 +2528,46 @@ fn correct_gaze(angles: [f32; 6], settings: &Settings) -> [f32; 6] {
     corrected
 }
 
+/// The user's own gaze scale (--gaze-scale-left/right/up/down) on the gaze about to be sent (left x/y, right x/y,
+/// combined x/y): looking left (x below 0) goes `gaze_scale_left` times as far from the fitted zero point, and so on.
+///
+/// Where: on the shared (combined) direction, once everything else is done (after the filters and, with
+/// --independent-eyes in v2, after the cross-eye gate), in both eye behaviours. The combined x/y is scaled, and each
+/// eye moves by the same amount, so whatever separates the eyes stays as it was: v2's fixed VERGENCE_DEG and an
+/// intentional cross-eye let through, v1's per-eye readings (an eye held while unreliable moves with the combined
+/// gaze), and each eye's own up / down. After the filters, so they (the deadzone, how fast the One Euro filter
+/// loosens) and the eyelid fit's look up / down (`vertical`, taken before this) behave the same whatever the scale; a
+/// gaze capture reads the raw gaze, so the eye fit never sees it either.
+///
+/// Like the fit's gains in `correct_gaze`, it multiplies the -1..1 scale (an angle: 1.0 = 45°), not its tangent.
+/// All four at 1.0 return the gaze untouched, bit for bit.
+fn scale_gaze(gaze: [f32; 6], settings: &Settings) -> [f32; 6] {
+    let Settings {
+        gaze_scale_left: left,
+        gaze_scale_right: right,
+        gaze_scale_up: up,
+        gaze_scale_down: down,
+        ..
+    } = *settings;
+    if [left, right, up, down] == [1.0; 4] {
+        return gaze;
+    }
+    let scaled = |value: f32, below: f32, above: f32| {
+        let scale = if value < 0.0 { below } else { above };
+        if scale == 1.0 { value } else { (value * scale).clamp(-1.0, 1.0) }
+    };
+    let [x, y] = [gaze[4], gaze[5]];
+    let shared = [scaled(x, left, right), scaled(y, down, up)];
+    let mut out = gaze;
+    for (index, value) in out.iter_mut().enumerate() {
+        let axis = index % 2;
+        let fused = [x, y][axis];
+        // An eye looking the combined way (both eyes share it unless --independent-eyes) takes it exactly
+        *value = if *value == fused { shared[axis] } else { (*value + (shared[axis] - fused)).clamp(-1.0, 1.0) };
+    }
+    out
+}
+
 /// One eye-server sample worked through the eyelid mapping and the filters.
 struct Sample {
     openness: [f32; 2],
@@ -2607,7 +2659,7 @@ fn process(
     let (gaze, lids, gaze_held, openness_scaled, camera, lid_from) = if settings.raw {
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
         let corrected = correct_gaze(raw_gaze, settings);
-        let gaze = choose_gaze(corrected, [true; 2], settings.independent_eyes, v2);
+        let gaze = scale_gaze(choose_gaze(corrected, [true; 2], settings.independent_eyes, v2), settings);
         let zoned = camera_lids.map(|camera| v2 && camera.is_none());
         let fits = fits_at(settings, corrected[5], zoned);
         let openness_scaled = lid_inputs_with(data.openness, corrected[5], scales, settings, fits);
@@ -2747,6 +2799,8 @@ fn process(
             gaze[2] = (gaze[2] - extra).clamp(-1.0, 1.0);
             cross_eye = smoother.cross_eye.engaged;
         }
+        // The user's own scale last, on the combined direction (see scale_gaze)
+        let gaze = scale_gaze(gaze, settings);
         smoother.cap_lids(&mut lids, capped);
         let filtered = lids;
         let mut lids = sync_lids(lids, settings.lid_sync);
@@ -4134,6 +4188,137 @@ mod tests {
             let vergence = (sample.gaze[0] - sample.gaze[2]) * 45.0;
             assert!((vergence - VERGENCE_DEG).abs() < 1e-3, "{vergence}");
         }
+    }
+
+    fn scaled(left: f32, right: f32, up: f32, down: f32) -> Settings {
+        Settings {
+            gaze_scale_left: left,
+            gaze_scale_right: right,
+            gaze_scale_up: up,
+            gaze_scale_down: down,
+            ..settings()
+        }
+    }
+
+    #[test]
+    fn gaze_scale_at_one_changes_nothing() {
+        // Bit for bit, whatever the values (a negative zero, past the range, NaN)
+        let bits = |gaze: [f32; 6]| gaze.map(f32::to_bits);
+        for gaze in [
+            [0.1, -0.2, 0.3, -0.4, 0.2, -0.3],
+            [-0.0, 0.0, -1.0, 1.0, -0.0, 0.0],
+            [f32::NAN, 0.5, 2.0, -3.0, f32::NAN, -0.7],
+        ] {
+            assert_eq!(bits(scale_gaze(gaze, &settings())), bits(gaze));
+            assert_eq!(bits(scale_gaze(gaze, &scaled(1.0, 1.0, 1.0, 1.0))), bits(gaze));
+        }
+    }
+
+    #[test]
+    fn each_gaze_scale_moves_only_its_own_half() {
+        let close = |a: [f32; 6], b: [f32; 6]| a.iter().zip(&b).all(|(a, b)| (a - b).abs() < 1e-6);
+        let gaze = |x: f32, y: f32| [x, y, x, y, x, y];
+        // Left: only x below 0
+        let left = scaled(0.5, 1.0, 1.0, 1.0);
+        assert!(close(scale_gaze(gaze(-0.4, 0.2), &left), gaze(-0.2, 0.2)));
+        assert_eq!(scale_gaze(gaze(0.4, -0.2), &left), gaze(0.4, -0.2));
+        // Right: only x above 0
+        let right = scaled(1.0, 1.5, 1.0, 1.0);
+        assert!(close(scale_gaze(gaze(0.4, 0.2), &right), gaze(0.6, 0.2)));
+        assert_eq!(scale_gaze(gaze(-0.4, 0.2), &right), gaze(-0.4, 0.2));
+        // Up: only y above 0
+        let up = scaled(1.0, 1.0, 0.25, 1.0);
+        assert!(close(scale_gaze(gaze(0.1, 0.4), &up), gaze(0.1, 0.1)));
+        assert_eq!(scale_gaze(gaze(0.1, -0.4), &up), gaze(0.1, -0.4));
+        // Down: only y below 0
+        let down = scaled(1.0, 1.0, 1.0, 1.2);
+        assert!(close(scale_gaze(gaze(0.1, -0.5), &down), gaze(0.1, -0.6)));
+        assert_eq!(scale_gaze(gaze(0.1, 0.5), &down), gaze(0.1, 0.5));
+        // Straight ahead stays; never past the end of the range
+        assert_eq!(scale_gaze(gaze(0.0, 0.0), &scaled(0.25, 1.5, 0.25, 1.5)), gaze(0.0, 0.0));
+        assert_eq!(scale_gaze(gaze(0.8, -0.9), &scaled(1.0, 1.5, 1.0, 1.5)), gaze(1.0, -1.0));
+        // Through the processing: settled on (-0.2, 0.1) on the -1..1 scale, left goes 1.5 times as far and up half
+        // as far, in both eye behaviours, smoothed or raw
+        let tan = |angle: f32| (angle * 45.0).to_radians().tan();
+        let readings: Vec<EyeData> = (0..180).map(|i| reading(i, [tan(-0.2), tan(0.1)], [0.85; 2])).collect();
+        for eye_behavior in [1, 2] {
+            for raw in [false, true] {
+                let base = Settings { eye_behavior, raw, ..settings() };
+                let plain = run(&base, &readings)[179].gaze;
+                let wider = run(&Settings { gaze_scale_left: 1.5, gaze_scale_up: 0.5, ..base }, &readings)[179].gaze;
+                assert!((wider[4] - plain[4] * 1.5).abs() < 1e-5, "{plain:?} {wider:?}");
+                assert!((wider[5] - plain[5] * 0.5).abs() < 1e-6, "{plain:?} {wider:?}");
+                assert!((plain[4] + 0.2).abs() < 1e-3 && (plain[5] - 0.1).abs() < 1e-3, "{plain:?}");
+                assert_eq!(wider, gaze(wider[4], wider[5]));
+            }
+        }
+    }
+
+    #[test]
+    fn gaze_scale_keeps_the_eyes_apart_and_the_eyelids_as_they_were() {
+        let scale = |base: Settings| Settings {
+            gaze_scale_left: 0.5,
+            gaze_scale_right: 1.5,
+            gaze_scale_up: 0.5,
+            gaze_scale_down: 1.5,
+            ..base
+        };
+        // v2 with --independent-eyes: the fixed vergence, looking left and up or right and down
+        for [x, y] in [[-0.3f32, 0.2f32], [0.3, -0.2]] {
+            let readings: Vec<EyeData> = (0..120).map(|i| reading(i, [x, y], [0.85; 2])).collect();
+            let plain = run(&independent(), &readings);
+            let sent = run(&scale(independent()), &readings);
+            for (plain, sample) in plain.iter().zip(&sent) {
+                assert!((sent_vergence(sample) - VERGENCE_DEG).abs() < 1e-3, "{}", sent_vergence(sample));
+                assert_eq!(sample.lids, plain.lids);
+            }
+            assert!((sent[119].gaze[4] - plain[119].gaze[4]).abs() > 0.05);
+        }
+        // ...and an intentional cross-eye still shows as Valve's 30°, while looking a little left
+        let vergence = |i: usize| if i < 90 { 0.0 } else { 30.0 };
+        let readings: Vec<EyeData> = (0..300)
+            .map(|i| {
+                let mut data = crossed(i, vergence(i), [0.9; 2]);
+                data.fixation_point[0] = -0.1;
+                data
+            })
+            .collect();
+        let sent = run(&scale(independent()), &readings);
+        let last = &sent[299];
+        assert!(last.cross_eye && (sent_vergence(last) - 30.0).abs() < 0.2, "{}", sent_vergence(last));
+        // v1 with --independent-eyes: Valve's 10° apart stays 10° apart
+        let v1 = Settings {
+            eye_behavior: 1,
+            ..independent()
+        };
+        let apart: Vec<EyeData> = (0..90)
+            .map(|i| {
+                let mut data = crossed(i, 10.0, [0.9; 2]);
+                data.fixation_point[0] = 0.2;
+                data
+            })
+            .collect();
+        let plain = run(&v1, &apart);
+        let sent = run(&scale(v1), &apart);
+        assert!((sent_vergence(&sent[89]) - sent_vergence(&plain[89])).abs() < 1e-3);
+        assert!((sent_vergence(&sent[89]) - 10.0).abs() < 0.05, "{}", sent_vergence(&sent[89]));
+        assert!(sent[89].gaze[4] > plain[89].gaze[4] + 0.05);
+        // Looking far down with an eye fit: the eyelids go by where the eyes really look, not the scaled gaze
+        let fit = |settings: &mut Settings| {
+            (settings.lid_fit_closed_left, settings.lid_fit_up_left) = (Some(0.15), Some(0.93));
+            (settings.lid_fit_open_left, settings.lid_fit_down_left) = (Some(0.92), Some(0.6));
+            (settings.lid_fit_closed_right, settings.lid_fit_up_right) = (Some(0.15), Some(0.93));
+            (settings.lid_fit_open_right, settings.lid_fit_down_right) = (Some(0.92), Some(0.6));
+        };
+        let mut unscaled = settings();
+        fit(&mut unscaled);
+        let fitted = scale(unscaled.clone());
+        let down: Vec<EyeData> = (0..120).map(|i| reading(i, [0.0, -0.4], [0.62; 2])).collect();
+        let (a, b) = (run(&fitted, &down), run(&unscaled, &down));
+        for (a, b) in a.iter().zip(&b) {
+            assert_eq!(a.lids, b.lids);
+        }
+        assert!(a[119].gaze[5] < b[119].gaze[5] - 0.05);
     }
 
     #[test]
