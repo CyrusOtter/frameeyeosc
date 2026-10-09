@@ -52,8 +52,9 @@ const CLOSED_NO_PUPIL_S: f64 = 3.0 / FPS;
 /// the lens-edge band at large x), and it is dark: an eye turned 25 degrees or more outward takes its pupil into that
 /// shading, where it merges with it (a blob too big to be one), and the iris box, cut by the window's edge, takes in
 /// sclera and skin and reads 1.31-1.50 x its open level. Such an eye is not closed; its eyelid, widen and squint keep
-/// their last values until the pupil is seen again, as long as the lids measured there are still apart
-/// (`EDGE_OPEN_AP`): an eye that really closes after an outward glance (the last pupil stays at the edge) still closes.
+/// their last values (but widen 0 and the eyelid at most 0.75) until the pupil is seen again, as long as the lids
+/// measured there are still apart (`EDGE_OPEN_AP`): an eye that really closes after an outward glance (the last pupil
+/// stays at the edge) still closes.
 /// 12 px missed a right look of 35 degrees on 2026-10-09 15:23 (the right eye's last pupil 15 px from the edge, 9 s
 /// falsely closed). On the features of the 2026-10-03/04 and 10-08 eye videos: 53 of the 55 frames falsely closed
 /// looking outward (Valve's openness 0.9 or more) no longer closed, none of the 6118 closed frames (Valve's below 0.5);
@@ -804,7 +805,10 @@ impl EyeEngine {
         let open = if open.is_finite() { open } else { 1.0 };
         self.last_open = open;
         let eye_lid = if closed { 0.0 } else { 0.75 * open + 0.25 * wide };
-        let (eye_lid, wide, squint) = if edge_held { self.last_out } else { (eye_lid, wide, squint) };
+        // Held at the last open values, but never widened: the pupil is often lost just as the eye widens to look aside
+        // (2026-10-09 18:17: the right eye held at 0.93 / widen 0.71 for 10 s of a right look).
+        let (eye_lid, wide, squint) =
+            if edge_held { (self.last_out.0.min(0.75), 0.0, self.last_out.2) } else { (eye_lid, wide, squint) };
         if !closed {
             self.last_out = (eye_lid, wide, squint);
         }
@@ -2646,6 +2650,11 @@ mod tests {
         e.process(&lid_frame(Some(edge), true), f64::NAN, t + 1.5, &p);
         let (closed, o) = closes(&mut e, &p, t + 1.5, &lost);
         assert!(!closed && o.edge_held && o.eye_lid > 0.5, "{o:?}");
+        // Held after a widened open eye: not widened (relaxed open at most).
+        let (mut e, p, t) = seen_at(edge, Tune::default());
+        e.last_out = (0.93, 0.71, 0.0);
+        let (closed, o) = closes(&mut e, &p, t, &lost);
+        assert!(!closed && o.edge_held && o.eye_lid == 0.75 && o.eye_wide == 0.0, "{o:?}");
         // 14 px from the edge (the right eye on 2026-10-09 15:23 was lost at 15): held too.
         let (mut e, p, t) = seen_at((139.0, 200.0), Tune::default());
         let (closed, o) = closes(&mut e, &p, t, &lost);
