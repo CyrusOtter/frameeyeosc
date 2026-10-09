@@ -15,8 +15,8 @@
 //!
 //! No per-wear calibration is needed: after the HMD goes on, the open-eye levels (skin line and aperture, in pixels)
 //! are the mode of the first 30 s of usable frames (pupil seen, eye open, gaze within 15 degrees of the wearer's
-//! typical pitch), and from then on they follow slowly (skin line: 60 s time constant, frames with EyeWide < 0.2;
-//! aperture: 20 s, frames with EyeWide < 0.2 and EyeSquint < 0.6; see TRACK_AP_TAU_S). The widen
+//! typical pitch), and from then on they follow slowly (skin line: 30 s time constant, every usable frame, see
+//! TRACK_TAU_S; aperture: 20 s, frames with EyeWide and EyeSquint < 0.6, see TRACK_AP_TAU_S). The widen
 //! step and the closed aperture come from the median of the user's past wear calibrations (in iris radii) times the
 //! current iris radius, or population defaults when there is none. A wear calibration only sets the starting levels
 //! (and adds its step to the history). EyeWide is 0 while warming up and for 0.3 s after the gaze drops by 8 degrees
@@ -92,13 +92,18 @@ const WIDE_OFF: f64 = 0.3;
 pub const WARMUP_S: f64 = 30.0;
 /// Usable frames for the baseline: Valve pitch within this many degrees of the wearer's typical pitch.
 const PITCH_GATE: f64 = 15.0;
-/// After warm-up the skin line's baseline follows the open-eye level with this time constant (s), using only frames
-/// with EyeWide below `TRACK_MAX_WIDE`. Faster (20 s) followed the lid down during downward glances and widened falsely
-/// more.
-const TRACK_TAU_S: f64 = 60.0;
-const TRACK_MAX_WIDE: f64 = 0.2;
-/// The aperture's baseline follows faster (`TRACK_AP_TAU_S`), through frames with EyeSquint up to
-/// `TRACK_AP_MAX_SQUINT`. It used to follow only frames below 0.2: an upper lid that settled lower after the warm-up
+/// After warm-up the skin line's baseline follows the skin line with this time constant (s), at most half a widen step
+/// per time constant, through every usable frame. It used to take only frames with EyeWide below 0.2 (60 s): a
+/// baseline learnt low (2026-10-09 19:42, after an eyecam restart during the gaze fit: the right eye's 17 px under its
+/// skin line) read EyeWide 1 from then on and never moved, the right eye widened over 70% of the normal part (59%
+/// live) while the frames show it as open as the left one. Through every frame at 30 s: 25% (left 52 -> 10%), the
+/// other sessions' normal parts the same or less widened, and the widen steps of the protocol sessions (5 s each)
+/// kept: medians 0.75-1.00 (0.79-1.00 before). A widen of one full step held reads 0.5 or more for about 22 s (a
+/// bigger one longer: 1.4 steps about 50 s), then fades into the baseline. 20 s took the 19:42 eye down to 15%
+/// but faded some widen steps to 0.3 by their end; 0.6 as the limit (as for the aperture) left it at 66%.
+const TRACK_TAU_S: f64 = 30.0;
+/// The aperture's baseline follows faster (`TRACK_AP_TAU_S`), through frames with EyeSquint and EyeWide below
+/// `TRACK_AP_MAX`. It used to follow only frames below 0.2: an upper lid that settled lower after the warm-up
 /// (2026-10-09 16:37, both eyes 13-14 px lower from 40 s on, at the same pupil position and gaze; the frames show
 /// the lids relaxed) read as squint 0.4-0.5 from then on, and as squinting it never taught the baseline (113 -> 112 px
 /// over 2 minutes): eyelid 0.55 / 0.53 for good, while the skin line's baseline followed. Through frames up to 0.6 at
@@ -106,7 +111,7 @@ const TRACK_MAX_WIDE: f64 = 0.2;
 /// and the squint steps of the protocol sessions unchanged (2026-10-07 squint 1.00 / 1.00, 10-08 0.50 / 0.79). A
 /// squint held longer than that, at under 0.6, fades into the baseline.
 const TRACK_AP_TAU_S: f64 = 20.0;
-const TRACK_AP_MAX_SQUINT: f64 = 0.6;
+const TRACK_AP_MAX: f64 = 0.6;
 /// For this long after a wear starts the iris radius is taken from the history (the running estimate is settling).
 const R_PRIOR_S: f64 = 10.0;
 /// When Valve's pitch falls by `GAZE_DROP_DEG` within `GAZE_DROP_WINDOW` s, EyeWide is 0 for `GAZE_DROP_HOLD` s: the
@@ -747,12 +752,10 @@ impl EyeEngine {
         } else if usable && params.tune.track && step_px > 0.0 {
             // One frame's share of the time constant.
             let k = 1.0 / (TRACK_TAU_S * fps);
-            if self.last_wide < TRACK_MAX_WIDE {
-                self.base.b += (skin_px - self.base.b).clamp(-0.5 * step_px, 0.5 * step_px) * k;
-            }
+            self.base.b += (skin_px - self.base.b).clamp(-0.5 * step_px, 0.5 * step_px) * k;
             let k_ap = 1.0 / (TRACK_AP_TAU_S * fps);
-            if self.last_wide < TRACK_MAX_WIDE
-                && self.last_sq < TRACK_AP_MAX_SQUINT
+            if self.last_wide < TRACK_AP_MAX
+                && self.last_sq < TRACK_AP_MAX
                 && ap_px.is_finite()
                 && self.base.ap_n.is_finite()
             {
@@ -2695,6 +2698,33 @@ mod tests {
         let o = run(&mut e, 160..250, 3.0);
         assert!(o.eye_squint > 0.9 && o.eye_lid < 0.3, "{o:?}");
         assert!((e.baseline_px().unwrap().1 - ap_low).abs() < 0.5);
+    }
+
+    #[test]
+    fn the_skin_line_baseline_follows_a_higher_lid_and_a_held_widen_fades_slowly() {
+        let p = Params::default();
+        let mut e = EyeEngine::default();
+        let mut t = 0.0;
+        // At 15 frames a second; the outputs of every frame
+        let mut run = |e: &mut EyeEngine, opening: std::ops::Range<usize>, seconds: f64| {
+            (0..(seconds * 15.0) as usize)
+                .map(|_| {
+                    t += 1.0 / 15.0;
+                    e.process(&lid_frame_between(Some((250.0, 200.0)), opening.clone()), f64::NAN, t, &p)
+                })
+                .collect::<Vec<_>>()
+        };
+        let o = run(&mut e, 130..270, 7.0).pop().unwrap();
+        e.seed_px(o.skin_up * o.r, o.aperture * o.r);
+        let (b_open, _) = e.baseline_px().unwrap();
+        assert!(run(&mut e, 130..270, 2.0).iter().all(|o| o.eye_wide < 0.01));
+        // The upper lid 10 px higher (about one widen step, 0.19 x the iris radius): widened at once, 0.5 or more for
+        // about 22 s (0.7 x TRACK_TAU_S), and followed (EyeWide below 0.2) within a minute and a half
+        let out = run(&mut e, 120..270, 90.0);
+        let wide_for = out.iter().skip(5).position(|o| o.eye_wide < 0.5).map_or(f64::INFINITY, |k| (k + 5) as f64 / 15.0);
+        assert!(out[5].eye_wide > 0.9 && (15.0..35.0).contains(&wide_for), "{} {wide_for}", out[5].eye_wide);
+        assert!(out.last().unwrap().eye_wide < 0.2, "{:?}", out.last());
+        assert!(e.baseline_px().unwrap().0 - b_open > 7.0);
     }
 
     #[test]
