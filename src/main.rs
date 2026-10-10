@@ -72,17 +72,18 @@ const VERGENCE_DEG: f32 = 2.0;
 // Valve's left - right stayed at or above 20° for at most 0.40 s and at or above 25° for at most 0.16 s (with only
 // half-open eyes: 1.54 s and 0.29 s, at the end of one recording, looking 15-27° down). So it is let through once,
 // with both eyes reliable and at least that open, it has stayed at or above CROSS_EYE_ENGAGE_DEG for
-// CROSS_EYE_ENGAGE_S, or at or above CROSS_EYE_FAST_DEG for CROSS_EYE_FAST_S: ten of the eleven tries, 0.43-1.01 s
-// after they reached 15°, and never in the everyday recordings. The one missed stayed at or above 20° for 0.39 s
-// (peak 22°), which the everyday noise matches...
+// CROSS_EYE_ENGAGE_S, or at or above CROSS_EYE_FAST_DEG for CROSS_EYE_FAST_S (both raised in a wear that reads
+// higher, and only from an ordinary reading, see CROSS_EYE_LEVEL_S): ten of the eleven tries, 0.43-1.01 s after they
+// reached 15°, and never in the everyday recordings. The one missed stayed at or above 20° for 0.39 s (peak 22°),
+// which the everyday noise matches...
 const CROSS_EYE_ENGAGE_DEG: f32 = 20.0;
 const CROSS_EYE_ENGAGE_S: f64 = 0.5;
 const CROSS_EYE_FAST_DEG: f32 = 25.0;
 const CROSS_EYE_FAST_S: f64 = 0.25;
 const CROSS_EYE_ENGAGE_OPEN: f32 = 0.7;
-// ...until it has stayed below CROSS_EYE_EXIT_DEG for CROSS_EYE_EXIT_S (looking down at a phone read 6-12°, which is
-// not told apart from the noise and stays at VERGENCE_DEG; 12° kept the tries no more than 0.2 s longer, but let the
-// way back down show as cross-eye for up to 0.6 s instead of 0.2 s)...
+// ...until it has stayed below CROSS_EYE_EXIT_DEG (raised with them) for CROSS_EYE_EXIT_S (looking down at a phone
+// read 6-12°, which is not told apart from the noise and stays at VERGENCE_DEG; 12° kept the tries no more than 0.2 s
+// longer, but let the way back down show as cross-eye for up to 0.6 s instead of 0.2 s)...
 const CROSS_EYE_EXIT_DEG: f32 = 15.0;
 const CROSS_EYE_EXIT_S: f64 = 0.15;
 // ...smoothed over this long (s), and blending in and out over this long (s), from and back to VERGENCE_DEG.
@@ -93,6 +94,36 @@ const CROSS_EYE_HOLD_S: f64 = 0.3;
 // Both eyes count as open for holding and smoothing it from this Frame openness, or from --gaze-hold-below when that is
 // set (CROSS_EYE_ENGAGE_OPEN to start it).
 const CROSS_EYE_OPEN: f32 = 0.5;
+// Some wears read far more turned in all along. In three on 2026-10-10 (10, 8 and 51 minutes, the eyes often half
+// shut), Valve's left - right with the eyes open had a median of about 16° in the first two (p90 24-26°, 28-37% of the
+// time at 20° or more) and 11-15° in the first minutes of the third, against 2-6° in other wears; the lines above let
+// it through 55 times (146 s) though the eyes were crossed on purpose once at most, and neither Valve's eyelids nor the
+// eye cameras' told those stretches apart. So the lines are raised to what the wear reads: CROSS_EYE_ENGAGE_DEG,
+// CROSS_EYE_FAST_DEG and CROSS_EYE_EXIT_DEG go up together until CROSS_EYE_ENGAGE_DEG is CROSS_EYE_ABOVE_LEVEL_DEG
+// above the median of Valve's left - right over the last CROSS_EYE_LEVEL_S of samples with both eyes usable (not while
+// let through). It is worked out every CROSS_EYE_LEVEL_EVERY_S once there are CROSS_EYE_LEVEL_MIN of them (10 s at
+// ~90 Hz; until then the lines stay as they are), and with fewer later the last one holds (in those wears the eyes
+// were half shut for minutes), also over gaps in the samples. With what follows, 2 of the stretches not meant came
+// through; with 8° above it, a median over 120 s or the 40th percentile, 5-8; with 12° above or 30 s, the same 2.
+const CROSS_EYE_LEVEL_S: f64 = 60.0;
+const CROSS_EYE_LEVEL_MIN: usize = 900;
+const CROSS_EYE_LEVEL_EVERY_S: f64 = 1.0;
+const CROSS_EYE_ABOVE_LEVEL_DEG: f32 = 10.0;
+// Only a stretch with the eyes no more than this far down counts (degrees, Valve's own up / down, before the eye fit):
+// the tries read a median of 3-11° down around being let through, those wears most of theirs 10-25° down, much like
+// shut eyes (23-27° left - right, 17-21° down). Without it, 8 of the stretches not meant came through; at -13° or
+// -17°, the same 2...
+const CROSS_EYE_LOWEST_PITCH_DEG: f32 = -15.0;
+// ...if it got there within this long (s) of Valve's left - right being below CROSS_EYE_EXIT_DEG (not raised) or the
+// eyes being shut or unreliable: the tries took 0.43-1.01 s, while in those wears it often crept up over 2.6-3.0 s
+// (5 of the stretches not meant came through without this, 3 with 3 s)...
+const CROSS_EYE_RISE_S: f64 = 2.5;
+// ...and started no sooner than this long (s) after both eyes were open again (CROSS_EYE_ENGAGE_OPEN): right after a
+// blink Valve can still read the shut eyes' turn-in, 30-37° for 0.3 s from 0.26 s after the eyes opened. With all of
+// this, those three wears let it through 3 times (8.4 s), one of them 40-50° for 2.4 s right after a blink, much like
+// crossing on purpose; the tries show as before, as do three from 2026-10-10 crossed right after shutting the eyes for
+// 2 s (34-44°, 0.49-0.92 s after reaching 15°), and the everyday recordings never let it through.
+const CROSS_EYE_SETTLE_S: f64 = 0.3;
 // The eye fit measures openness with the eyes on targets this far up and down (15° of 45°).
 const LID_FIT_PITCH: f32 = 15.0 / 45.0;
 // A fitted eye counts as closed from this share of the way from its closed reading to its open one,
@@ -867,7 +898,7 @@ impl Smoother {
         self.wide_since = [None; 2];
         self.wide_last = [f64::NEG_INFINITY; 2];
         self.camera = CameraSmoother::default();
-        self.cross_eye = CrossEye::default();
+        self.cross_eye.restart();
         self.lid_doubt = [LidDoubt::default(); 2];
         self.ceiling_since = [None; 2];
         self.camera_gap = [CameraGap::default(); 2];
@@ -876,11 +907,12 @@ impl Smoother {
     }
 
     /// Start over what only --eye-behavior 2 keeps (the camera's eyelid's doubt and gaps, the ceiling rule, the
-    /// cross-eye gate), for a switch between it and 1; the filters go on, so the eyes don't jump.
+    /// cross-eye gate but for what the wear reads), for a switch between it and 1; the filters go on, so the eyes don't
+    /// jump.
     fn reset_behavior(&mut self) {
         self.lid_doubt = [LidDoubt::default(); 2];
         self.ceiling_since = [None; 2];
-        self.cross_eye = CrossEye::default();
+        self.cross_eye.restart();
         self.camera_gap = [CameraGap::default(); 2];
         self.side = SideCheck::default();
         self.raise_peak = RaisePeak::default();
@@ -1053,7 +1085,8 @@ impl Smoother {
 }
 
 /// Intentional cross-eye for --independent-eyes: Valve's own left - right is let through only while it stays far beyond
-/// what its noise reaches (see CROSS_EYE_ENGAGE_DEG); otherwise the eyes keep VERGENCE_DEG.
+/// what its noise reaches, in this wear too (see CROSS_EYE_ENGAGE_DEG and CROSS_EYE_LEVEL_S); otherwise the eyes keep
+/// VERGENCE_DEG.
 #[derive(Default)]
 struct CrossEye {
     // Valve's left - right (degrees), smoothed over CROSS_EYE_SMOOTH_S while both eyes are open and reliable.
@@ -1066,23 +1099,54 @@ struct CrossEye {
     engaged: bool,
     // How much of it shows, 0 (VERGENCE_DEG) to 1, moving at 1 / CROSS_EYE_RAMP_S.
     share: f32,
+    // Since when both eyes have been usable and at least CROSS_EYE_ENGAGE_OPEN open (for CROSS_EYE_SETTLE_S).
+    open_since: Option<f64>,
+    // When Valve's left - right was last below CROSS_EYE_EXIT_DEG, or the eyes shut or unreliable (for
+    // CROSS_EYE_RISE_S); None if it has not been since the start.
+    low_at: Option<f64>,
+    // What this wear reads; kept when the rest starts over (see restart).
+    level: CrossEyeLevel,
 }
 
 impl CrossEye {
+    /// Start over (after a gap in the samples, or a switch of --eye-behavior), keeping what this wear reads.
+    fn restart(&mut self) {
+        *self = CrossEye {
+            level: std::mem::take(&mut self.level),
+            ..CrossEye::default()
+        };
+    }
+
     /// The left - right to send (degrees) after a sample at `time`, `dt` after the one before, with Valve's left - right
-    /// `raw` (degrees), whether both eyes are open and reliable (`usable`), and whether they are open enough to start it
-    /// (`wide`: CROSS_EYE_ENGAGE_OPEN).
-    fn step(&mut self, time: f64, dt: f32, raw: f32, usable: bool, wide: bool) -> f32 {
+    /// `raw` and up / down `pitch` (degrees, before the eye fit), whether both eyes are open and reliable (`usable`), and
+    /// whether they are open enough to start it (`wide`: CROSS_EYE_ENGAGE_OPEN).
+    fn step(&mut self, time: f64, dt: f32, raw: f32, pitch: f32, usable: bool, wide: bool) -> f32 {
+        // The lines, raised together until CROSS_EYE_ENGAGE_DEG is CROSS_EYE_ABOVE_LEVEL_DEG above what this wear reads
+        let level = self.level.add(time, raw, usable && !self.engaged);
+        let raise = level.map_or(0.0, |level| (level + CROSS_EYE_ABOVE_LEVEL_DEG - CROSS_EYE_ENGAGE_DEG).max(0.0));
+        if !(usable && wide) {
+            self.open_since = None;
+        } else if self.open_since.is_none() {
+            self.open_since = Some(time);
+        }
+        if !usable || raw < CROSS_EYE_EXIT_DEG {
+            self.low_at = Some(time);
+        }
         if usable {
             self.held_since = None;
             let alpha = 1.0 - (-dt / CROSS_EYE_SMOOTH_S).exp();
             self.smoothed = Some(self.smoothed.map_or(raw, |smoothed| smoothed + alpha * (raw - smoothed)));
             let lines = if self.engaged {
-                [(raw < CROSS_EYE_EXIT_DEG, CROSS_EYE_EXIT_S), (false, 0.0)]
+                [(raw < CROSS_EYE_EXIT_DEG + raise, CROSS_EYE_EXIT_S), (false, 0.0)]
             } else {
+                // Not far down, not long after an ordinary reading, and not right after a blink
+                let start = wide
+                    && pitch >= CROSS_EYE_LOWEST_PITCH_DEG
+                    && self.low_at.is_some_and(|low| time - low <= CROSS_EYE_RISE_S + 1e-9)
+                    && self.open_since.is_some_and(|open| time - open >= CROSS_EYE_SETTLE_S - 1e-9);
                 [
-                    (wide && raw >= CROSS_EYE_ENGAGE_DEG, CROSS_EYE_ENGAGE_S),
-                    (wide && raw >= CROSS_EYE_FAST_DEG, CROSS_EYE_FAST_S),
+                    (start && raw >= CROSS_EYE_ENGAGE_DEG + raise, CROSS_EYE_ENGAGE_S),
+                    (start && raw >= CROSS_EYE_FAST_DEG + raise, CROSS_EYE_FAST_S),
                 ]
             };
             let mut switch = false;
@@ -1109,6 +1173,40 @@ impl CrossEye {
         self.share = if self.engaged { (self.share + step).min(1.0) } else { (self.share - step).max(0.0) };
         let through = self.smoothed.unwrap_or(VERGENCE_DEG);
         VERGENCE_DEG + self.share * (through - VERGENCE_DEG)
+    }
+}
+
+/// What Valve's left - right reads in this wear (see CROSS_EYE_LEVEL_S).
+#[derive(Default)]
+struct CrossEyeLevel {
+    // The samples it is taken from, (time, degrees), oldest first.
+    recent: VecDeque<(f64, f32)>,
+    // Their median, once there were CROSS_EYE_LEVEL_MIN of them.
+    level: Option<f32>,
+    // When it is worked out next.
+    next: Option<f64>,
+}
+
+impl CrossEyeLevel {
+    /// Take in Valve's left - right `raw` (degrees) at `time` if `learn` (both eyes usable and it not let through), and
+    /// return the level.
+    fn add(&mut self, time: f64, raw: f32, learn: bool) -> Option<f32> {
+        if learn {
+            self.recent.push_back((time, raw));
+        }
+        while self.recent.front().is_some_and(|(at, _)| time - at > CROSS_EYE_LEVEL_S) {
+            self.recent.pop_front();
+        }
+        if self.next.is_none_or(|next| time >= next) {
+            self.next = Some(time + CROSS_EYE_LEVEL_EVERY_S);
+            // With fewer, the last level holds
+            if self.recent.len() >= CROSS_EYE_LEVEL_MIN {
+                let mut values: Vec<f32> = self.recent.iter().map(|(_, value)| *value).collect();
+                let middle = values.len() / 2;
+                self.level = Some(*values.select_nth_unstable_by(middle, f32::total_cmp).1);
+            }
+        }
+        self.level
     }
 }
 
@@ -2957,7 +3055,14 @@ fn process(
         let open_line = if settings.gaze_hold_below > 0.0 { settings.gaze_hold_below } else { CROSS_EYE_OPEN };
         let usable = reliable == [true; 2] && data.openness.iter().all(|openness| *openness >= open_line);
         let wide = data.openness.iter().all(|openness| *openness >= CROSS_EYE_ENGAGE_OPEN);
-        let vergence = smoother.cross_eye.step(data.sample_time, dt, (raw_gaze[0] - raw_gaze[2]) * 45.0, usable, wide);
+        let vergence = smoother.cross_eye.step(
+            data.sample_time,
+            dt,
+            (raw_gaze[0] - raw_gaze[2]) * 45.0,
+            raw_gaze[5] * 45.0,
+            usable,
+            wide,
+        );
         if settings.independent_eyes && v2 {
             let extra = (vergence - VERGENCE_DEG) / 2.0 / 45.0;
             gaze[0] = (gaze[0] + extra).clamp(-1.0, 1.0);
@@ -4091,10 +4196,21 @@ mod tests {
 
     /// Both eyes open, the combined gaze straight ahead, and Valve's per-eye x `vergence` degrees apart at sample `index`.
     fn crossed(index: usize, vergence: f32, openness: [f32; 2]) -> EyeData {
+        crossed_down(index, vergence, 0.0, openness)
+    }
+
+    /// The same, with the eyes `down` degrees down.
+    fn crossed_down(index: usize, vergence: f32, down: f32, openness: [f32; 2]) -> EyeData {
         let half = (vergence / 2.0).to_radians().tan();
-        let mut data = reading(index, [0.0, 0.0], openness);
-        data.gaze = [[half, 0.0, -1.0], [-half, 0.0, -1.0]];
+        let y = -down.to_radians().tan();
+        let mut data = reading(index, [0.0, y], openness);
+        data.gaze = [[half, y, -1.0], [-half, y, -1.0]];
         data
+    }
+
+    /// Whether any sample let cross-eye through.
+    fn any_cross_eye(sent: &[Sample]) -> bool {
+        sent.iter().any(|sample| sample.cross_eye)
     }
 
     /// The left - right sent, in degrees.
@@ -4136,11 +4252,12 @@ mod tests {
 
     #[test]
     fn a_shallow_cross_eye_shows_after_half_a_second() {
-        // 22° (the shallowest tries): 0.5 s (45 samples) at or above 20°
-        let readings: Vec<EyeData> = (0..120).map(|i| crossed(i, 22.0, [1.0; 2])).collect();
+        // 0.5 s straight ahead, then 22° (the shallowest tries): 0.5 s (45 samples) at or above 20°
+        let readings: Vec<EyeData> =
+            (0..165).map(|i| crossed(i, if i < 45 { 0.0 } else { 22.0 }, [1.0; 2])).collect();
         let sent = run(&independent(), &readings);
-        assert!(!sent[43].cross_eye && sent[46].cross_eye);
-        assert!((sent_vergence(&sent[100]) - 22.0).abs() < 0.2);
+        assert!(!sent[45 + 43].cross_eye && sent[45 + 46].cross_eye);
+        assert!((sent_vergence(&sent[145]) - 22.0).abs() < 0.2);
     }
 
     #[test]
@@ -4150,9 +4267,12 @@ mod tests {
         let spike: Vec<EyeData> = (0..180).map(|i| crossed(i, if (60..78).contains(&i) { 30.0 } else { 0.0 }, [0.9; 2])).collect();
         let steady: Vec<EyeData> = (0..360).map(|i| crossed(i, 19.0, [0.9; 2])).collect();
         let narrowed: Vec<EyeData> = (0..360).map(|i| crossed(i, 22.0, [0.6; 2])).collect();
-        // 0.6 s at 22° with a blink in the middle starts over after it
-        let broken: Vec<EyeData> = (0..60)
-            .map(|i| crossed(i, 22.0, if (20..24).contains(&i) { [0.2; 2] } else { [0.9; 2] }))
+        // 0.6 s at 22° (after 0.5 s straight ahead) with a blink in the middle starts over after it
+        let broken: Vec<EyeData> = (0..105)
+            .map(|i| {
+                let vergence = if i < 45 { 0.0 } else { 22.0 };
+                crossed(i, vergence, if (65..69).contains(&i) { [0.2; 2] } else { [0.9; 2] })
+            })
             .collect();
         for readings in [spike, steady, narrowed, broken] {
             for sample in run(&independent(), &readings) {
@@ -4163,20 +4283,91 @@ mod tests {
 
     #[test]
     fn a_blink_while_cross_eyed_holds_it_and_a_long_one_ends_it() {
-        // 1 s cross-eyed (it shows from sample 23), a 0.2 s blink (Valve's per-eye x wild meanwhile), 1 s cross-eyed,
-        // then a 0.6 s blink and cross-eyed again
+        // 0.5 s straight ahead, cross-eyed (it shows from sample 68), a 0.2 s blink (Valve's per-eye x wild
+        // meanwhile), 1 s cross-eyed, then a 0.6 s blink and cross-eyed again
         let blinking = |i: usize| (150..168).contains(&i) || (258..312).contains(&i);
         let readings: Vec<EyeData> = (0..400)
-            .map(|i| if blinking(i) { crossed(i, 0.0, [0.1; 2]) } else { crossed(i, 30.0, [0.9; 2]) })
+            .map(|i| match i {
+                _ if blinking(i) => crossed(i, 0.0, [0.1; 2]),
+                0..45 => crossed(i, 0.0, [0.9; 2]),
+                _ => crossed(i, 30.0, [0.9; 2]),
+            })
             .collect();
         let sent = run(&independent(), &readings);
         assert!(sent[100].cross_eye && (sent_vergence(&sent[100]) - 30.0).abs() < 0.2);
         // The short blink holds it
         assert!(sent[150..200].iter().all(|sample| sample.cross_eye && (sent_vergence(sample) - 30.0).abs() < 0.2));
         // The long one ends it after 0.3 s and the vergence goes back to the fixed one; it shows again 0.25 s after
+        // the eyes have been open for 0.3 s
         assert!(sent[280].cross_eye && !sent[290].cross_eye);
         assert!((sent_vergence(&sent[310]) - VERGENCE_DEG).abs() < 1e-3);
-        assert!(!sent[332].cross_eye && sent[337].cross_eye);
+        assert!(!sent[360].cross_eye && sent[363].cross_eye);
+    }
+
+    #[test]
+    fn a_wear_that_reads_turned_in_raises_the_lines() {
+        // 15 s of Valve reading 8°, 17° and 19° in turn (0.5 s each, a median of 17°), so the lines are 7° higher;
+        // then 26° for 2 s after an ordinary reading (shown with the lines as they were), 1 s more of the same, and 40°
+        let wear = |i: usize| [8.0, 17.0, 19.0][i / 45 % 3];
+        let vergence = |i: usize| match i {
+            0..1350 => wear(i),
+            1350..1395 => 8.0,
+            1395..1575 => 26.0,
+            1575..1665 => wear(i),
+            1665..1710 => 8.0,
+            1710..1800 => 40.0,
+            _ => 8.0,
+        };
+        let readings: Vec<EyeData> = (0..1890).map(|i| crossed(i, vergence(i), [0.9; 2])).collect();
+        let sent = run(&independent(), &readings);
+        assert!(!any_cross_eye(&sent[..1710]));
+        assert!(sent[1760].cross_eye && (sent_vergence(&sent[1790]) - 40.0).abs() < 0.2);
+        // Below the raised exit line (22°) for 0.15 s, it is gone again
+        assert!(!sent[1880].cross_eye);
+        // The same 26° at the start of a wear (no level yet) shows
+        let fresh: Vec<EyeData> = (1350..1575).map(|i| crossed(i - 1350, vergence(i), [0.9; 2])).collect();
+        assert!(any_cross_eye(&run(&independent(), &fresh)));
+        // What the wear reads is kept over a gap in the samples, which starts the rest over
+        let gapped: Vec<EyeData> = readings
+            .iter()
+            .enumerate()
+            .map(|(i, data)| {
+                let mut data = *data;
+                if i >= 1340 {
+                    data.sample_time += 2.0;
+                }
+                data
+            })
+            .collect();
+        assert!(!any_cross_eye(&run(&independent(), &gapped)[..1710]));
+    }
+
+    #[test]
+    fn far_down_or_slowly_crept_up_is_not_cross_eye() {
+        // 0.5 s straight ahead, then 30° for 2 s: 20° down it does not show, 10° down it does
+        let looking = |down: f32| -> Vec<EyeData> {
+            (0..225).map(|i| crossed_down(i, if i < 45 { 0.0 } else { 30.0 }, down, [0.9; 2])).collect()
+        };
+        assert!(!any_cross_eye(&run(&independent(), &looking(20.0))));
+        assert!(any_cross_eye(&run(&independent(), &looking(10.0))));
+        // From 10° up to 26° over 10 s (20° 3.1 s after it was last below 15°), then 26° for 2 s
+        let creeping: Vec<EyeData> =
+            (0..1080).map(|i| crossed(i, 10.0 + (i.min(900) as f32 / 900.0) * 16.0, [0.9; 2])).collect();
+        assert!(!any_cross_eye(&run(&independent(), &creeping)));
+    }
+
+    #[test]
+    fn right_after_a_blink_is_not_cross_eye() {
+        // Straight ahead, 0.3 s shut, then 34° for 0.3 s from the moment the eyes open (Valve still reading the shut
+        // eyes' turn-in) and straight ahead again
+        let readings: Vec<EyeData> = (0..180)
+            .map(|i| match i {
+                45..72 => crossed(i, 25.0, [0.1; 2]),
+                72..99 => crossed(i, 34.0, [0.9; 2]),
+                _ => crossed(i, 0.0, [0.9; 2]),
+            })
+            .collect();
+        assert!(!any_cross_eye(&run(&independent(), &readings)));
     }
 
     #[test]
