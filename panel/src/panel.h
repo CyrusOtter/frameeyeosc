@@ -108,6 +108,16 @@ enum class PanelAction {
                        ///< Advanced tab, the caller reads it: recordShown)
     RecordsAll,        ///< open the list of all records (the panel opens it; the caller reads them again)
     RecordBack,        ///< back from a record (to the list it came from) or from all records (handled inside)
+    AppsOpen,          ///< the row at the bottom of "Version": open the list of the other Frame apps (the panel opens it;
+                       ///< the caller fetches the list if it is due)
+    AppsClose,         ///< the list's cross: back to "Version" (handled inside)
+    AppsInstall,       ///< an app's "Install" in the list: arg = its index in the list as last drawn (the panel opens
+                       ///< the confirmation)
+    AppsMenu,          ///< the list's "Open the installer": the confirmation for the installer's menu (handled inside)
+    AppsScroll,        ///< scroll the list a third of its view, arg -1 up / 1 down (handled inside)
+    AppsCancel,        ///< the confirmation's "Cancel": back to the list (handled inside)
+    AppsLaunch,        ///< the confirmation's "Open in Konsole": the caller opens the installer for appsConfirmKey()
+                       ///< and gives the result to setAppsLaunchResult (never from --dump-png)
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -385,8 +395,63 @@ public:
 
     /** @return true while the Advanced tab shows its sub-tabs and a page of them (nothing open over them) */
     bool advPageShown() const {
-        return tab_ == PanelTab::Advanced && !historyOpen_ && !diagOpen_ && recordOpen_.empty() && !recordsAllOpen_;
+        return tab_ == PanelTab::Advanced && !historyOpen_ && !diagOpen_ && recordOpen_.empty() && !recordsAllOpen_ &&
+               !appsListOpen_;
     }
+
+    /**
+     * Open the list of the other Frame apps on the Advanced tab (in place of its page; "Version" again when it is
+     * closed), at its top, without a confirmation. Choosing another tab closes it.
+     */
+    void openAppsList();
+
+    /** Close the list (and the confirmation over it). */
+    void closeAppsList() {
+        appsListOpen_ = false;
+        appsConfirmOpen_ = false;
+    }
+
+    /**
+     * Open the confirmation over the list, as an app's "Install" or "Open the installer" does (for --apps-sheet).
+     * @param key the app's installer short name, or "" for the installer's menu
+     */
+    void openAppsConfirm(const std::string& key);
+
+    /** Close the confirmation (the list shows again). */
+    void closeAppsConfirm() { appsConfirmOpen_ = false; }
+
+    /** @return true while the list of the other Frame apps shows (with or without the confirmation over it) */
+    bool appsListOpen() const { return tab_ == PanelTab::Advanced && appsListOpen_; }
+
+    /** @return true while the confirmation before Konsole shows */
+    bool appsConfirmOpen() const { return appsListOpen() && appsConfirmOpen_; }
+
+    /** @return true while the other apps' states are on screen ("Version" with its row, or the list): look again often */
+    bool appsShown() const { return appsListOpen() || (advPageShown() && advPage_ == AdvPage::Version); }
+
+    /** @return the confirmation's app (its installer short name; "" = the installer's menu) */
+    const std::string& appsConfirmKey() const { return appsConfirmKey_; }
+
+    /**
+     * What came of "Open in Konsole": started closes the confirmation (back to the list); anything else stays on it
+     * with its message.
+     * @param result frame_apps::AppsManager::openInstaller's result
+     */
+    void setAppsLaunchResult(frame_apps::LaunchResult result);
+
+    /**
+     * The confirmation's app, looked up by its short name in the list now (it may be one only the site has).
+     * @param model the model (its apps)
+     * @return the entry, or nullptr for the menu or a short name no longer in the list
+     */
+    const frame_apps::Entry* appsConfirmEntry(const PanelModel& model) const;
+
+    /**
+     * The command the confirmation shows: the same frame_apps::installerCommand Konsole runs.
+     * @param model the model (its apps)
+     * @return the command line (the menu's for the menu, or for a short name no longer in the list)
+     */
+    std::string appsConfirmCommand(const PanelModel& model) const;
 
     /**
      * For --history-open: open this version's row instead (without scrolling to it).
@@ -420,10 +485,11 @@ public:
 
     /**
      * @return true while the panel wants the controller's scroll events: the version history is shown, or the
-     * Advanced tab's page (or the list of all records) is taller than its view
+     * Advanced tab's page (or the list of all records, or of the other Frame apps) is taller than its view
      */
     bool wantsScroll() const {
         if (tab_ != PanelTab::Advanced) return false;
+        if (appsListOpen_) return !appsConfirmOpen_ && appsScrollable_;
         if (historyOpen_) return true;
         if (diagOpen_ || !recordOpen_.empty()) return false;
         return recordsAllOpen_ ? listScrollable_ : advScrollable_;
@@ -575,6 +641,15 @@ private:
     double numValue_ = 0.0;             ///< ...its value while held, or as last let go of
     bool numReleased_ = false;          ///< ...let go of, not taken yet (takeNumberSlider)
     std::map<std::string, std::pair<double, double>> numTrack_;  ///< each one's track (x, width) as last drawn
+    bool appsListOpen_ = false;         ///< the other Frame apps' list is shown on the Advanced tab
+    bool appsConfirmOpen_ = false;      ///< ...with the confirmation before Konsole over it
+    std::string appsConfirmKey_;        ///< ...for this app's short name ("" = the installer's menu)
+    frame_apps::LaunchResult appsLaunchResult_ = frame_apps::LaunchResult::Started;  ///< the last "Open in Konsole"
+    std::vector<std::string> appsKeys_; ///< the list's apps as last drawn (AppsInstall's arg is an index)
+    double appsScroll_ = 0.0;           ///< px the list is scrolled
+    double appsMaxScroll_ = 0.0;        ///< as far as it can scroll (from the last draw)
+    double appsViewH_ = 0.0;            ///< the height it is shown in
+    bool appsScrollable_ = false;       ///< the last draw showed it scrolled (it didn't fit)
 
     /**
      * The slider's value at a pointer position (on its track, two decimals).
@@ -917,6 +992,61 @@ private:
      */
     double drawVersionPage(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view,
                            double top, double right);
+
+    /**
+     * The row at the bottom of "Version" that opens the other Frame apps' list: their icons overlapping, "Frame apps by
+     * sasaken@" and how many of them aren't installed, and a chevron.
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model (its apps)
+     * @param x0 left
+     * @param y top
+     * @param x1 right
+     */
+    void drawAppsRow(const Pen& pen, const UiText& t, const PanelModel& m, double x0, double y, double x1);
+
+    /**
+     * An app's icon (fetched or built in), or its letters on a dark tile when it has none.
+     * @param pen drawing tools
+     * @param entry the app
+     * @param x left
+     * @param y top
+     * @param size side (px)
+     */
+    void drawAppIcon(const Pen& pen, const frame_apps::Entry& entry, double x, double y, double size);
+
+    /**
+     * One app in the list: its icon, name and description, and "Install" (not installed) or a chip with its state.
+     * @param pen drawing tools
+     * @param t texts
+     * @param language the panel's language (the description's)
+     * @param entry the app
+     * @param index its place in the list (AppsInstall's arg)
+     * @param x left
+     * @param y top
+     * @param w width
+     * @param h height
+     */
+    void drawAppLine(const Pen& pen, const UiText& t, Language language, const frame_apps::Entry& entry, int index,
+                     double x, double y, double w, double h);
+
+    /**
+     * The other Frame apps' list in place of the Advanced tab: the title, a cross, a row per app (scrolled with ▲ / ▼
+     * when they don't fit), where the list comes from and "Open the installer".
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model (its apps)
+     */
+    void drawAppsList(const Pen& pen, const UiText& t, const PanelModel& m);
+
+    /**
+     * The confirmation over the list (only its buttons and the tabs stay usable): the app and "Install", the command
+     * Konsole will run, what to expect, why it couldn't open, "Cancel" and "Open in Konsole".
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model (its apps)
+     */
+    void drawAppsConfirm(const Pen& pen, const UiText& t, const PanelModel& m);
 
     /**
      * "Having trouble": the diagnostics row (its code and "Open"), the newest three records, how to read them over
@@ -1331,6 +1461,14 @@ private:
      */
     void drawCaption(const Pen& pen, double x, double baseline, const std::string& text, int number, bool locked);
 };
+
+/**
+ * The line under "Frame apps by sasaken@" on "Version": how many of the listed apps aren't installed, or that all are.
+ * @param t texts
+ * @param entries the other apps (frameeyeosc itself left out)
+ * @return the line
+ */
+std::string appsCountText(const UiText& t, const std::vector<frame_apps::Entry>& entries);
 
 /**
  * Draw the dashboard thumbnail (an eye and "Eye"). The launcher icons in contrib/icons are the same picture.

@@ -148,6 +148,15 @@ const std::vector<ContrastPair>& contrastPairs() {
         {"records: a stop's box outline (pill-colored)", kBorder, kControl, ContrastKind::Ui},
         {"records: card titles (pill-colored card)", kAccent, kControl, ContrastKind::Text},
         {"records: the saved bar's sheet (pill-colored card)", kSuccess, kControl, ContrastKind::Ui},
+        // The other Frame apps (the row on "Version", the list and the confirmation)
+        {"other apps: row and sheet outlines, the list's cross (card)", kBorder, kCard, ContrastKind::Ui},
+        {"other apps: \"Running\" chip and its dot (green tint)", kSuccess, kSuccessTint, ContrastKind::Text},
+        {"other apps: \"Installed\" chip and its dot (card-colored)", kTextMuted, kCard, ContrastKind::Text},
+        {"other apps: \"Running in Konsole\" chip (accent tint)", kAccent, kAccentTint, ContrastKind::Text},
+        {"other apps: a name and description (pill-colored row)", kTextMuted, kControl, ContrastKind::Text},
+        {"other apps: an app's letters without its icon (dark tile)", kAccent, kBg, ContrastKind::Text},
+        {"other apps: the command Konsole runs (dark box)", kText, kBg, ContrastKind::Text},
+        {"other apps: the confirmation's error (card)", kDanger, kCard, ContrastKind::Text},
     };
     return pairs;
 }

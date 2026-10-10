@@ -422,6 +422,7 @@ To update again later, use the panel's update button or the usual install comman
 
 - frameeyeosc sends gaze and eyelid values, and with the eye cameras squint and pupil size too, only to your PC: the destination above, and in LiveLink mode with the eye cameras a second one on the same PC for the pupils, VRChat's port 9000 (`pupil_target` in the status file). It has no telemetry and doesn't talk to the internet.
 - The panel asks GitHub (`api.github.com`) for the latest release at start and about once an hour, unless "Check for updates" is off. Like any web request, this shows GitHub your IP address. Nothing else is sent, and downloads only come from GitHub.
+- While "Check for updates" is on, the panel also fetches the list of my other Frame apps and their icons from frame.sasaken1102s.net (at start and when you open that list on Advanced › Version, at most once an hour, shared with my other apps; kept in `~/.cache/frame-apps/`). Off, it shows the list it got before or the one built into the panel. To see which of them are installed and running, it only looks at files in your home folder and asks `systemctl --user`; nothing is sent. "Install" opens Konsole with the installer's command, shown before it runs.
 - On disk it keeps:
   - your settings (`~/.config/frameeyeosc/config.json`) and two numbers, each eye's learned relaxed openness (`~/.config/frameeyeosc/calibration`)
   - from `install.sh`: the update script `~/.local/share/frameeyeosc/frame-update.sh`, the changelogs the panel's version history reads (`CHANGELOG.md`, `CHANGELOG.ja.md` next to it) and your install options `~/.config/frameeyeosc/install-args`
@@ -455,7 +456,7 @@ panel/build/gaze-fit-test   # the panel's eye fit logic
 scripts/package.sh   # builds dist/frameeyeosc-<version>-steamframe-aarch64.tar.gz with both, and dist/SHA256SUMS
 ```
 
-`vendor/frame-updater/` is a copy of the update checker shared by my Steam Frame apps. Don't edit it here: `scripts/package.sh` stops if it differs from what the copy's `MANIFEST.sha256` records.
+`vendor/frame-updater/` is a copy of the update checker shared by my Steam Frame apps, and `vendor/frame-apps/` of the list of my other Frame apps on Advanced › Version. Don't edit them here: `scripts/package.sh` stops if either differs from what its `MANIFEST.sha256` records.
 
 `tools/eyecam/` is a copy of eyecam, the eye-camera tool (`eyecam-rec` and `eyecam-grab`), which is developed on its own branch. Don't edit it here either; to update it, check out that directory from the commit to take and commit it with the commit's hash in the message: `git rm -rq tools/eyecam && git checkout <commit> -- tools/eyecam` (the `git rm` drops files the new version no longer has). It has its own `Cargo.toml` and `Cargo.lock` and is not part of the root Cargo build; `scripts/package.sh` builds and tests it separately.
 

@@ -342,6 +342,32 @@ struct UiText {
     const char* advFiles;           ///< the files and the process
     const char* updateToFormat;     ///< the update button: "%s に更新する" (the new version)
     const char* updateNotesFormat;  ///< over the new release's summary: "%s の内容"
+    // The other Frame apps (frame-apps' strings.md): the row at the bottom of "Version", the list it opens and the
+    // confirmation before the installer opens in Konsole. Their names and descriptions come from frame_apps' catalog
+    const char* appsAllTitle;           ///< the row's title and the list's title
+    const char* appsAllCountFormat;     ///< under the row's title (%1$d the apps listed, %2$d of them not installed)
+    const char* appsAllInstalledFormat; ///< ...when all are installed (%d the apps listed)
+    const char* appsInstall;            ///< an app that isn't installed: its button
+    const char* appsChipRunning;        ///< an app that runs (its unit is active): the chip
+    const char* appsChipInstalled;      ///< an app that is installed, not running
+    const char* appsChipBusy;           ///< an app whose Konsole is still open (and the menu button then)
+    const char* appsListSub;            ///< under the list's title
+    const char* appsListNote;           ///< at the bottom of the list: where the list comes from
+    const char* appsOpenInstaller;      ///< the list's button that opens the installer's menu
+    const char* appsClose;              ///< the list's close button (its name; it is drawn as a cross)
+    const char* appsConfirmTitleFormat; ///< the confirmation for one app ("%s を入れる", the app's name)
+    const char* appsConfirmMenuTitle;   ///< ...for the menu
+    const char* appsConfirmLead;        ///< over the command
+    const char* appsConfirmProgress;    ///< for one app: where the progress shows
+    const char* appsConfirmMenu;        ///< for the menu: what it offers
+    const char* appsConfirmNoSudo;      ///< always: no sudo, all in the home folder
+    const char* appsConfirmClose;       ///< always: close Konsole when done
+    const char* appsConfirmCancel;      ///< its buttons
+    const char* appsConfirmLaunch;
+    const char* appsErrorBusy;          ///< Konsole couldn't be opened (frame_apps::LaunchResult): Busy
+    const char* appsErrorNoDisplay;     ///< ...NoDisplay
+    const char* appsErrorNoKonsole;     ///< ...NoKonsole
+    const char* appsErrorFailed;        ///< ...Failed and UnknownApp
     // Records of calibrations and eye fits (report.h): the "Having trouble" page, a record, all records, report.txt
     const char* recordsTitle;       ///< "Recent records"
     const char* recordsHint;        ///< beside it

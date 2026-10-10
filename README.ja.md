@@ -422,6 +422,7 @@ eyecam-rec は、受け取ったバッファも Valve の目のデータも読�
 
 - 視線とまぶたの値（目のカメラを使っていれば、目を細めた動きと瞳孔の大きさも）は、あなたの PC にだけ送ります: 上の送り先と、LiveLink モードで目のカメラを使っているときは瞳孔のために同じ PC のもう 1 か所、VRChat のポート 9000（状態ファイルの `pupil_target`）です。テレメトリはなく、インターネットにも接続しません
 - パネルは、起動時と 1 時間に 1 回、GitHub（`api.github.com`）に最新のリリースを問い合わせます（「新しい版の確認」がオフなら問い合わせません）。ふつうの Web アクセスと同じく、GitHub には IP アドレスが見えます。ほかには何も送らず、ダウンロードも GitHub からだけです
+- 新しい版の確認がオンのとき、frame.sasaken1102s.net からアプリの一覧とアイコンを取ってきます（起動時と、「詳細」›「バージョン」からその一覧を開いたとき。私のほかのアプリと合わせて 1 時間に 1 回まで。`~/.cache/frame-apps/` に置きます）。オフなら、前に取った一覧かパネルに入っている一覧を出します。入っているか・動いているかは、ホームフォルダの中のファイルと `systemctl --user` で調べるだけで、何も送りません。［入れる］は、実行するコマンドを見せてから Konsole でインストーラーを開きます
 - ディスクに書くもの:
   - 設定（`~/.config/frameeyeosc/config.json`）と、左右それぞれの目の「普段の開き具合」の学習値2つ（`~/.config/frameeyeosc/calibration`）
   - `install.sh` が置くもの: 更新のスクリプト `~/.local/share/frameeyeosc/frame-update.sh`、パネルの更新履歴が読む変更履歴（同じ場所の `CHANGELOG.md`・`CHANGELOG.ja.md`）、インストールのオプション `~/.config/frameeyeosc/install-args`
@@ -455,7 +456,7 @@ panel/build/gaze-fit-test   # パネルの目合わせの計算
 scripts/package.sh   # 両方入った dist/frameeyeosc-<version>-steamframe-aarch64.tar.gz と dist/SHA256SUMS を作る
 ```
 
-`vendor/frame-updater/` は、私の Steam Frame 用アプリで共通の更新の仕組みのコピーです。ここでは書き換えないでください。`MANIFEST.sha256` と違っていると `scripts/package.sh` が止まります。
+`vendor/frame-updater/` は、私の Steam Frame 用アプリで共通の更新の仕組みのコピー、`vendor/frame-apps/` は「詳細」›「バージョン」に出す私のほかの Frame アプリの一覧のコピーです。ここでは書き換えないでください。どちらも `MANIFEST.sha256` と違っていると `scripts/package.sh` が止まります。
 
 `tools/eyecam/` は、目のカメラのツール eyecam（`eyecam-rec` と `eyecam-grab`）のコピーです。eyecam は別のブランチで作っているので、これもここでは書き換えないでください。更新するときは、取り込みたいコミットからこのフォルダーを取り出して（`git rm -rq tools/eyecam && git checkout <コミット> -- tools/eyecam`。先の `git rm` で、新しい版でなくなったファイルも消える）、メッセージにそのコミットのハッシュを書いてコミットします。`Cargo.toml` と `Cargo.lock` は別で、ルートの Cargo のビルドには入りません。`scripts/package.sh` が別にビルドしてテストします。
 

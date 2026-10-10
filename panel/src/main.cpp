@@ -6,6 +6,7 @@
 #include "draw.h"
 #include "eyecam.h"
 #include "fit_text.h"
+#include "frame_apps.h"
 #include "gaze_dots.h"
 #include "gaze_fit.h"
 #include "host_entry.h"
@@ -39,6 +40,7 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -55,6 +57,7 @@ constexpr int kExitCodeUserQuit = 3;
 constexpr int kThumbnailSize = 256;       ///< dashboard thumbnail edge (px)
 constexpr double kPanelPollSec = 0.033;   ///< event polling while the panel is visible
 constexpr double kClosedPollSec = 0.25;   ///< event polling while it is not
+constexpr double kAppsRefreshSec = 5.0;   ///< the other Frame apps' states are looked at again this often while shown
 constexpr double kFitPollSec = 1.0 / 90;  ///< every display frame while the eye fit's target is up (without frame sync)
 constexpr uint32_t kFrameSyncTimeoutMs = 50;  ///< the longest wait for the compositor's next frame
 constexpr double kStatusReadSec = 0.1;    ///< status.json is read this often while the panel is visible...
@@ -99,6 +102,10 @@ struct Options {
     bool recordsAll = false;      ///< --records-all: all records listed on the Advanced tab
     bool fakeRecords = false;     ///< --fake-records: made-up records instead of the folder's
     bool fakeSaved = false;       ///< --fake-saved: a failed fit's or calibration's record was just saved (its bar)
+    std::string appsSheet;        ///< --apps-sheet: the other Frame apps' list, or a confirmation over it
+    std::string fakeAppsState;    ///< --fake-apps-state: made-up states of the other apps (KEY=STATE,...)
+    std::string fakeAppsLaunch;   ///< --fake-apps-launch: why Konsole didn't open (on the confirmation)
+    int fakeAppsExtra = 0;        ///< --fake-apps-extra N: made-up apps without an icon added to the list
     std::string report;           ///< --report: latest, list or a record's folder name
     std::string reportsDir;       ///< --reports-dir: the records' folder (default ~/.local/state/frameeyeosc/reports)
     std::vector<std::string> reportMake;  ///< --report-make KIND START END RESULT REASON (a test hook)
@@ -248,6 +255,15 @@ void printUsage() {
         "      --records-all     List all records on the Advanced tab\n"
         "      --fake-records    Made-up records (ten) instead of the records' folder; --record N shows the Nth (0 newest)\n"
         "      --fake-saved      A failed fit's or calibration's log was just saved: the bar on its failure screen\n"
+        "      --apps-sheet list|confirm[:KEY]|menu  The other Frame apps' list (Advanced > Version), or the confirmation\n"
+        "                        over it for an app (KEY: its installer short name; default the first not installed)\n"
+        "                        or for the installer's menu\n"
+        "      --fake-apps-state KEY=STATE,...  Made-up states of the other apps (KEY keyboard, mic, perf, aux or menu;\n"
+        "                        STATE missing, installed, running or busy: its Konsole open). With --fake or this,\n"
+        "                        the built-in list with keyboard and perf missing, mic running and aux installed;\n"
+        "                        otherwise as installed now (the list fetched before; never fetched here)\n"
+        "      --fake-apps-launch busy|nodisplay|nokonsole|failed  Why Konsole didn't open (with --apps-sheet confirm)\n"
+        "      --fake-apps-extra N  Add N made-up apps without an icon to the list (it scrolls past four or five)\n"
         "      --changelog-dir DIR  Read CHANGELOG.md / CHANGELOG.ja.md from DIR instead of next to the binary,\n"
         "                        the checkout (panel/build) or ~/.local/share/frameeyeosc\n"
         "      --preview-quit    Show \"press again to quit\"\n"
@@ -502,6 +518,97 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
  * @param options where to write
  * @return true if valid
  */
+/**
+ * Take --fake-apps-state apart: KEY=STATE pairs separated by commas. KEY is an installer short name or a name of the
+ * built-in list, or "menu" (the installer's menu, only busy); STATE missing, installed, running or busy (not installed
+ * and its Konsole still open).
+ * @param text the option's value
+ * @param states where to add each app's state (by its name)
+ * @param busy where to add the short names shown busy ("" = the menu)
+ * @return false if a pair can't be read
+ */
+bool parseFakeApps(const std::string& text, std::map<std::string, frame_apps::AppState>& states,
+                   std::vector<std::string>& busy) {
+    using frame_apps::AppState;
+    size_t start = 0;
+    while (start <= text.size()) {
+        const size_t comma = text.find(',', start);
+        const std::string pair = text.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        start = comma == std::string::npos ? text.size() + 1 : comma + 1;
+        const size_t equals = pair.find('=');
+        if (equals == std::string::npos) return false;
+        const std::string key = pair.substr(0, equals);
+        const std::string state = pair.substr(equals + 1);
+        if (key == "menu") {
+            if (state != "busy") return false;
+            busy.push_back("");
+            continue;
+        }
+        const frame_apps::AppInfo* app = frame_apps::findApp(key);
+        if (app == nullptr) return false;
+        if (state == "missing" || state == "busy") {
+            states[app->name] = AppState::Missing;
+        } else if (state == "installed") {
+            states[app->name] = AppState::Installed;
+        } else if (state == "running") {
+            states[app->name] = AppState::Running;
+        } else {
+            return false;
+        }
+        if (state == "busy") busy.push_back(app->key);
+    }
+    return true;
+}
+
+/**
+ * What the other Frame apps' list needs to know about this one: its name (left out of the list), and no apps it uses.
+ * @return the config (the user's home and cache)
+ */
+frame_apps::ManagerConfig appsManagerConfig() {
+    return frame_apps::ManagerConfig {"frameeyeosc", {}};
+}
+
+/**
+ * The other Frame apps for --dump-png: made up (--fake, --fake-apps-state: the built-in list with keyboard and perf
+ * missing, mic running and aux installed, then the option's states) or as installed now (the list fetched before by
+ * any app; never fetched here), and --fake-apps-extra's made-up apps after them.
+ * @param options the command line
+ * @return the list as the panel shows it
+ */
+AppsView dumpApps(const Options& options) {
+    using frame_apps::AppState;
+    frame_apps::ManagerConfig config = appsManagerConfig();
+    const bool fake = options.fake || !options.fakeAppsState.empty();
+    if (fake) config.fetch.cacheDir.clear();  // the built-in list, the same on every machine
+    frame_apps::AppsManager apps(config);
+    if (fake) {
+        std::map<std::string, AppState> states = {{"frame-jp-keyboard", AppState::Missing},
+                                                  {"frame-mic-tuner", AppState::Running},
+                                                  {"frame-perf-overlay", AppState::Missing},
+                                                  {"frame-aux-shortcuts", AppState::Installed}};
+        std::vector<std::string> busy;
+        parseFakeApps(options.fakeAppsState, states, busy);
+        apps.setForPreview(states, busy);
+    } else {
+        // Which apps run comes from systemctl, a moment later
+        apps.refreshNow();
+        for (int i = 0; i < 50 && !apps.tick(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    AppsView view;
+    view.entries = apps.entries();
+    view.menuBusy = apps.busy("");
+    for (int i = 0; i < options.fakeAppsExtra; ++i) {
+        frame_apps::Entry extra;
+        const std::string n = std::to_string(i + 1);
+        extra.app = {"frame-example-" + n, "example", "Ex" + n, "[今後のアプリの説明がここに入ります]",
+                     "[A future app's description goes here]", "frame-example.service", ".local/bin/frame-example",
+                     "frame-example-128.png", ""};
+        extra.state = AppState::Missing;
+        view.entries.push_back(extra);
+    }
+    return view;
+}
+
 bool parseOptions(int argc, char** argv, Options& options) {
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -586,6 +693,35 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fakeRecords = true;
         } else if (arg == "--fake-saved") {
             options.fake = options.fakeSaved = true;
+        } else if (arg == "--apps-sheet" && hasNext) {
+            options.appsSheet = argv[++i];
+            const std::string& sheet = options.appsSheet;
+            const bool confirm = sheet.rfind("confirm:", 0) == 0 && frame_apps::isValidKey(sheet.substr(8));
+            if (sheet != "list" && sheet != "confirm" && sheet != "menu" && !confirm) {
+                std::fprintf(stderr, "--apps-sheet must be list, confirm, confirm:KEY or menu: %s\n", sheet.c_str());
+                return false;
+            }
+        } else if (arg == "--fake-apps-state" && hasNext) {
+            options.fakeAppsState = argv[++i];
+            std::map<std::string, frame_apps::AppState> states;
+            std::vector<std::string> busy;
+            if (!parseFakeApps(options.fakeAppsState, states, busy)) {
+                std::fprintf(stderr,
+                             "--fake-apps-state takes KEY=STATE pairs (KEY keyboard, mic, perf, aux or menu; STATE "
+                             "missing, installed, running or busy): %s\n",
+                             options.fakeAppsState.c_str());
+                return false;
+            }
+        } else if (arg == "--fake-apps-launch" && hasNext) {
+            options.fakeAppsLaunch = argv[++i];
+            const std::string& launch = options.fakeAppsLaunch;
+            if (launch != "busy" && launch != "nodisplay" && launch != "nokonsole" && launch != "failed") {
+                std::fprintf(stderr, "--fake-apps-launch must be busy, nodisplay, nokonsole or failed: %s\n",
+                             launch.c_str());
+                return false;
+            }
+        } else if (arg == "--fake-apps-extra" && hasNext) {
+            options.fakeAppsExtra = std::max(0, std::min(20, std::atoi(argv[++i])));
         } else if (arg == "--report" && hasNext) {
             options.mode = Options::Mode::Report;
             options.report = argv[++i];
@@ -1740,6 +1876,7 @@ int runDumpPng(const Options& options) {
             model.records.lastFit = "fit_2026-10-06_20-45-09";
             model.records.lastCalib = "calib-wear_2026-10-06_18-11-02";
         }
+        model.apps = dumpApps(options);
         EyePanel panel(fonts);
         panel.setTab(options.tab);
         if (AdvPage page; ui_state::parsePage(options.advPage, page)) panel.setAdvPage(page);
@@ -1783,6 +1920,29 @@ int runDumpPng(const Options& options) {
             if (options.historyScroll >= 0) panel.setHistoryScroll(options.historyScroll);
         }
         if (options.fakeEyecam.rfind("confirm", 0) == 0) panel.openEyecamConfirm(model.eyecam.status.state);
+        if (!options.appsSheet.empty()) {
+            const std::string& sheet = options.appsSheet;
+            panel.openAppsList();
+            if (sheet == "menu") {
+                panel.openAppsConfirm("");
+            } else if (sheet.rfind("confirm", 0) == 0) {
+                // confirm: the first app not installed (or the first one)
+                std::string key = sheet.size() > 8 ? sheet.substr(8) : std::string();
+                for (const frame_apps::Entry& entry : model.apps.entries) {
+                    if (key.empty() && entry.state == frame_apps::AppState::Missing) key = entry.app.key;
+                }
+                if (key.empty() && !model.apps.entries.empty()) key = model.apps.entries.front().app.key;
+                panel.openAppsConfirm(key);
+            }
+            const std::string& launch = options.fakeAppsLaunch;
+            if (!launch.empty() && sheet != "list") {
+                using frame_apps::LaunchResult;
+                panel.setAppsLaunchResult(launch == "busy"        ? LaunchResult::Busy
+                                          : launch == "nodisplay" ? LaunchResult::NoDisplay
+                                          : launch == "nokonsole" ? LaunchResult::NoKonsole
+                                                                  : LaunchResult::Failed);
+            }
+        }
         if (options.previewQuit) panel.armQuitForPreview();
         if (options.previewReset) panel.armResetForPreview();
         if (!options.fakePrompt.empty()) panel.showPrompt(options.fakePrompt);
@@ -1805,6 +1965,10 @@ int runDumpPng(const Options& options) {
                         static_cast<int>(hit.action), hit.key != nullptr ? hit.key : "-", hit.arg);
             if (hit.action != PanelAction::Quit) {
                 applyHit(hit, model, panel, idleAutostart, updater.get(), nullptr, nullptr, nullptr, &eyecamControl);
+            }
+            // The other apps' "Open in Konsole": only said here (nothing is fetched or opened from --dump-png)
+            if (hit.action == PanelAction::AppsLaunch) {
+                std::printf("apps: would open Konsole with: %s\n", panel.appsConfirmCommand(model).c_str());
             }
             // Wait for eyecam-rec's reply, and show the folder as it is after it
             if (hit.action == PanelAction::EyecamChoose || hit.action == PanelAction::EyecamStop ||
@@ -2558,6 +2722,13 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::GazePage:
         case PanelAction::LidsPage:
         case PanelAction::RecordBack: return;  // handled inside the panel
+        case PanelAction::AppsClose:
+        case PanelAction::AppsInstall:
+        case PanelAction::AppsMenu:
+        case PanelAction::AppsScroll:
+        case PanelAction::AppsCancel: return;  // handled inside the panel
+        case PanelAction::AppsOpen:
+        case PanelAction::AppsLaunch: return;  // the loop: frame_apps::AppsManager (fetchIfDue, openInstaller)
         case PanelAction::RecordOpen: openRecordView(model, panel.recordShown()); return;
         case PanelAction::RecordsAll: loadRecords(model); return;
         case PanelAction::DiagOpen:
@@ -2961,6 +3132,16 @@ int runOverlay(const Options& options) {
     frame_updater::UpdateChecker updater(updaterConfig());
     std::fprintf(stderr, "[update] frameeyeosc-panel %s, checking %s\n", FRAMEEYEOSC_VERSION,
                  model.config.flag(key::kUpdateCheck) ? "on" : "off");
+    // The other Frame apps (the bottom of "Version"): which are installed and run, and their list from the site, fetched
+    // only while update checks are on (at most hourly, shared by the apps; else the last one or the built-in one)
+    frame_apps::AppsManager apps(appsManagerConfig());
+    apps.refreshNow();
+    apps.setFetchEnabled(model.config.flag(key::kUpdateCheck));
+    if (apps.fetchIfDue()) std::fprintf(stderr, "[apps] fetching the list of the other Frame apps\n");
+    model.apps.entries = apps.entries();
+    model.apps.menuBusy = apps.busy("");
+    std::uint64_t drawnApps = apps.revision();
+    std::string lastAppsError;
     VrOverlay vr;
 
     // Wait for SteamVR
@@ -3164,6 +3345,21 @@ int runOverlay(const Options& options) {
                     } else {
                         applyHit(hit, model, panel, autostart, &updater, &fit, &vr, &eyeLog, &eyecamControl);
                         lastStamp = configStamp(model.configPath);
+                        // The other apps' list opened: looked at now, and fetched if it is due
+                        if (hit.action == PanelAction::AppsOpen) {
+                            apps.refreshNow();
+                            if (apps.fetchIfDue()) std::fprintf(stderr, "[apps] list opened: fetching it from the site\n");
+                        }
+                        // ...and "Open in Konsole" on its confirmation: the installer, as typed by hand
+                        if (hit.action == PanelAction::AppsLaunch) {
+                            const std::string key = panel.appsConfirmKey();
+                            const frame_apps::LaunchResult result = apps.openInstaller(
+                                key, model.language == Language::Ja ? frame_apps::Lang::Ja : frame_apps::Lang::En);
+                            panel.setAppsLaunchResult(result);
+                            std::fprintf(stderr, "[apps] Konsole with the installer (%s): %s\n",
+                                         key.empty() ? "menu" : key.c_str(),
+                                         result == frame_apps::LaunchResult::Started ? "opened" : "couldn't open");
+                        }
                         // A calibration sent to eyecam-rec: its record starts (one still open ends first)
                         if (hit.action == PanelAction::EyecamCalib && eyecamControl.busy()) {
                             if (calibRun.active()) finishCalib("");
@@ -3194,6 +3390,20 @@ int runOverlay(const Options& options) {
         if (autostartVersion != drawnAutostart) {
             drawnAutostart = autostartVersion;
             dirty = true;
+        }
+        // The other Frame apps: a Konsole closing, systemctl's answer and the list's download reaped; while they are on
+        // screen, looked at again every few seconds
+        apps.setFetchEnabled(model.config.flag(key::kUpdateCheck));
+        if (visible && panel.appsShown()) apps.refreshIfStale(kAppsRefreshSec);
+        if (apps.tick() || apps.revision() != drawnApps) {
+            drawnApps = apps.revision();
+            model.apps.entries = apps.entries();
+            model.apps.menuBusy = apps.busy("");
+            dirty = true;
+        }
+        if (apps.lastError() != lastAppsError) {
+            lastAppsError = apps.lastError();
+            if (!lastAppsError.empty()) std::fprintf(stderr, "[apps] list: %s\n", lastAppsError.c_str());
         }
         // Checks at start and then hourly (frame-update.sh reuses GitHub's answer for 55 minutes), even while closed
         updater.tick(model.config.flag(key::kUpdateCheck));
@@ -3689,6 +3899,8 @@ int runOverlay(const Options& options) {
         if (!visible && wasVisible) {
             panel.closeHostEntry();
             panel.closeEyecamConfirm();
+            // ...nor the other apps' confirmation (back to their list)
+            panel.closeAppsConfirm();
             // ...nor the setup's done screen ("next time it shows the usual page")
             model.eyecam.flow.closed();
         }

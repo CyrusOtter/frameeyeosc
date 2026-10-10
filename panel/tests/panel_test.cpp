@@ -5,12 +5,14 @@
 // one eye, the Advanced tab's sub-tabs (switching, remembered while other tabs show, the update notice to "Version",
 // the diagnostics from the eye cameras tab back to "Having trouble"), its pages fitting, the records (the newest three,
 // one open, all of them scrolled: kept within the list, ▲ / ▼, only what shows can be pressed) and the failure screens'
-// bar, the Eye fit tab while a fit runs (only "Stop" and the tabs), and the icons in texts (measured and drawn in their
-// own boxes, never starting a line, cut whole). Built with
+// bar, the Eye fit tab while a fit runs (only "Stop" and the tabs), the icons in texts (measured and drawn in their
+// own boxes, never starting a line, cut whole), and the other Frame apps (the row at the bottom of "Version" and its
+// count, the list's rows by state, the confirmation's command and buttons, scrolling). Built with
 // the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
 #include "draw.h"
+#include "frame_apps.h"
 #include "i18n.h"
 #include "icons.h"
 #include "model.h"
@@ -1866,6 +1868,257 @@ void testIconText(const FontSet& fonts) {
     cairo_surface_destroy(surface);
 }
 
+/**
+ * The other Frame apps as frameeyeosc's panel gets them: the built-in list without frameeyeosc, keyboard and perf not
+ * installed, mic running and aux installed.
+ * @param busy short names whose Konsole is open ("" = the menu)
+ * @return the list
+ */
+AppsView appsWith(const std::vector<std::string>& busy = {}) {
+    using frame_apps::AppState;
+    frame_apps::ManagerConfig config {"frameeyeosc", {}};
+    config.fetch.cacheDir.clear();  // the built-in list, not one fetched before
+    frame_apps::AppsManager apps(config);
+    apps.setForPreview({{"frameeyeosc", AppState::Running},
+                        {"frame-jp-keyboard", AppState::Missing},
+                        {"frame-mic-tuner", AppState::Running},
+                        {"frame-perf-overlay", AppState::Missing},
+                        {"frame-aux-shortcuts", AppState::Installed}},
+                       busy);
+    AppsView view;
+    view.entries = apps.entries();
+    view.menuBusy = apps.busy("");
+    return view;
+}
+
+/**
+ * The list's index of an app.
+ * @param apps the list
+ * @param key its short name
+ * @return the index (-1 if it isn't there)
+ */
+int appIndex(const AppsView& apps, const std::string& key) {
+    for (size_t i = 0; i < apps.entries.size(); ++i) {
+        if (apps.entries[i].app.key == key) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+void testApps(const FontSet& fonts) {
+    using frame_apps::AppState;
+    using frame_apps::LaunchResult;
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    // The list leaves frameeyeosc out; the count says how many of the four aren't installed
+    AppsView apps = appsWith();
+    CHECK(apps.entries.size() == 4 && appIndex(apps, "eye") < 0);
+    CHECK(appsCountText(ja, apps.entries) == "4 個のうち 2 個が入っていません");
+    CHECK(appsCountText(en, apps.entries) == "2 of 4 not installed");
+    {
+        std::vector<frame_apps::Entry> all = apps.entries;
+        for (frame_apps::Entry& entry : all) entry.state = AppState::Installed;
+        CHECK(appsCountText(ja, all) == "4 個すべて入っています");
+        CHECK(appsCountText(en, all) == "All 4 are installed");
+        all[1].state = AppState::Missing;
+        CHECK(appsCountText(ja, all) == "4 個のうち 1 個が入っていません");
+    }
+
+    for (const Language language : {Language::Ja, Language::En}) {
+        EyePanel panel(fonts);
+        PanelModel m = modelWith(Lids::Both, false);
+        m.language = language;
+        m.update.state = frame_updater::UpdateState::UpToDate;
+        m.update.current = "0.7.7";
+        panel.setTab(PanelTab::Advanced);
+        panel.setAdvPage(AdvPage::Version);
+        // Without a list there is no row
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::AppsOpen).empty());
+        // With one: the row at the bottom of the card, the page still without ▲ / ▼
+        m.apps = apps;
+        panel.render(m);
+        const std::vector<EyePanel::HitArea> row = hits(panel, PanelAction::AppsOpen);
+        CHECK(row.size() == 1);
+        if (row.size() == 1) {
+            CHECK(row[0].h == 72 && row[0].y + row[0].h <= 676 - 12 && row[0].y + row[0].h >= 676 - 30);
+            CHECK(row[0].x >= 430 && row[0].x + row[0].w <= 1160);
+        }
+        CHECK(panel.advancedMaxScroll() == 0.0 && panel.appsShown() && !panel.appsListOpen());
+        // Every update state: the row stays reachable (under the rest, scrolled to, when the page is taller), inside
+        // the card
+        using frame_updater::UpdateState;
+        for (const UpdateState state : {UpdateState::Unknown, UpdateState::UpToDate, UpdateState::Available,
+                                        UpdateState::Installing, UpdateState::Installed, UpdateState::CheckFailed,
+                                        UpdateState::InstallFailed}) {
+            for (const bool checking : {false, true}) {
+                PanelModel tall = m;
+                tall.update.state = state;
+                tall.update.installable = true;
+                tall.update.latest = "0.7.8";
+                tall.update.checking = checking;
+                tall.update.checkedAt = 1791287109;
+                tall.update.error = "network";
+                tall.update.version = "0.7.8";
+                tall.update.step = "download";
+                tall.update.notes = std::string(400, 'x');
+                panel.setAdvancedScroll(0);
+                panel.render(tall);
+                panel.scroll(10000);
+                panel.render(tall);
+                const std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::AppsOpen);
+                CHECK(found.size() == 1);
+                if (found.size() == 1) CHECK(found[0].y >= 174 && found[0].y + found[0].h <= 664);
+            }
+        }
+        panel.setAdvancedScroll(0);
+
+        // The row opens the list (the caller fetches it if due): rows by state, the cross and "Open the installer"
+        panel.render(m);
+        CHECK(press(panel, PanelAction::AppsOpen).action == PanelAction::AppsOpen);
+        CHECK(panel.appsListOpen() && !panel.appsConfirmOpen() && panel.appsShown() && !panel.advPageShown());
+        CHECK(panel.tab() == PanelTab::Advanced && panel.advPage() == AdvPage::Version);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::AppsClose).size() == 1 && hits(panel, PanelAction::AppsMenu).size() == 1);
+        CHECK(subTabs(panel).empty() && hits(panel, PanelAction::UpdateCheck).empty());
+        // "Install" only on the two that aren't installed (keyboard, perf); a chip on the running and installed ones
+        std::vector<int> installs;
+        for (const EyePanel::HitArea& area : hits(panel, PanelAction::AppsInstall)) installs.push_back(area.hit.arg);
+        CHECK((installs == std::vector<int> {appIndex(apps, "keyboard"), appIndex(apps, "perf")}));
+        // Four fit: no ▲ / ▼, and the controller doesn't scroll it
+        CHECK(hits(panel, PanelAction::AppsScroll).empty() && !panel.wantsScroll() && !panel.scroll(40));
+        // Everything on the list inside the card, below the tab row
+        for (const EyePanel::HitArea& area : panel.hitAreas()) {
+            if (area.hit.action == PanelAction::Tab || area.x < 400) continue;
+            CHECK(area.y >= 96 && area.y + area.h <= 676 && area.x >= 416 && area.x + area.w <= 1176);
+        }
+        // An app whose Konsole is open: no "Install" (its chip says so)
+        {
+            PanelModel busy = m;
+            busy.apps = appsWith({"perf"});
+            panel.render(busy);
+            installs.clear();
+            for (const EyePanel::HitArea& area : hits(panel, PanelAction::AppsInstall)) installs.push_back(area.hit.arg);
+            CHECK((installs == std::vector<int> {appIndex(apps, "keyboard")}));
+        }
+
+        // "Install": first the confirmation, with the command Konsole will run; only its buttons and the tabs work
+        panel.render(m);
+        CHECK(pressArg(panel, PanelAction::AppsInstall, appIndex(apps, "keyboard")).action == PanelAction::None);
+        CHECK(panel.appsConfirmOpen() && panel.appsConfirmKey() == "keyboard");
+        panel.render(m);
+        CHECK(panel.appsConfirmEntry(m) != nullptr && panel.appsConfirmEntry(m)->app.name == "frame-jp-keyboard");
+        CHECK(panel.appsConfirmCommand(m) == frame_apps::installerCommand("keyboard"));
+        CHECK(panel.appsConfirmCommand(m) == "curl -fsSL https://frame.sasaken1102s.net | sh -s -- install keyboard");
+        CHECK(hits(panel, PanelAction::AppsLaunch).size() == 1 && hits(panel, PanelAction::AppsCancel).size() == 1);
+        CHECK(hits(panel, PanelAction::AppsInstall).empty() && hits(panel, PanelAction::AppsClose).empty() &&
+              hits(panel, PanelAction::AppsMenu).empty());
+        for (const EyePanel::HitArea& area : panel.hitAreas()) {
+            if (area.x < 400) continue;
+            CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::AppsLaunch ||
+                  area.hit.action == PanelAction::AppsCancel);
+            CHECK(area.y + area.h <= 676);
+        }
+        // "Open in Konsole" goes to the caller; one that didn't open stays with its reason, one that did goes back
+        CHECK(press(panel, PanelAction::AppsLaunch).action == PanelAction::AppsLaunch);
+        panel.setAppsLaunchResult(LaunchResult::NoKonsole);
+        panel.render(m);
+        CHECK(panel.appsConfirmOpen() && hits(panel, PanelAction::AppsLaunch).size() == 1);
+        panel.setAppsLaunchResult(LaunchResult::Started);
+        CHECK(panel.appsListOpen() && !panel.appsConfirmOpen());
+        // "Cancel" goes back to the list too
+        panel.render(m);
+        pressArg(panel, PanelAction::AppsInstall, appIndex(apps, "perf"));
+        panel.render(m);
+        CHECK(panel.appsConfirmCommand(m) == frame_apps::installerCommand("perf"));
+        CHECK(press(panel, PanelAction::AppsCancel).action == PanelAction::None);
+        CHECK(panel.appsListOpen() && !panel.appsConfirmOpen());
+
+        // "Open the installer": the menu's command; not while the menu's Konsole is still open
+        panel.render(m);
+        CHECK(press(panel, PanelAction::AppsMenu).action == PanelAction::None);
+        CHECK(panel.appsConfirmOpen() && panel.appsConfirmKey().empty());
+        panel.render(m);
+        CHECK(panel.appsConfirmEntry(m) == nullptr);
+        CHECK(panel.appsConfirmCommand(m) == frame_apps::installerCommand(""));
+        CHECK(panel.appsConfirmCommand(m) == "curl -fsSL https://frame.sasaken1102s.net | sh");
+        CHECK(press(panel, PanelAction::AppsLaunch).action == PanelAction::AppsLaunch);
+        {
+            PanelModel menuBusy = m;
+            menuBusy.apps.menuBusy = true;
+            panel.render(menuBusy);
+            CHECK(hits(panel, PanelAction::AppsLaunch).empty());
+            panel.closeAppsConfirm();
+            panel.render(menuBusy);
+            CHECK(hits(panel, PanelAction::AppsMenu).empty());
+        }
+
+        // An app only the site lists: its name and command from the list now; gone from it, it can't be opened
+        {
+            PanelModel site = m;
+            frame_apps::Entry extra = apps.entries.front();
+            extra.app.name = "frame-example";
+            extra.app.key = "example";
+            extra.state = AppState::Missing;
+            site.apps.entries.push_back(extra);
+            panel.render(site);
+            CHECK(pressArg(panel, PanelAction::AppsInstall, 4).action == PanelAction::None);
+            panel.render(site);
+            CHECK(panel.appsConfirmEntry(site) != nullptr && panel.appsConfirmEntry(site)->app.name == "frame-example");
+            CHECK(panel.appsConfirmCommand(site) == "curl -fsSL https://frame.sasaken1102s.net | sh -s -- install example");
+            panel.render(m);
+            CHECK(panel.appsConfirmEntry(m) == nullptr && panel.appsConfirmCommand(m) == frame_apps::installerCommand(""));
+            CHECK(hits(panel, PanelAction::AppsLaunch).empty());
+            CHECK(press(panel, PanelAction::AppsCancel).action == PanelAction::None);
+        }
+
+        // Many apps: the list scrolls (the controller and ▲ / ▼), and only what shows can be pressed
+        {
+            PanelModel many = m;
+            for (int i = 0; i < 6; ++i) {
+                frame_apps::Entry extra = apps.entries.front();
+                extra.app.name = "frame-example-" + std::to_string(i);
+                extra.state = AppState::Missing;
+                many.apps.entries.push_back(extra);
+            }
+            panel.render(many);
+            CHECK(panel.wantsScroll() && hits(panel, PanelAction::AppsScroll).size() == 1);
+            for (const EyePanel::HitArea& area : hits(panel, PanelAction::AppsInstall)) {
+                CHECK(area.y >= 186 && area.y + area.h <= 590);
+            }
+            CHECK(panel.scroll(60));
+            CHECK(panel.scroll(-1000));
+            CHECK(!panel.scroll(-10));
+            CHECK(pressArg(panel, PanelAction::AppsScroll, 1).action == PanelAction::None);
+            panel.render(many);
+            CHECK(hits(panel, PanelAction::AppsScroll).size() == 2);
+            panel.scroll(10000);
+            panel.render(many);
+            CHECK(hits(panel, PanelAction::AppsScroll).size() == 1);
+            for (const EyePanel::HitArea& area : hits(panel, PanelAction::AppsInstall)) {
+                CHECK(area.y >= 186 && area.y + area.h <= 590);
+            }
+        }
+
+        // The cross goes back to "Version"; another tab closes the list too
+        panel.render(m);
+        CHECK(press(panel, PanelAction::AppsClose).action == PanelAction::None);
+        CHECK(!panel.appsListOpen() && panel.advPageShown() && panel.advPage() == AdvPage::Version);
+        panel.render(m);
+        press(panel, PanelAction::AppsOpen);
+        panel.render(m);
+        pressTab(panel, PanelTab::Basic);
+        CHECK(panel.tab() == PanelTab::Basic && !panel.appsListOpen());
+        panel.render(m);
+        pressTab(panel, PanelTab::Advanced);
+        panel.render(m);
+        CHECK(!panel.appsListOpen() && hits(panel, PanelAction::AppsOpen).size() == 1);
+        // The version history opened over it closes it
+        press(panel, PanelAction::AppsOpen);
+        panel.openHistory();
+        CHECK(!panel.appsListOpen() && panel.historyOpen());
+    }
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -1897,6 +2150,7 @@ int main() {
     testFitTabPolicy(fonts);
     testCameraRows(fonts);
     testIconText(fonts);
+    testApps(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

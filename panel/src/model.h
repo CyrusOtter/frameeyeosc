@@ -7,6 +7,7 @@
 #include "config.h"
 #include "diag.h"
 #include "eyecam.h"
+#include "frame_apps.h"
 #include "gaze_fit.h"
 #include "i18n.h"
 #include "recorder.h"
@@ -28,6 +29,12 @@ struct RecordsView {
     std::string lastCalib;                ///< the last calibration's
 };
 
+/** The other Frame apps as the panel shows them (frame_apps::AppsManager, vendor/frame-apps). */
+struct AppsView {
+    std::vector<frame_apps::Entry> entries;  ///< the list (frameeyeosc itself left out), as AppsManager has it
+    bool menuBusy = false;                   ///< the Konsole opened for the installer's menu is still open
+};
+
 /** Everything one frame of the panel is drawn from. */
 struct PanelModel {
     ConfigFile config;           ///< config.json as last read
@@ -47,6 +54,7 @@ struct PanelModel {
     std::string eyecamDir;       ///< its folder (status.json and ctl.sock; eyecam::defaultDir or --eyecam-dir)
     diag::System system;         ///< SteamOS's version and the camera tool's checksum (the diagnostics page)
     RecordsView records;         ///< the records (the Advanced tab's "Having trouble", and the failure screens' bar)
+    AppsView apps;               ///< the other Frame apps (the row at the bottom of "Version" and the list it opens)
 };
 
 /**

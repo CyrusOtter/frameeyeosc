@@ -4,6 +4,7 @@
 #include "diag.h"
 #include "draw.h"
 #include "fit_text.h"
+#include "frame_apps_cairo.h"
 #include "host_entry.h"
 #include "icons.h"
 #include "recorder.h"
@@ -65,6 +66,14 @@ constexpr double kAdvViewBottom = kContentY + kContentH - 12;  ///< the Advanced
 constexpr double kSubTabY = kContentY + 16;                   ///< ...under its sub-tabs
 constexpr double kSubTabH = 48;
 constexpr double kAdvPageTop = kSubTabY + kSubTabH + 14;      ///< ...from here
+constexpr double kAppsRowH = 72;          ///< the row at the bottom of "Version" that opens the other apps' list
+constexpr double kAppsHeadY = kContentY + 20;                  ///< the list's title row (and its cross)
+constexpr double kAppsFootH = 52;                              ///< its bottom row: the note and "Open the installer"
+constexpr double kAppsFootY = kContentY + kContentH - 20 - kAppsFootH;
+constexpr double kAppsViewTop = kAppsHeadY + 56 + 14;          ///< the apps, scrolled between these
+constexpr double kAppsViewBottom = kAppsFootY - 14;
+constexpr double kAppsLineH = 72;         ///< an app in the list
+constexpr double kAppsLineGap = 8;
 
 /**
  * The largest text size (down to a minimum) that fits a width.
@@ -881,6 +890,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
     switch (hit.action) {
         case PanelAction::Tab:
             setTab(static_cast<PanelTab>(hit.arg));
+            closeAppsList();
             historyOpen_ = false;
             diagOpen_ = false;
             recordOpen_.clear();
@@ -891,6 +901,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             if (hit.arg < 0 || hit.arg > static_cast<int>(AdvPage::Files)) return {};
             setTab(PanelTab::Advanced);
             setAdvPage(static_cast<AdvPage>(hit.arg));
+            closeAppsList();
             historyOpen_ = false;
             diagOpen_ = false;
             recordOpen_.clear();
@@ -901,6 +912,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             if (hit.arg < 0 || hit.arg > static_cast<int>(LidsPage::Fine)) return {};
             setTab(PanelTab::Lids);
             setLidsPage(static_cast<LidsPage>(hit.arg));
+            closeAppsList();
             historyOpen_ = false;
             diagOpen_ = false;
             recordOpen_.clear();
@@ -910,6 +922,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             if (hit.arg < 0 || hit.arg > static_cast<int>(GazePage::Glitch)) return {};
             setTab(PanelTab::Gaze);
             setGazePage(static_cast<GazePage>(hit.arg));
+            closeAppsList();
             return {};
         case PanelAction::GazeScaleLink:
             // Opened or closed here; the caller writes the second value once it is closed
@@ -962,6 +975,32 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::AdvancedScroll:
             scroll(hit.arg * (recordsAllOpen_ && recordOpen_.empty() ? listViewH_ : advViewH_) / 3);
             return {};
+        case PanelAction::AppsOpen:
+            // The caller fetches the list if it is due
+            openAppsList();
+            return hit;
+        case PanelAction::AppsClose:
+            closeAppsList();
+            return {};
+        case PanelAction::AppsInstall:
+            // Never straight to Konsole: the confirmation first, with the command it runs
+            if (hit.arg < 0 || hit.arg >= static_cast<int>(appsKeys_.size())) return {};
+            openAppsConfirm(appsKeys_[hit.arg]);
+            return {};
+        case PanelAction::AppsMenu:
+            openAppsConfirm("");
+            return {};
+        case PanelAction::AppsScroll:
+            scroll(hit.arg * appsViewH_ / 3);
+            return {};
+        case PanelAction::AppsCancel:
+            // Back to the list
+            appsConfirmOpen_ = false;
+            appsLaunchResult_ = frame_apps::LaunchResult::Started;
+            return {};
+        case PanelAction::AppsLaunch:
+            // The caller opens Konsole for appsConfirmKey()
+            return appsConfirmOpen() ? hit : PanelHit {};
         case PanelAction::FitDetails:
             fitDetails_ = !fitDetails_;
             return {};
@@ -985,6 +1024,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::EyecamCalib:
             // Its steps show on the eye cameras tab
             if (eyecamTab_) tab_ = PanelTab::Eyecam;
+            closeAppsList();
             historyOpen_ = false;
             diagOpen_ = false;
             recordOpen_.clear();
@@ -1117,6 +1157,7 @@ void EyePanel::openHistory() {
     advPage_ = AdvPage::Version;
     recordOpen_.clear();
     recordsAllOpen_ = false;
+    closeAppsList();
     historyOpen_ = true;
     historyRowPending_ = true;
     historyScrollSet_ = false;
@@ -1130,6 +1171,7 @@ void EyePanel::openDiag() {
     setAdvPage(AdvPage::Trouble);
     diagOpen_ = true;
     historyOpen_ = false;
+    closeAppsList();
     recordOpen_.clear();
     recordsAllOpen_ = false;
     eyecamConfirm_.close();
@@ -1142,6 +1184,7 @@ void EyePanel::openRecord(const std::string& folder) {
     setAdvPage(AdvPage::Trouble);
     recordOpen_ = folder;
     historyOpen_ = false;
+    closeAppsList();
     diagOpen_ = false;
     eyecamConfirm_.close();
 }
@@ -1153,8 +1196,51 @@ void EyePanel::openRecordsAll() {
     recordOpen_.clear();
     listScroll_ = 0.0;
     historyOpen_ = false;
+    closeAppsList();
     diagOpen_ = false;
     eyecamConfirm_.close();
+}
+
+void EyePanel::openAppsList() {
+    setTab(PanelTab::Advanced);
+    // (from "Version": its cross comes back to it)
+    setAdvPage(AdvPage::Version);
+    historyOpen_ = false;
+    diagOpen_ = false;
+    recordOpen_.clear();
+    recordsAllOpen_ = false;
+    eyecamConfirm_.close();
+    appsListOpen_ = true;
+    appsConfirmOpen_ = false;
+    appsLaunchResult_ = frame_apps::LaunchResult::Started;
+    appsScroll_ = 0.0;
+}
+
+void EyePanel::openAppsConfirm(const std::string& key) {
+    if (!appsListOpen()) openAppsList();
+    appsConfirmOpen_ = true;
+    appsConfirmKey_ = key;
+    appsLaunchResult_ = frame_apps::LaunchResult::Started;
+}
+
+void EyePanel::setAppsLaunchResult(frame_apps::LaunchResult result) {
+    appsLaunchResult_ = result;
+    // Opened: back to the list, where the app shows "Running in Konsole"
+    if (result == frame_apps::LaunchResult::Started) appsConfirmOpen_ = false;
+}
+
+const frame_apps::Entry* EyePanel::appsConfirmEntry(const PanelModel& model) const {
+    if (appsConfirmKey_.empty()) return nullptr;
+    for (const frame_apps::Entry& entry : model.apps.entries) {
+        if (entry.app.key == appsConfirmKey_) return &entry;
+    }
+    return nullptr;
+}
+
+std::string EyePanel::appsConfirmCommand(const PanelModel& model) const {
+    // The same function as the one that makes Konsole's script, from the list now (not the built-in one)
+    const frame_apps::Entry* entry = appsConfirmEntry(model);
+    return frame_apps::installerCommand(entry != nullptr ? entry->app.key : std::string());
 }
 
 void EyePanel::setHistoryRow(const std::string& version) {
@@ -1171,6 +1257,12 @@ void EyePanel::setHistoryScroll(double px) {
 
 bool EyePanel::scroll(double dy) {
     if (!wantsScroll() || promptOpen() || hostEntryOpen_) return false;
+    if (appsListOpen_) {
+        const double next = std::clamp(appsScroll_ + dy, 0.0, appsMaxScroll_);
+        if (std::fabs(next - appsScroll_) < 1e-3) return false;
+        appsScroll_ = next;
+        return true;
+    }
     if (!historyOpen_) {
         // All records, or the Advanced tab's page
         double& at = recordsAllOpen_ ? listScroll_ : advScroll_;
@@ -3290,6 +3382,19 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         drawRecordsAll(pen, t, m);
         return;
     }
+    if (appsListOpen_) {
+        const size_t before = buttons_.size();
+        drawAppsList(pen, t, m);
+        if (appsConfirmOpen_) {
+            // Over the list, which can't be pressed then and is dimmed further (the tabs and the left column stay)
+            buttons_.resize(before);
+            pen.color(kBg, 0.7);
+            pen.roundedRect(kRightX, kContentY, kRight - kRightX, kContentH, 20);
+            cairo_fill(pen.cr);
+            drawAppsConfirm(pen, t, m);
+        }
+        return;
+    }
     // The developer recording: its light warning, and its steps while it runs, in the tab's place
     const eyecam::State recording = m.eyecam.status.state;
     if (eyecamConfirm_.isOpen() ||
@@ -3605,7 +3710,276 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
             pen.text(kInnerX, ey, line, fitSize(pen, line, 14, 11, right - kInnerX, false), kTextMuted);
         }
     }
+    // Last, the other Frame apps: at the bottom of the card while the page fits, else under the rest (scrolled to)
+    if (!m.apps.entries.empty()) {
+        const double viewH = kAdvViewBottom - kAdvPageTop;
+        const double rowY = std::max(ey + 22, top + viewH - 8 - kAppsRowH);
+        drawAppsRow(pen, t, m, kInnerX, rowY, right);
+        return rowY + kAppsRowH + 8 - top;
+    }
     return ey + 8 - top;
+}
+
+void EyePanel::drawAppIcon(const Pen& pen, const frame_apps::Entry& entry, double x, double y, double size) {
+    if (frame_apps::drawIcon(pen.cr, entry, x, y, size)) return;
+    // No icon (an app only the site lists, whose icon didn't come): its letters on a dark tile
+    fillRounded(pen, x, y, size, size, size * 0.22, kBg);
+    const double textSize = fitSize(pen, entry.app.mono, std::round(size * 0.34), 9, size - 8, true);
+    textCentered(pen, x + size / 2, centerBaseline(y, size, textSize), entry.app.mono, textSize, kAccent, true);
+}
+
+void EyePanel::drawAppsRow(const Pen& pen, const UiText& t, const PanelModel& m, double x0, double y, double x1) {
+    cairo_t* cr = pen.cr;
+    const PanelHit hit {PanelAction::AppsOpen, nullptr, 0};
+    const int pointer = pointerState(hit);
+    const double w = x1 - x0;
+    const Color ground = pointer > 0 ? kControlHover : kCard;
+    if (pointer > 0) fillRounded(pen, x0, y, w, kAppsRowH, 14, kControlHover);
+    strokeRounded(pen, x0, y, w, kAppsRowH, 14, kBorder, 2);
+    // The apps' icons, small and overlapping (each 14 px over the one before it, with a ring of the row's color)
+    const std::vector<frame_apps::Entry>& apps = m.apps.entries;
+    const size_t shown = std::min<size_t>(apps.size(), 4);
+    const double tile = 40;
+    const double step = tile - 14;
+    const double iy = y + (kAppsRowH - tile) / 2;
+    for (size_t i = 0; i < shown; ++i) {
+        const double tx = x0 + 16 + step * i;
+        if (i > 0) fillRounded(pen, tx - 2, iy - 2, tile + 4, tile + 4, tile * 0.22 + 2, ground);
+        drawAppIcon(pen, apps[i], tx, iy, tile);
+    }
+    const double iconsW = shown == 0 ? 0 : tile + step * (shown - 1);
+    // "Frame apps by sasaken@" and how many aren't installed
+    const double textX = x0 + 16 + iconsW + 16;
+    const double textW = x1 - 44 - textX;
+    pen.text(textX, y + 32, ellipsize(pen, t.appsAllTitle, 16, true, textW, false), 16, kText, true);
+    pen.text(textX, y + 54, ellipsize(pen, appsCountText(t, apps), 13, false, textW, false), 13, kTextMuted);
+    // A chevron (lines) at the right
+    cairo_save(cr);
+    pen.color(kTextMuted);
+    cairo_set_line_width(cr, 2.5);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+    const double ax = x1 - 24;
+    const double ay = y + kAppsRowH / 2;
+    cairo_move_to(cr, ax - 4, ay - 8);
+    cairo_line_to(cr, ax + 4, ay);
+    cairo_line_to(cr, ax - 4, ay + 8);
+    cairo_stroke(cr);
+    cairo_restore(cr);
+    addButton(hit, x0, y, w, kAppsRowH);
+}
+
+void EyePanel::drawAppLine(const Pen& pen, const UiText& t, Language language, const frame_apps::Entry& entry,
+                           int index, double x, double y, double w, double h) {
+    using frame_apps::AppState;
+    fillRounded(pen, x, y, w, h, 14, kControl);
+    const double tile = 48;
+    const double tx = x + 12;
+    drawAppIcon(pen, entry, tx, y + (h - tile) / 2, tile);
+    // At the right: "Install", or a chip with its state
+    double rightEdge = x + w - 12;
+    if (entry.state == AppState::Missing && !entry.busy) {
+        const double bw = std::max(100.0, pen.measure(t.appsInstall, 16, true) + 44);
+        const double bx = rightEdge - bw;
+        drawButton(pen, bx, y + (h - 48) / 2, bw, 48, t.appsInstall, {PanelAction::AppsInstall, nullptr, index}, true,
+                   true, 16);
+        rightEdge = bx - 12;
+    } else if (entry.busy || entry.state != AppState::Unknown) {
+        const bool running = entry.state == AppState::Running;
+        const char* label = entry.busy ? t.appsChipBusy : (running ? t.appsChipRunning : t.appsChipInstalled);
+        const Color fill = entry.busy ? kAccentTint : (running ? kSuccessTint : kCard);
+        const Color fg = entry.busy ? kAccent : (running ? kSuccess : kTextMuted);
+        const double dotW = entry.busy ? 0 : 16;
+        const double cw = 14 + dotW + pen.measure(label, 14, true) + 14;
+        const double cx = rightEdge - cw;
+        const double cy = y + (h - 32) / 2;
+        fillRounded(pen, cx, cy, cw, 32, 16, fill);
+        if (!entry.busy) drawDot(pen.cr, cx + 14 + 4, cy + 16, 4, fg);
+        pen.text(cx + 14 + dotW, centerBaseline(cy, 32, 14), label, 14, fg, true);
+        rightEdge = cx - 12;
+    }
+    // Its name and what it does (the installer's line, in the panel's language)
+    const double textX = tx + tile + 14;
+    const double textW = std::max(40.0, rightEdge - textX);
+    const frame_apps::Lang lang = language == Language::Ja ? frame_apps::Lang::Ja : frame_apps::Lang::En;
+    pen.text(textX, y + h / 2 - 5, ellipsize(pen, entry.app.name, 16, true, textW, false), 16, kText, true);
+    pen.text(textX, y + h / 2 + 18, ellipsize(pen, entry.app.desc(lang), 13, false, textW, false), 13, kTextMuted);
+}
+
+void EyePanel::drawAppsList(const Pen& pen, const UiText& t, const PanelModel& m) {
+    cairo_t* cr = pen.cr;
+    const std::vector<frame_apps::Entry>& apps = m.apps.entries;
+    // A sheet over the content card (the tabs and the left column stay)
+    drawCard(pen, kRightX, kContentY, kRight - kRightX, kContentH, 20, kCard, kBorder, 2);
+
+    // The title and what is done where, and the cross at the right
+    const double closeS = 52;
+    const double closeX = kInnerRight - closeS;
+    const double closeY = kAppsHeadY + 2;
+    {
+        const PanelHit hit {PanelAction::AppsClose, nullptr, 0};
+        const int pointer = pointerState(hit);
+        fillRounded(pen, closeX, closeY, closeS, closeS, 14,
+                    pointer == 2 ? kAccentPressed : (pointer == 1 ? kControlHover : kControl));
+        strokeRounded(pen, closeX, closeY, closeS, closeS, 14, kBorder, 2);
+        cairo_save(cr);
+        pen.color(pointer == 2 ? kOnAccent : kText);
+        cairo_set_line_width(cr, 2.5);
+        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+        const double cx = closeX + closeS / 2;
+        const double cy = closeY + closeS / 2;
+        cairo_move_to(cr, cx - 8, cy - 8);
+        cairo_line_to(cr, cx + 8, cy + 8);
+        cairo_move_to(cr, cx + 8, cy - 8);
+        cairo_line_to(cr, cx - 8, cy + 8);
+        cairo_stroke(cr);
+        cairo_restore(cr);
+        addButton(hit, closeX, closeY, closeS, closeS);
+    }
+    const double headW = closeX - 16 - kInnerX;
+    pen.text(kInnerX, kAppsHeadY + 26, t.appsAllTitle, fitSize(pen, t.appsAllTitle, 22, 16, headW, true), kText, true);
+    pen.text(kInnerX, kAppsHeadY + 50, ellipsize(pen, t.appsListSub, 14, false, headW, false), 14, kTextMuted);
+
+    // At the bottom: where the list comes from (two lines at most) and "Open the installer" (busy while its Konsole
+    // is open)
+    {
+        const bool busy = m.apps.menuBusy;
+        const std::string label = busy ? t.appsChipBusy : t.appsOpenInstaller;
+        const double menuW = pen.measure(label, 16, true) + 48;
+        const double menuX = kInnerRight - menuW;
+        drawButton(pen, menuX, kAppsFootY, menuW, kAppsFootH, label, {PanelAction::AppsMenu, nullptr, 0}, !busy, false,
+                   16);
+        const std::vector<std::string> note = wrapText(pen, t.appsListNote, 13, false, menuX - 18 - kInnerX, 2);
+        double baseline = kAppsFootY + kAppsFootH / 2 + 4.5 - (static_cast<double>(note.size()) - 1) * 9;
+        for (const std::string& line : note) {
+            pen.text(kInnerX, baseline, line, 13, kTextMuted);
+            baseline += 18;
+        }
+    }
+
+    // The apps, one row each, clipped between the title and the bottom row and scrolled with ▲ / ▼ when they don't fit
+    const double viewTop = kAppsViewTop;
+    const double viewBottom = kAppsViewBottom;
+    const double viewH = viewBottom - viewTop;
+    const double pitch = kAppsLineH + kAppsLineGap;
+    const double contentH = apps.empty() ? 0.0 : apps.size() * pitch - kAppsLineGap;
+    appsViewH_ = viewH;
+    appsMaxScroll_ = std::max(0.0, contentH - viewH);
+    appsScroll_ = std::clamp(appsScroll_, 0.0, appsMaxScroll_);
+    appsScrollable_ = appsMaxScroll_ > 0;
+    appsKeys_.clear();
+    for (const frame_apps::Entry& entry : apps) appsKeys_.push_back(entry.app.key);
+    const double barX = kInnerRight - kHistoryBarW;
+    const double lineRight = appsScrollable_ ? barX - 14 : kInnerRight;
+    cairo_save(cr);
+    cairo_rectangle(cr, kInnerX - 2, viewTop, lineRight - kInnerX + 4, viewH);
+    cairo_clip(cr);
+    hitClip_ = true;
+    hitClipTop_ = viewTop;
+    hitClipBottom_ = viewBottom;
+    for (size_t i = 0; i < apps.size(); ++i) {
+        const double y = viewTop + i * pitch - appsScroll_;
+        if (y + kAppsLineH < viewTop || y > viewBottom) continue;
+        drawAppLine(pen, t, m.language, apps[i], static_cast<int>(i), kInnerX, y, lineRight - kInnerX, kAppsLineH);
+    }
+    hitClip_ = false;
+    cairo_restore(cr);
+    if (appsScrollable_) {
+        drawScrollBar(pen, PanelAction::AppsScroll, barX, viewTop, viewBottom, appsScroll_, appsMaxScroll_, contentH);
+    }
+}
+
+void EyePanel::drawAppsConfirm(const Pen& pen, const UiText& t, const PanelModel& m) {
+    using frame_apps::LaunchResult;
+    // The app and the command from the list now (it may be one only the site has); Konsole gets the same command
+    const frame_apps::Entry* entry = appsConfirmEntry(m);
+    const bool unknown = !appsConfirmKey_.empty() && entry == nullptr;  // gone from the list: can't be opened
+    std::string title = t.appsConfirmMenuTitle;
+    if (entry != nullptr) {
+        char text[256];
+        std::snprintf(text, sizeof(text), t.appsConfirmTitleFormat, entry->app.name.c_str());
+        title = text;
+    }
+    const std::string command = appsConfirmCommand(m);
+    const char* error = unknown ? t.appsErrorFailed : nullptr;
+    switch (appsLaunchResult_) {
+        case LaunchResult::Started: break;
+        case LaunchResult::Busy: error = t.appsErrorBusy; break;
+        case LaunchResult::NoDisplay: error = t.appsErrorNoDisplay; break;
+        case LaunchResult::NoKonsole: error = t.appsErrorNoKonsole; break;
+        case LaunchResult::UnknownApp:
+        case LaunchResult::Failed: error = t.appsErrorFailed; break;
+    }
+    const char* bullets[3] = {entry != nullptr ? t.appsConfirmProgress : t.appsConfirmMenu, t.appsConfirmNoSudo,
+                              t.appsConfirmClose};
+
+    const double w = kRight - kRightX - 40;
+    const double x = kRightX + 20;
+    const double ix = x + 28;
+    const double innerW = w - 56;
+    const std::vector<std::string> errorLines =
+        error != nullptr ? wrapText(pen, error, 15, true, innerW, 2) : std::vector<std::string> {};
+    const double titleH = 40;
+    const double h = 26 + titleH + 18 + 26 + 10 + 56 + 16 + 3 * 26 +
+                     (errorLines.empty() ? 0.0 : 6 + errorLines.size() * 22.0) + 18 + kControlH + 26;
+    double y = kContentY + (kContentH - h) / 2;
+    drawCard(pen, x, y, w, h, 20, kCard, kAccent, 2);
+    y += 26;
+
+    // The app's icon and "Install <name>" (the menu: its title only)
+    double titleX = ix;
+    if (entry != nullptr) {
+        drawAppIcon(pen, *entry, ix, y, titleH);
+        titleX += titleH + 14;
+    }
+    const double titleW = ix + innerW - titleX;
+    const double titleSize = fitSize(pen, title, 22, 16, titleW, true);
+    pen.text(titleX, centerBaseline(y, titleH, titleSize), ellipsize(pen, title, titleSize, true, titleW, false),
+             titleSize, kText, true);
+    y += titleH + 18;
+
+    // The command Konsole runs, as it would be typed (monospaced; smaller before it is ever cut)
+    pen.text(ix, y + 18, ellipsize(pen, t.appsConfirmLead, 16, false, innerW, false), 16, kText);
+    y += 26 + 10;
+    fillRounded(pen, ix, y, innerW, 56, 14, kBg);
+    strokeRounded(pen, ix, y, innerW, 56, 14, kDivider, 2);
+    double commandSize = 17;
+    while (commandSize > 12 && pen.measureMono(command, commandSize) > innerW - 36) commandSize -= 1;
+    std::string shown = command;
+    if (pen.measureMono(command, commandSize) > innerW - 36) {
+        // (an ASCII command: cut at any byte)
+        while (shown.size() > 1 && pen.measureMono(shown + "...", commandSize) > innerW - 36) shown.pop_back();
+        shown += "...";
+    }
+    pen.textMono(ix + 18, centerBaseline(y, 56, commandSize), shown, commandSize, kText);
+    y += 56 + 16;
+
+    // What happens then
+    for (const char* line : bullets) {
+        drawDot(pen.cr, ix + 5, y + 13, 3.5, kAccent);
+        pen.text(ix + 20, y + 18, ellipsize(pen, line, 15, false, innerW - 20, false), 15, kText);
+        y += 26;
+    }
+    // Why it couldn't open
+    if (!errorLines.empty()) {
+        y += 6;
+        for (const std::string& line : errorLines) {
+            pen.text(ix, y + 17, line, 15, kDanger, true);
+            y += 22;
+        }
+    }
+    y += 18;
+
+    // "Cancel" and "Open in Konsole" at the right (not while the menu's Konsole is open, nor for an app gone from the
+    // list)
+    const bool usable = !unknown && !(entry == nullptr && m.apps.menuBusy);
+    const double launchW = std::max(200.0, pen.measure(t.appsConfirmLaunch, 18, true) + 56);
+    const double launchX = ix + innerW - launchW;
+    drawButton(pen, launchX, y, launchW, kControlH, t.appsConfirmLaunch, {PanelAction::AppsLaunch, nullptr, 0}, usable,
+               true, 18);
+    const double cancelW = std::max(140.0, pen.measure(t.appsConfirmCancel, 18, true) + 48);
+    drawButton(pen, launchX - 12 - cancelW, y, cancelW, kControlH, t.appsConfirmCancel,
+               {PanelAction::AppsCancel, nullptr, 0}, true, false, 18);
 }
 
 double EyePanel::drawTroublePage(const Pen& pen, const UiText& t, const PanelModel& m, double top, double right) {
@@ -6138,6 +6512,8 @@ void EyePanel::render(const PanelModel& model) {
     listScrollable_ = false;
     hitClip_ = false;
     recordNames_.clear();
+    appsKeys_.clear();
+    appsScrollable_ = false;
 
     drawStatus(pen, t, model);
     drawTabs(pen, t);
@@ -6188,6 +6564,18 @@ int EyePanel::width() const {
 
 int EyePanel::height() const {
     return kHeight;
+}
+
+std::string appsCountText(const UiText& t, const std::vector<frame_apps::Entry>& entries) {
+    int missing = 0;
+    for (const frame_apps::Entry& entry : entries) missing += entry.state == frame_apps::AppState::Missing ? 1 : 0;
+    char text[200];
+    if (missing > 0) {
+        std::snprintf(text, sizeof(text), t.appsAllCountFormat, static_cast<int>(entries.size()), missing);
+    } else {
+        std::snprintf(text, sizeof(text), t.appsAllInstalledFormat, static_cast<int>(entries.size()));
+    }
+    return text;
 }
 
 void renderThumbnail(const FontSet& fonts, int size, std::vector<uint8_t>& rgba, const std::string& pngPath) {
