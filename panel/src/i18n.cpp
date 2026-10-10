@@ -336,7 +336,7 @@ UiText makeJapanese() {
     t.advFiles = "ファイル";
     t.updateToFormat = "%s に更新する";
     t.updateNotesFormat = "%s の内容";
-    t.appsAllTitle = "ささけんの Frame アプリ";
+    t.appsAllTitle = "ささけん＠の Frame アプリ";
     t.appsAllCountFormat = "%1$d 個のうち %2$d 個が入っていません";
     t.appsAllInstalledFormat = "%d 個すべて入っています";
     t.appsInstall = "入れる";
