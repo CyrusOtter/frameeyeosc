@@ -13,6 +13,8 @@ name="frameeyeosc-$version-steamframe-aarch64"
 
 # The updater copy must be exactly what frame-updater's sync.sh put there
 sh vendor/frame-updater/verify.sh
+# ...and the other Frame apps' list (built into the panel) what frame-apps' sync.sh put there
+sh vendor/frame-apps/verify.sh
 
 "$cargo" test --release
 "$cargo" build --release

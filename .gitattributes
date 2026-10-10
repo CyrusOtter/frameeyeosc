@@ -2,3 +2,4 @@
 *.service text eol=lf
 *.example text eol=lf
 vendor/frame-updater/** text eol=lf
+vendor/frame-apps/** text eol=lf
