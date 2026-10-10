@@ -3844,20 +3844,29 @@ void EyePanel::drawAppsList(const Pen& pen, const UiText& t, const PanelModel& m
         const double menuX = kInnerRight - menuW;
         drawButton(pen, menuX, kAppsFootY, menuW, kAppsFootH, label, {PanelAction::AppsMenu, nullptr, 0}, !busy, false,
                    16);
-        // (a "\n" in the text ends a line there; two lines in all)
-        std::vector<std::string> note;
+        // (a "\n" in the text ends a line there, a size smaller if a part would otherwise wrap; two lines in all)
         const std::string text = t.appsListNote;
-        for (size_t start = 0; start <= text.size() && note.size() < 2;) {
+        const double noteW = menuX - 18 - kInnerX;
+        std::vector<std::string> parts;
+        for (size_t start = 0; start <= text.size();) {
             const size_t end = std::min(text.find('\n', start), text.size());
-            for (const std::string& line :
-                 wrapText(pen, text.substr(start, end - start), 13, false, menuX - 18 - kInnerX, 2 - note.size())) {
+            parts.push_back(text.substr(start, end - start));
+            start = end + 1;
+        }
+        double noteSize = 13;
+        if (parts.size() > 1) {
+            for (const std::string& part : parts) noteSize = std::min(noteSize, fitSize(pen, part, 13, 12, noteW, false));
+        }
+        std::vector<std::string> note;
+        for (const std::string& part : parts) {
+            if (note.size() >= 2) break;
+            for (const std::string& line : wrapText(pen, part, noteSize, false, noteW, 2 - note.size())) {
                 note.push_back(line);
             }
-            start = end + 1;
         }
         double baseline = kAppsFootY + kAppsFootH / 2 + 4.5 - (static_cast<double>(note.size()) - 1) * 9;
         for (const std::string& line : note) {
-            pen.text(kInnerX, baseline, line, 13, kTextMuted);
+            pen.text(kInnerX, baseline, line, noteSize, kTextMuted);
             baseline += 18;
         }
     }
