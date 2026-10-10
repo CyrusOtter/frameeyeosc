@@ -352,7 +352,7 @@ struct UiText {
     const char* appsChipInstalled;      ///< an app that is installed, not running
     const char* appsChipBusy;           ///< an app whose Konsole is still open (and the menu button then)
     const char* appsListSub;            ///< under the list's title
-    const char* appsListNote;           ///< at the bottom of the list: where the list comes from
+    const char* appsListNote;           ///< at the bottom of the list: where the list comes from ("\n" breaks it)
     const char* appsOpenInstaller;      ///< the list's button that opens the installer's menu
     const char* appsClose;              ///< the list's close button (its name; it is drawn as a cross)
     const char* appsConfirmTitleFormat; ///< the confirmation for one app ("%s を入れる", the app's name)

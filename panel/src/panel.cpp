@@ -3733,20 +3733,15 @@ void EyePanel::drawAppsRow(const Pen& pen, const UiText& t, const PanelModel& m,
     const PanelHit hit {PanelAction::AppsOpen, nullptr, 0};
     const int pointer = pointerState(hit);
     const double w = x1 - x0;
-    const Color ground = pointer > 0 ? kControlHover : kCard;
     if (pointer > 0) fillRounded(pen, x0, y, w, kAppsRowH, 14, kControlHover);
     strokeRounded(pen, x0, y, w, kAppsRowH, 14, kBorder, 2);
-    // The apps' icons, small and overlapping (each 14 px over the one before it, with a ring of the row's color)
+    // The apps' icons, small and side by side (whole, so their own labels show)
     const std::vector<frame_apps::Entry>& apps = m.apps.entries;
     const size_t shown = std::min<size_t>(apps.size(), 4);
-    const double tile = 40;
-    const double step = tile - 14;
+    const double tile = 36;
+    const double step = tile + 6;
     const double iy = y + (kAppsRowH - tile) / 2;
-    for (size_t i = 0; i < shown; ++i) {
-        const double tx = x0 + 16 + step * i;
-        if (i > 0) fillRounded(pen, tx - 2, iy - 2, tile + 4, tile + 4, tile * 0.22 + 2, ground);
-        drawAppIcon(pen, apps[i], tx, iy, tile);
-    }
+    for (size_t i = 0; i < shown; ++i) drawAppIcon(pen, apps[i], x0 + 16 + step * i, iy, tile);
     const double iconsW = shown == 0 ? 0 : tile + step * (shown - 1);
     // "Frame apps by sasaken@" and how many aren't installed
     const double textX = x0 + 16 + iconsW + 16;
@@ -3849,7 +3844,17 @@ void EyePanel::drawAppsList(const Pen& pen, const UiText& t, const PanelModel& m
         const double menuX = kInnerRight - menuW;
         drawButton(pen, menuX, kAppsFootY, menuW, kAppsFootH, label, {PanelAction::AppsMenu, nullptr, 0}, !busy, false,
                    16);
-        const std::vector<std::string> note = wrapText(pen, t.appsListNote, 13, false, menuX - 18 - kInnerX, 2);
+        // (a "\n" in the text ends a line there; two lines in all)
+        std::vector<std::string> note;
+        const std::string text = t.appsListNote;
+        for (size_t start = 0; start <= text.size() && note.size() < 2;) {
+            const size_t end = std::min(text.find('\n', start), text.size());
+            for (const std::string& line :
+                 wrapText(pen, text.substr(start, end - start), 13, false, menuX - 18 - kInnerX, 2 - note.size())) {
+                note.push_back(line);
+            }
+            start = end + 1;
+        }
         double baseline = kAppsFootY + kAppsFootH / 2 + 4.5 - (static_cast<double>(note.size()) - 1) * 9;
         for (const std::string& line : note) {
             pen.text(kInnerX, baseline, line, 13, kTextMuted);

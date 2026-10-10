@@ -344,8 +344,9 @@ UiText makeJapanese() {
     t.appsChipInstalled = "入っています";
     t.appsChipBusy = "Konsole で実行中…";
     t.appsListSub = "入れる・更新する・消すは、Konsole のインストーラーで行います";
-    t.appsListNote = "一覧は「新しい版の確認」がオンのとき、frame.sasaken1102s.net から取ってきます（1 時間に 1 回まで。"
-                     "取れなければ前回の分か同梱の一覧）";
+    // (a line break after 「取ってきます」, so the two lines part where the sentence does)
+    t.appsListNote = "一覧は「新しい版の確認」がオンのとき、frame.sasaken1102s.net から取ってきます\n"
+                     "（1 時間に 1 回まで。取れなければ前回の分か同梱の一覧）";
     t.appsOpenInstaller = "インストーラーを開く";
     t.appsClose = "閉じる";
     t.appsConfirmTitleFormat = "%s を入れる";
