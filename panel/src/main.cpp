@@ -512,13 +512,6 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
 }
 
 /**
- * Parse the command line.
- * @param argc argument count
- * @param argv arguments
- * @param options where to write
- * @return true if valid
- */
-/**
  * Take --fake-apps-state apart: KEY=STATE pairs separated by commas. KEY is an installer short name or a name of the
  * built-in list, or "menu" (the installer's menu, only busy); STATE missing, installed, running or busy (not installed
  * and its Konsole still open).
@@ -609,6 +602,13 @@ AppsView dumpApps(const Options& options) {
     return view;
 }
 
+/**
+ * Parse the command line.
+ * @param argc argument count
+ * @param argv arguments
+ * @param options where to write
+ * @return true if valid
+ */
 bool parseOptions(int argc, char** argv, Options& options) {
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
