@@ -2853,6 +2853,20 @@ struct Sample {
     cross_eye: bool,
 }
 
+impl Sample {
+    /// Whether its gaze counts in a gaze capture (capture::usable). An eye whose eyelid is the camera's because the eye
+    /// server reads it closing while the camera has seen it open for longer than a blink (LidFrom::CameraOpen, see
+    /// Smoother::check_lids) counts as open: the eye server's openness may be stuck at 0 for the whole wear.
+    fn capture_usable(&self) -> bool {
+        capture::usable(self.openness, self.camera_open(), self.reliable)
+    }
+
+    /// Which eyes' eyelids are the camera's because it sees them open while the eye server reads them closing.
+    fn camera_open(&self) -> [bool; 2] {
+        self.lid_from.map(|from| from == LidFrom::CameraOpen)
+    }
+}
+
 /// Per-eye multipliers as lid_inputs applies them. An unfitted eye: the fixed one, else the learned one, else 1.
 /// A fitted eye: the fixed one as a fine-tune after the fit, else 1 (never the learned one, which fitted eyes
 /// do not use).
@@ -3738,8 +3752,8 @@ impl Bridge {
         if let Some(capture) = &mut self.capture {
             let gaze = [sample.raw_gaze[4], sample.raw_gaze[5]];
             let eye_x = [sample.raw_gaze[0], sample.raw_gaze[2]];
-            let usable = capture::usable(data.openness, sample.reliable);
-            if capture.add(data.sample_time, gaze, eye_x, data.openness, usable) {
+            let usable = sample.capture_usable();
+            if capture.add(data.sample_time, gaze, eye_x, data.openness, sample.camera_open(), usable) {
                 self.finish_capture();
             }
         }
@@ -7683,6 +7697,21 @@ mod tests {
         let mut smoother = Smoother::new(&settings);
         let sent = camera_samples(&settings, &mut smoother, 100.0, 3.0, |i| if squinting(i) { [0.2, 0.8] } else { [0.8; 2] }, |_| None);
         assert!(sent[91..180].iter().all(|sample| sample.lids[0] == 0.0));
+    }
+
+    #[test]
+    fn an_eye_stuck_shut_on_the_eye_server_counts_in_a_gaze_capture_while_the_camera_sees_it_open() {
+        // 2026-10-11: the eye server read the right eye 0.000 for a whole wear, the camera saw it open (about 0.75)
+        let settings = camera_settings();
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 3.0, |_| [0.8, 0.0], |_| Some(camera(0.75, 0.0)));
+        // Not before the camera's eyelid takes over (CAMERA_DOUBT_GRACE, as for a blink); from then on, all along
+        assert!(sent[..20].iter().all(|sample| !sample.capture_usable() && sample.camera_open() == [false; 2]));
+        assert!(sent[40..].iter().all(|sample| sample.camera_open() == [false, true] && sample.capture_usable()));
+        // Without the camera's values, as before: none
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 3.0, |_| [0.8, 0.0], |_| None);
+        assert!(sent.iter().all(|sample| !sample.capture_usable()));
     }
 
     #[test]
