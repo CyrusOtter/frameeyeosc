@@ -295,7 +295,8 @@ void printUsage() {
         "                        A made-up update state (the version row on the Advanced tab)\n"
         "      --fake-update-notes both|en|long  With --fake-update available|manual, the new release's summary:\n"
         "                        English and Japanese, English only, or both cut at 300 characters\n"
-        "      --fake-fit running|running-center|running-closed|done|done-center|fitted|fitted-gaze|\n"
+        "      --fake-fit running|running-center|running-closed|done|done-center|done-standin|\n"
+        "                 done-center-standin|fitted|fitted-gaze|\n"
         "                 failed-unsteady|failed-notclosed|failed-movement|failed-lidrange|failed-cancelled|\n"
         "                 failed-left|failed-opened|failed-noresult  A made-up eye fit (Eye fit tab)\n"
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
@@ -952,9 +953,10 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fakeFit = argv[++i];
             static const char* const kFitStates[] = {
                 "running",         "running-center",   "running-closed",   "done",
-                "done-center",     "fitted",           "fitted-gaze",      "failed-unsteady",
-                "failed-notclosed", "failed-movement", "failed-lidrange",  "failed-cancelled",
-                "failed-left",     "failed-opened",    "failed-noresult"};
+                "done-center",     "done-standin",     "done-center-standin", "fitted",
+                "fitted-gaze",     "failed-unsteady",  "failed-notclosed", "failed-movement",
+                "failed-lidrange", "failed-cancelled", "failed-left",      "failed-opened",
+                "failed-noresult"};
             if (std::find(std::begin(kFitStates), std::end(kFitStates), options.fakeFit) == std::end(kFitStates)) {
                 std::fprintf(stderr, "--fake-fit: unknown state %s\n", options.fakeFit.c_str());
                 return false;
@@ -1494,6 +1496,8 @@ PanelModel fakeModel(const Options& options) {
             fit.point = Point::Closed;
         } else if (state.rfind("done", 0) == 0) {
             fit.phase = Phase::Done;
+            // The right eye stuck shut on Valve's side, seen open by the eye camera (2026-10-11)
+            fit.notes.standIn[1] = state.find("standin") != std::string::npos;
         } else if (saved) {
             fit.phase = Phase::Idle;
         } else {
