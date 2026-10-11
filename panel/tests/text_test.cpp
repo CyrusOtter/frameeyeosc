@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -248,6 +249,41 @@ void testFitRecord() {
  * No text in either table has an arrow or a symbol the panel draws with paths: they are icon markers, so the font
  * never draws them. Kept: "×" for "times" (×0.99) and "＋" as a word ("+ is right", "camera + Valve").
  */
+void testLidFitLines() {
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    gaze_fit::Values v;
+    v.lidOpen[0] = 0.85;
+    v.lidClosed[0] = 0.2;
+    v.lidDown[0] = 0.7;
+    v.lidOpen[1] = 0.9;
+    v.lidClosed[1] = 0.25;
+    v.lidDown[1] = 0.9;
+    // Both eyes fitted: a line each
+    const bool both[2] = {true, true};
+    const std::vector<std::string> lines = lidFitLines(ja, v, both);
+    CHECK(lines.size() == 2);
+    SAME(lines[0], "まぶた 左: 開 0.85・閉 0.20・下を見ると -18%");
+    SAME(lines[1], "まぶた 右: 開 0.90・閉 0.25・下を見ると +0%");
+    // A first whole fit with the eye camera standing in for the right eye: the left eye's readings, the right "not
+    // fitted"
+    const bool left[2] = {true, false};
+    const std::vector<std::string> one = lidFitLines(ja, v, left);
+    CHECK(one.size() == 2);
+    SAME(one[0], lines[0]);
+    SAME(one[1], "まぶた 右: 合わせていません（自動で覚えています）");
+    const bool right[2] = {false, true};
+    const std::vector<std::string> other = lidFitLines(en, v, right);
+    CHECK(other.size() == 2);
+    SAME(other[0], "Eyelid L: not fitted (learned automatically)");
+    SAME(other[1], "Eyelid R: open 0.90, closed 0.25, looking down +0%");
+    // Neither: one line, as before
+    const bool neither[2] = {false, false};
+    const std::vector<std::string> none = lidFitLines(en, v, neither);
+    CHECK(none.size() == 1);
+    if (!none.empty()) SAME(none[0], en.fitLidsNone);
+}
+
 void testNoSymbolGlyphs() {
     static_assert(sizeof(UiText) % sizeof(const char*) == 0, "UiText holds only strings");
     const char* const glyphs[] = {"‹", "›", "▲", "▼", "△", "▽", "→", "←", "♪", "✓", "✗", "◯", "●", "▶", "▷"};
@@ -283,6 +319,7 @@ int main() {
     testHosts();
     testFailureTexts();
     testFitRecord();
+    testLidFitLines();
     testNoSymbolGlyphs();
     if (gFailures == 0) std::printf("text-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

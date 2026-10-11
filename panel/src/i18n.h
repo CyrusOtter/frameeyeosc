@@ -215,6 +215,7 @@ struct UiText {
     const char* fitGazeNone;
     const char* fitLidFormat;        ///< "Eyelid %s: open %s, closed %s, looking down %s"
     const char* fitLidsNone;
+    const char* fitLidNoneFormat;    ///< "Eyelid %s: not fitted ...", for one eye while the other is fitted
     const char* fitStandInLeft;      ///< after a full fit: Valve read the left eye stuck at 0 and the eye camera saw it
                                      ///< open, so its gaze counted and its lid fit was kept (gaze_fit::Notes::standIn)
     const char* fitStandInRight;

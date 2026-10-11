@@ -3449,11 +3449,12 @@ int runOverlay(const Options& options) {
             in.dashboardOpen = dashboardOpen;
             in.fitActive = fit.active();
             // An eye Valve's eye server reads shut (stuck at 0 for a whole wear at times) counts only with the eye
-            // camera's eyelid, which waits for eyecam-rec's warm-up after the headset is put on
+            // camera's eyelid, which waits for eyecam-rec's warm-up after the headset is put on (and never comes with
+            // the cameras switched off)
             for (int eye = 0; eye < 2; ++eye) {
                 in.valveShut[eye] = model.status.hasRaw && model.status.openness.v[eye] < auto_recenter::kOpenFloor;
             }
-            in.camerasWarming = model.eyecam.visible && eyecam::lidsAwaitWarmup(model.eyecam.status);
+            in.camerasWarming = eyecam::recenterAwaitsWarmup(model.eyecam, view.flag(key::kCameraLids));
             // On a clock that runs through suspend: taking the headset off usually lets the Frame sleep
             const auto_recenter::Step step = recenter.update(bootSeconds(), in);
             if (!step.log.empty()) std::fprintf(stderr, "[fit] %s\n", step.log.c_str());

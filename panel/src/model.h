@@ -381,8 +381,17 @@ int gazeScalePair(const std::string& name);
 bool gazeScaleLinkShown(bool saved, double first, double second);
 
 /**
- * What − / ＋ on a gaze scale writes: the key one step on, and while its pair is linked the other key to the same
- * value (unless that one is locked by the command line).
+ * Whether a pair's lock can be used: neither of its values is locked by the command line. Otherwise it shows open and
+ * can't be pressed, and − / ＋ move each value on its own (the one locked there doesn't move, so the two can differ).
+ * @param view the settings
+ * @param pair 0 (left / right) or 1 (up / down)
+ * @return true if usable
+ */
+bool gazeScaleLinkUsable(const SettingsView& view, int pair);
+
+/**
+ * What − / ＋ on a gaze scale writes: the key one step on, and while its pair is linked (and the lock usable, see
+ * gazeScaleLinkUsable) the other key to the same value.
  * @param view the settings
  * @param name the key pressed
  * @param direction -1 or +1

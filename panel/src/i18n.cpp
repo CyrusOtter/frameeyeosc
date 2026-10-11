@@ -210,6 +210,7 @@ UiText makeJapanese() {
     t.fitGazeNone = "視線: 合わせていません";
     t.fitLidFormat = "まぶた %s: 開 %s・閉 %s・下を見ると %s";
     t.fitLidsNone = "まぶた: 合わせていません（自動で覚えています）";
+    t.fitLidNoneFormat = "まぶた %s: 合わせていません（自動で覚えています）";
     t.fitStandInLeft = "Valve の左目が 0 のまま止まってたので、左目はカメラで確かめたよ。まぶたは前の値のまま。"
                        "再起動で直りやすいよ";
     t.fitStandInRight = "Valve の右目が 0 のまま止まってたので、右目はカメラで確かめたよ。まぶたは前の値のまま。"
@@ -1089,6 +1090,7 @@ UiText makeEnglish() {
     t.fitGazeNone = "Gaze: not fitted";
     t.fitLidFormat = "Eyelid %s: open %s, closed %s, looking down %s";
     t.fitLidsNone = "Eyelids: not fitted (learned automatically)";
+    t.fitLidNoneFormat = "Eyelid %s: not fitted (learned automatically)";
     t.fitStandInLeft = "Valve's left eye was stuck at 0; the eye camera checked it instead (eyelid kept). A restart "
                        "usually fixes it.";
     t.fitStandInRight = "Valve's right eye was stuck at 0; the eye camera checked it instead (eyelid kept). A restart "

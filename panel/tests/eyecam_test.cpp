@@ -1057,6 +1057,25 @@ void testSetupStep() {
     }
 }
 
+void testRecenterWarmup() {
+    // Set up, read live and still learning the relaxed eyes: re-centering waits only with the cameras switched on
+    eyecam::View view;
+    view.visible = true;
+    view.password = eyecam::PasswordState::Set;
+    view.status = setupStatus("idle", ", \"auto_grab\": \"ok\", \"has_buffers\": true, \"setup_done\": true, "
+                                      "\"calib_state\": 0, \"baseline\": \"warming\"");
+    CHECK(eyecam::lidsAwaitWarmup(view.status) && eyecam::setUp(view));
+    CHECK(eyecam::recenterAwaitsWarmup(view, true));
+    CHECK(!eyecam::recenterAwaitsWarmup(view, false));
+    // Not running (tab gone), or the warm-up over: nothing to wait for
+    eyecam::View gone = view;
+    gone.visible = false;
+    CHECK(!eyecam::recenterAwaitsWarmup(gone, true));
+    eyecam::View ready = view;
+    ready.status.calibState = eyecam::kCalibAutoBit;
+    CHECK(!eyecam::recenterAwaitsWarmup(ready, true));
+}
+
 void testErrorBack() {
     using eyecam::PageScreen;
     using eyecam::SetupScreen;
@@ -2357,6 +2376,7 @@ int main() {
     testMessageEn();
     testSetupParse();
     testSetupStep();
+    testRecenterWarmup();
     testSetupFlow();
     testErrorBack();
     testCalibChips();

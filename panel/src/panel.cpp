@@ -2465,9 +2465,10 @@ void EyePanel::drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& 
                 const double value = v.number(name);
                 drawStepper(pen, x, sy, stepW, kControlH, name, value, formatPercent(value), true, locked);
             }
-            // The lock between them; not while either is locked by the command line
-            const bool usable = !v.locked(kGazeScaleKeys[pair][0]) && !v.locked(kGazeScaleKeys[pair][1]);
-            const bool linked = gazeScaleLinked_[pair];
+            // The lock between them; not while either is locked by the command line, and then open (each moves on
+            // its own, so they can differ)
+            const bool usable = gazeScaleLinkUsable(v, pair);
+            const bool linked = usable && gazeScaleLinked_[pair];
             const PanelHit hit {PanelAction::GazeScaleLink, nullptr, pair};
             const double lx = kControlX + stepW + gap;
             const int pointer = usable ? pointerState(hit) : 0;
@@ -2653,15 +2654,9 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                     } else {
                         paragraphs.push_back(t.fitGazeNone);
                     }
+                    // Per eye: a first whole fit with an eye the eye camera stood in for fits only the other one
+                    for (const std::string& line : lidFitLines(t, r, saved.lidsFitted)) paragraphs.push_back(line);
                     if (r.hasLids) {
-                        for (int eye = 0; eye < 2; ++eye) {
-                            char drop[32];
-                            std::snprintf(drop, sizeof(drop), "%+.0f%%", (r.lidDown[eye] / r.lidOpen[eye] - 1) * 100);
-                            std::snprintf(text, sizeof(text), t.fitLidFormat, eye == 0 ? t.left : t.right,
-                                          twoDecimals(r.lidOpen[eye]).c_str(), twoDecimals(r.lidClosed[eye]).c_str(),
-                                          drop);
-                            paragraphs.push_back(text);
-                        }
                         // An eye that can't widen by itself follows the other one (lid_widen)
                         const WidenState widen = widenState(v);
                         if (widen.mode > 0 && widen.room[0] != widen.room[1]) {
@@ -2669,8 +2664,6 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                         } else if (widen.mode > 0 && !widen.room[0] && !widen.room[1]) {
                             paragraphs.push_back(t.widenNoRoom);
                         }
-                    } else {
-                        paragraphs.push_back(t.fitLidsNone);
                     }
                 } else {
                     title = !m.status.running ? t.fitNeedsRunning : (anyLocked ? t.fitLocked : "");

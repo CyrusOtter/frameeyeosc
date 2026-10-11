@@ -508,6 +508,11 @@ bool gazeScaleLinkShown(bool saved, double first, double second) {
     return saved && std::isfinite(first) && std::isfinite(second) && std::fabs(first - second) < 1e-9;
 }
 
+bool gazeScaleLinkUsable(const SettingsView& view, int pair) {
+    if (pair < 0 || pair > 1) return false;
+    return !view.locked(kGazeScaleKeys[pair][0]) && !view.locked(kGazeScaleKeys[pair][1]);
+}
+
 std::vector<SettingChange> gazeScaleStep(const SettingsView& view, const std::string& name, int direction,
                                          bool linked) {
     const int pair = gazeScalePair(name);
@@ -519,7 +524,7 @@ std::vector<SettingChange> gazeScaleStep(const SettingsView& view, const std::st
     const char* other = kGazeScaleKeys[pair][own == kGazeScaleKeys[pair][0] ? 1 : 0];
     std::vector<SettingChange> changes;
     if (std::fabs(next - current) >= 1e-12) changes.push_back({own, JsonValue::makeNumber(next)});
-    if (linked && !view.locked(other) && std::fabs(view.number(other) - next) >= 1e-12) {
+    if (linked && gazeScaleLinkUsable(view, pair) && std::fabs(view.number(other) - next) >= 1e-12) {
         changes.push_back({other, JsonValue::makeNumber(next)});
     }
     return changes;

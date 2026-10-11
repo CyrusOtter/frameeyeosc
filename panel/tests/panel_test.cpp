@@ -877,6 +877,17 @@ void testGazeScaleLocks(const FontSet& fonts) {
     panel.setGazeScaleLinked(0, false);
     panel.render(m);
     CHECK(panel.toRgba() != closed);
+    // A value of a pair locked by the command line: that pair's lock draws open, linked or not, and can't be pressed
+    PanelModel rightLocked = m;
+    rightLocked.status.locked = {key::kGazeScaleRight};
+    panel.render(rightLocked);
+    const std::vector<uint8_t> lockedOpen = panel.toRgba();
+    panel.setGazeScaleLinked(0, true);
+    panel.render(rightLocked);
+    CHECK(panel.toRgba() == lockedOpen);
+    const std::vector<EyePanel::HitArea> links = hits(panel, PanelAction::GazeScaleLink);
+    CHECK(links.size() == 1 && links[0].hit.arg == 1);
+    panel.setGazeScaleLinked(0, false);
     // − / ＋ go to the caller as Step on their own key
     const std::vector<EyePanel::HitArea> plus = hits(panel, PanelAction::Step, key::kGazeScaleUp);
     CHECK(plus.size() == 2 && plus[0].hit.arg == -1 && plus[1].hit.arg == 1);

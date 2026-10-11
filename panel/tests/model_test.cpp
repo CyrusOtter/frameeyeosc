@@ -113,6 +113,16 @@ void testFitResetsScales() {
     applyFitValues(none, rightKept, gaze_fit::Mode::Full);
     for (const char* name : kLidFitKeys[1]) CHECK(none.get(name) == nullptr);
     CHECK(none.get(key::kLidScaleRight) == nullptr && std::fabs(numberIn(none, key::kLidFitClosedLeft) - 0.2) < 1e-9);
+    // So the Eye fit tab has the left eye's lid fit only (its line, "not fitted" for the right; see lidFitLines), and
+    // the left eye alone takes lid_widen
+    PanelModel oneEye;
+    oneEye.config.exists = true;
+    oneEye.config.root = none;
+    const FitInConfig fitted = fitInConfig(SettingsView(oneEye));
+    CHECK(fitted.lidsFitted[0] && !fitted.lidsFitted[1] && !fitted.values.hasLids);
+    CHECK(std::fabs(fitted.values.lidOpen[0] - 0.85) < 1e-9 && std::fabs(fitted.values.lidDown[0] - 0.7) < 1e-9);
+    const WidenState widen = widenState(SettingsView(oneEye));
+    CHECK(widen.fitted[0] && !widen.fitted[1] && !widen.room[1]);
 }
 
 /** The whole fit writes the zero point, the up gain, 1 sideways and down, no tilt, and takes each eye's own x out. */
@@ -1107,6 +1117,14 @@ void testGazeScale() {
     changes = gazeScaleStep(SettingsView(locked), key::kGazeScaleLeft, 1, true);
     CHECK(changes.size() == 1 && std::string(changes[0].key) == key::kGazeScaleLeft);
     CHECK(gazeScaleStep(SettingsView(locked), key::kGazeScaleRight, 1, true).empty());
+    // ...so that pair's lock is not usable (drawn open), the other pair's is
+    CHECK(!gazeScaleLinkUsable(SettingsView(locked), 0) && gazeScaleLinkUsable(SettingsView(locked), 1));
+    CHECK(gazeScaleLinkUsable(view, 0) && gazeScaleLinkUsable(view, 1) && !gazeScaleLinkUsable(view, 2));
+    // The first of a pair locked: the second moves on its own
+    const PanelModel firstLocked = scaleModel({1.0, 1.0, 1.0, 1.0}, {key::kGazeScaleUp});
+    CHECK(!gazeScaleLinkUsable(SettingsView(firstLocked), 1));
+    changes = gazeScaleStep(SettingsView(firstLocked), key::kGazeScaleDown, -1, true);
+    CHECK(changes.size() == 1 && std::fabs(written(changes, key::kGazeScaleDown) - 0.95) < 1e-9);
     CHECK(gazeScaleStep(view, key::kGazeGainUp, 1, true).empty());
     // Closing a lock again: the second takes the first (right := left, down := up); nothing when they are the same
     const PanelModel apart = scaleModel({1.2, 0.9, 0.75, 1.1});

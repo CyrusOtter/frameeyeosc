@@ -46,7 +46,7 @@ struct Inputs {
     bool fitActive = false;      ///< an eye fit is running
     bool valveShut[2] = {false, false};  ///< Valve's eye server reads the eye below kOpenFloor (left, right)
     bool camerasWarming = false;         ///< the eye cameras' eyelids wait for eyecam-rec's warm-up
-                                         ///< (eyecam::lidsAwaitWarmup)
+                                         ///< (eyecam::recenterAwaitsWarmup)
 };
 
 /** What to do after an update. */

@@ -1013,6 +1013,23 @@ void testUiState() {
     writeText(path, "{\"fit_up_gains\": 0.9}");
     CHECK(ui_state::readUpGains(path).empty());
     CHECK(!exists(path + ".tmp"));
+
+    // A file that can't be read is moved aside to panel.json.broken (an older one replaced) before a write, which
+    // then holds only what it wrote; one that reads is not
+    const std::string aside = path + ".broken";
+    ::unlink(aside.c_str());
+    CHECK(ui_state::writeUpGains(path, {0.9}, error) && !exists(aside));
+    const std::string broken = "{\"fit_up_gains\": [0.89, 1.01], \"gaze_page\": \"reach\", ";
+    writeText(path, broken);
+    CHECK(ui_state::readUpGains(path).empty() && ui_state::readGazePage(path) == GazePage::Motion);
+    CHECK(exists(path) && !exists(aside));  // reading leaves it as it is
+    CHECK(ui_state::writeLidsPage(path, LidsPage::Blinks, error));
+    CHECK(readText(aside) == broken);
+    CHECK(ui_state::readLidsPage(path) == LidsPage::Blinks && ui_state::readUpGains(path).empty());
+    writeText(path, "not json");
+    CHECK(ui_state::writePage(path, AdvPage::Tools, error));
+    CHECK(readText(aside) == "not json" && ui_state::readPage(path) == AdvPage::Tools);
+    CHECK(ui_state::readLidsPage(path) == LidsPage::Look && !exists(path + ".tmp"));
 }
 
 }  // namespace

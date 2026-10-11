@@ -599,6 +599,16 @@ bool setUp(const View& view);
 bool inUse(const View& view, bool cameraLids);
 
 /**
+ * Whether re-centering by itself waits for eyecam-rec's warm-up: the eye cameras in use (inUse; with them switched off
+ * frameeyeosc never takes their eyelids, so there is nothing to wait for) and their eyelids waiting for it
+ * (lidsAwaitWarmup).
+ * @param view eyecam-rec
+ * @param cameraLids the camera_lids setting
+ * @return true while it waits
+ */
+bool recenterAwaitsWarmup(const View& view, bool cameraLids);
+
+/**
  * Whether the eye cameras tab shows what the cameras add (and "Get started") instead of the setup checklist: not set up
  * and nothing of the setup done yet (at (1) or (2), never set up before), until that button is pressed.
  * @param view eyecam-rec

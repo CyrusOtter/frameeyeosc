@@ -44,11 +44,14 @@ bool makeDirs(const std::string& path) {
 /**
  * The file as an object (empty when missing or broken).
  * @param path the file
+ * @param broken if not null: set to whether the file is there but not such an object (too big, not JSON, not an
+ *               object)
  * @return the object
  */
-JsonValue readObject(const std::string& path) {
+JsonValue readObject(const std::string& path, bool* broken = nullptr) {
     JsonValue root;
     root.type = JsonValue::Type::Object;
+    if (broken != nullptr) *broken = false;
     std::ifstream in(path, std::ios::binary);
     if (!in) return root;
     std::ostringstream text;
@@ -56,11 +59,14 @@ JsonValue readObject(const std::string& path) {
     JsonValue parsed;
     std::string error;
     if (text.str().size() <= 64 * 1024 && parseJson(text.str(), parsed, error) && parsed.isObject()) return parsed;
+    if (broken != nullptr) *broken = true;
     return root;
 }
 
 /**
- * Set members of the file (the others are kept; written through a temporary file and rename).
+ * Set members of the file (the others are kept; written through a temporary file and rename). A file that is there
+ * but can't be read is first moved aside to `<path>.broken` (replacing an older one) and said so on stderr, since
+ * the new file has only these members.
  * @param path the file (its folder is made if missing)
  * @param members the members and their values
  * @param error why it failed
@@ -73,7 +79,20 @@ bool writeMembers(const std::string& path, const std::vector<std::pair<const cha
         error = "can't create " + path.substr(0, slash) + ": " + std::strerror(errno);
         return false;
     }
-    JsonValue root = readObject(path);
+    bool broken = false;
+    JsonValue root = readObject(path, &broken);
+    if (broken) {
+        // The other members it held (the up gains, the sub-tabs, the locks) are gone; the file is kept to look at
+        const std::string aside = path + ".broken";
+        std::remove(aside.c_str());
+        if (std::rename(path.c_str(), aside.c_str()) == 0) {
+            std::fprintf(stderr, "[panel] %s couldn't be read; moved to %s and written again\n", path.c_str(),
+                         aside.c_str());
+        } else {
+            std::fprintf(stderr, "[panel] %s couldn't be read (nor moved to %s: %s); written again\n", path.c_str(),
+                         aside.c_str(), std::strerror(errno));
+        }
+    }
     for (const auto& [key, value] : members) root.set(key, value);
     const std::string text = writeJson(root);
     const std::string temp = path + ".tmp";

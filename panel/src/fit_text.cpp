@@ -145,6 +145,23 @@ std::string standInText(const UiText& t, const gaze_fit::View& fit) {
     return out;
 }
 
+std::vector<std::string> lidFitLines(const UiText& t, const gaze_fit::Values& values, const bool fitted[2]) {
+    if (!fitted[0] && !fitted[1]) return {t.fitLidsNone};
+    std::vector<std::string> lines;
+    for (int eye = 0; eye < 2; ++eye) {
+        const char* side = eye == 0 ? t.left : t.right;
+        if (!fitted[eye]) {
+            lines.push_back(format(t.fitLidNoneFormat, side));
+            continue;
+        }
+        const std::string open = format("%.2f", values.lidOpen[eye]);
+        const std::string closed = format("%.2f", values.lidClosed[eye]);
+        const std::string drop = format("%+.0f%%", (values.lidDown[eye] / values.lidOpen[eye] - 1) * 100);
+        lines.push_back(format(t.fitLidFormat, side, open.c_str(), closed.c_str(), drop.c_str()));
+    }
+    return lines;
+}
+
 bool fitStopped(const gaze_fit::View& fit) {
     using gaze_fit::Failure;
     if (fit.phase != gaze_fit::Phase::Failed) return false;

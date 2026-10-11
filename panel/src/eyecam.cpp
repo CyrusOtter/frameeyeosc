@@ -445,6 +445,10 @@ bool inUse(const View& view, bool cameraLids) {
     return cameraLids && setUp(view);
 }
 
+bool recenterAwaitsWarmup(const View& view, bool cameraLids) {
+    return inUse(view, cameraLids) && lidsAwaitWarmup(view.status);
+}
+
 bool introShown(const View& view, bool begun) {
     if (begun || !view.visible || setupComplete(view.status)) return false;
     const SetupScreen screen = setupScreen(view);

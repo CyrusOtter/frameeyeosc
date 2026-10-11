@@ -187,7 +187,7 @@ Settings are in `~/.config/frameeyeosc/config.json`. The panel writes it, and yo
 | `gaze_debug_dots_distance_m` | | `1.0` | How far ahead the debug gaze dots are (0.3–2.0 m, "Dot distance" on the Advanced tab's "Debug tools"), the same with the dashboard open or closed. Beyond about 1.2 m the open dashboard hides them. The panel uses it; frameeyeosc ignores it |
 | `fit_sounds` | | `true` | The panel plays short sounds during the eye fit. frameeyeosc itself ignores it |
 | `auto_recenter` | | `"center"` | What the panel fits by itself once each time the headset is put on (when the gaze is fitted): `"center"` straight ahead only (the one dot in the middle, 2.5 seconds) or `"off"` nothing. `"tilt"` from before 0.7.7 reads as `"center"` (and becomes it once). The button next to "Fit again" re-centers either way. frameeyeosc itself ignores it |
-| `update_check` | | `true` | The panel looks for a new release on GitHub at start and every hour. frameeyeosc itself ignores it |
+| `update_check` | | `true` | The panel looks for a new release on GitHub at start and every hour, and fetches the list of my other Frame apps from frame.sasaken1102s.net (Advanced › Version; see Privacy). frameeyeosc itself ignores it |
 
 Command-line options win over the file. They go in `~/.config/frameeyeosc/env` (then `systemctl --user restart frameeyeosc`):
 

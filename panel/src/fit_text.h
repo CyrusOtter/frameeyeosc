@@ -7,6 +7,7 @@
 #include "report.h"
 
 #include <string>
+#include <vector>
 
 /**
  * The name of an eye fit point.
@@ -41,6 +42,17 @@ std::string failureDetailText(const UiText& t, const gaze_fit::View& fit);
  * @return the note
  */
 std::string standInText(const UiText& t, const gaze_fit::View& fit);
+
+/**
+ * The eyelid lines of the fit's result box: one per eye, its readings (fitLidFormat) for a fitted eye and "not fitted"
+ * (fitLidNoneFormat) for the other (a first whole fit with an eye the eye camera stood in for writes only the other
+ * eye's lid fit), or one "not fitted" line (fitLidsNone) with neither.
+ * @param t texts
+ * @param values the lid readings (those of a fitted eye are set)
+ * @param fitted whether each eye's lid fit is all there (FitInConfig::lidsFitted)
+ * @return the lines
+ */
+std::vector<std::string> lidFitLines(const UiText& t, const gaze_fit::Values& values, const bool fitted[2]);
 
 /**
  * Whether a fit was stopped rather than failed: "Stop", another tab or page, the dashboard opened. Nothing went
