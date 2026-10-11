@@ -109,6 +109,8 @@ std::string failureDetailText(const UiText& t, const gaze_fit::View& fit) {
             std::vector<std::string> parts;
             if (d.last.samples < gaze_fit::samplesNeeded(d.last)) parts.push_back(samples);
             for (int eye = 0; eye < 2; ++eye) {
+                // An eye the eye camera stood in for wasn't checked
+                if (!std::isfinite(d.closedBelow[eye])) continue;
                 parts.push_back(format(t.failDetailClosedFormat, eyes[eye], d.last.openness[eye], d.closedBelow[eye]));
             }
             parts.push_back(tries);
@@ -129,6 +131,20 @@ std::string failureDetailText(const UiText& t, const gaze_fit::View& fit) {
     }
 }
 
+std::string standInText(const UiText& t, const gaze_fit::View& fit) {
+    if (fit.phase != gaze_fit::Phase::Done) return "";
+    const bool center = fit.mode == gaze_fit::Mode::Center;
+    const char* notes[2] = {center ? t.fitStandInCenterLeft : t.fitStandInLeft,
+                            center ? t.fitStandInCenterRight : t.fitStandInRight};
+    std::string out;
+    for (int eye = 0; eye < 2; ++eye) {
+        if (!fit.notes.standIn[eye]) continue;
+        if (!out.empty()) out += "\n";
+        out += notes[eye];
+    }
+    return out;
+}
+
 bool fitStopped(const gaze_fit::View& fit) {
     using gaze_fit::Failure;
     if (fit.phase != gaze_fit::Phase::Failed) return false;
@@ -144,7 +160,11 @@ void fillFitResult(report::Summary& s, const gaze_fit::View& fit) {
             const char* title = fit.mode == gaze_fit::Mode::Center ? t.fitDoneCenter : t.fitDone;
             const std::string line = format(t.fitGazeCenterFormat, format("%+.3f", fit.values.offsetX).c_str(),
                                             format("%+.3f", fit.values.offsetY).c_str());
-            (i == 0 ? s.reason : s.reasonEn) = std::string(title) + t.condSeparator + line;
+            // An eye the eye camera stood in for: why its lid fit stayed, and that a restart usually helps
+            std::string standIn = standInText(t, fit);
+            for (char& c : standIn) c = c == '\n' ? ' ' : c;
+            (i == 0 ? s.reason : s.reasonEn) =
+                std::string(title) + t.condSeparator + line + (standIn.empty() ? "" : " " + standIn);
         }
         return;
     }

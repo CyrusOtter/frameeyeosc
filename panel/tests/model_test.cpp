@@ -95,6 +95,24 @@ void testFitResetsScales() {
     CHECK(std::fabs(numberIn(rewear, key::kGazeOffsetX) - 0.01) < 1e-9);
     // Re-centering writes the zero point only: no tilt, no gains
     CHECK(std::isnan(numberIn(rewear, key::kGazeRollDeg)) && std::isnan(numberIn(rewear, key::kGazeGainUp)));
+
+    // An eye the fit didn't measure (Valve's openness stuck shut, the eye camera stood in) keeps its lid fit and
+    // scale; the other eye is written as usual
+    JsonValue kept = tweakedRoot();
+    gaze_fit::Values rightKept = measured(true);
+    rightKept.lidsKept[1] = true;
+    rightKept.lidOpen[1] = 0.0;
+    applyFitValues(kept, rightKept, gaze_fit::Mode::Full);
+    CHECK(kept.get(key::kLidScaleLeft) != nullptr && kept.get(key::kLidScaleLeft)->isNull());
+    CHECK(std::fabs(numberIn(kept, key::kLidScaleRight) - 0.69) < 1e-9);
+    CHECK(std::fabs(numberIn(kept, key::kLidFitOpenLeft) - 0.85) < 1e-9);
+    for (const char* name : kLidFitKeys[1]) CHECK(std::fabs(numberIn(kept, name) - 0.5) < 1e-9);
+    // ...and an eye without a lid fit stays without one
+    JsonValue none;
+    none.type = JsonValue::Type::Object;
+    applyFitValues(none, rightKept, gaze_fit::Mode::Full);
+    for (const char* name : kLidFitKeys[1]) CHECK(none.get(name) == nullptr);
+    CHECK(none.get(key::kLidScaleRight) == nullptr && std::fabs(numberIn(none, key::kLidFitClosedLeft) - 0.2) < 1e-9);
 }
 
 /** The whole fit writes the zero point, the up gain, 1 sideways and down, no tilt, and takes each eye's own x out. */

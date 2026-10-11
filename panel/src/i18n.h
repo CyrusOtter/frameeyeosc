@@ -215,7 +215,12 @@ struct UiText {
     const char* fitGazeNone;
     const char* fitLidFormat;        ///< "Eyelid %s: open %s, closed %s, looking down %s"
     const char* fitLidsNone;
-    const char* fitInfoTitle;        ///< the box under "Fine-tune" while it is folded: how fitting works...
+    const char* fitStandInLeft;      ///< after a full fit: Valve read the left eye stuck at 0 and the eye camera saw it
+                                     ///< open, so its gaze counted and its lid fit was kept (gaze_fit::Notes::standIn)
+    const char* fitStandInRight;
+    const char* fitStandInCenterLeft;   ///< the same after re-centering (no lid fit there)
+    const char* fitStandInCenterRight;
+    const char* fitInfoTitle;       ///< the box under "Fine-tune" while it is folded: how fitting works...
     const char* fitInfoRewear;       ///< ...each wear: the one dot in the middle, by itself...
     const char* fitInfoFull;         ///< ...the whole fit: the first time, and when something is off...
     const char* fitInfoNoTilt;       ///< ...and the tilt isn't used any more

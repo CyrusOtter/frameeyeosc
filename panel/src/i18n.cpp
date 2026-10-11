@@ -210,6 +210,14 @@ UiText makeJapanese() {
     t.fitGazeNone = "視線: 合わせていません";
     t.fitLidFormat = "まぶた %s: 開 %s・閉 %s・下を見ると %s";
     t.fitLidsNone = "まぶた: 合わせていません（自動で覚えています）";
+    t.fitStandInLeft = "Valve の左目の開き具合が 0 のまま止まってたので、左目はカメラで開いてるのを確かめて合わせたよ"
+                       "（まぶたは前の値のまま）。再起動で直ることが多いよ";
+    t.fitStandInRight = "Valve の右目の開き具合が 0 のまま止まってたので、右目はカメラで開いてるのを確かめて合わせたよ"
+                        "（まぶたは前の値のまま）。再起動で直ることが多いよ";
+    t.fitStandInCenterLeft =
+        "Valve の左目の開き具合が 0 のまま止まってたので、左目はカメラで開いてるのを確かめて合わせたよ。再起動で直ることが多いよ";
+    t.fitStandInCenterRight =
+        "Valve の右目の開き具合が 0 のまま止まってたので、右目はカメラで開いてるのを確かめて合わせたよ。再起動で直ることが多いよ";
     t.fitInfoTitle = "合わせ方";
     t.fitInfoRewear = "・被るたびは真ん中の点を 1 つ見るだけ（自動）";
     t.fitInfoFull = "・「目を合わせる」は最初と、気になったときだけ";
@@ -1083,6 +1091,14 @@ UiText makeEnglish() {
     t.fitGazeNone = "Gaze: not fitted";
     t.fitLidFormat = "Eyelid %s: open %s, closed %s, looking down %s";
     t.fitLidsNone = "Eyelids: not fitted (learned automatically)";
+    t.fitStandInLeft = "Valve's left-eye openness was stuck at 0, so the eye camera confirmed that eye open for the fit "
+                       "(its eyelid values were kept). A restart usually fixes this.";
+    t.fitStandInRight = "Valve's right-eye openness was stuck at 0, so the eye camera confirmed that eye open for the fit "
+                        "(its eyelid values were kept). A restart usually fixes this.";
+    t.fitStandInCenterLeft = "Valve's left-eye openness was stuck at 0, so the eye camera confirmed that eye open for "
+                             "the fit. A restart usually fixes this.";
+    t.fitStandInCenterRight = "Valve's right-eye openness was stuck at 0, so the eye camera confirmed that eye open for "
+                              "the fit. A restart usually fixes this.";
     t.fitInfoTitle = "How fitting works";
     t.fitInfoRewear = "• Each time you put it on: one dot in the middle (automatic)";
     t.fitInfoFull = "• \"Fit my eyes\": the first time, and when something feels off";

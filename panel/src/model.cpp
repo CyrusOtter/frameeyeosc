@@ -396,13 +396,16 @@ void applyFitValues(JsonValue& root, const gaze_fit::Values& values, gaze_fit::M
     root.set(key::kGazeGainUp, JsonValue::makeNumber(values.gainUp));
     root.set(key::kGazeGainDown, JsonValue::makeNumber(values.gainDown));
     if (!values.hasLids) return;
+    // An eye the fit didn't measure (Valve's openness stuck shut, the eye camera stood in) keeps its lid fit, whatever
+    // it was (none too), and its scale
     for (int eye = 0; eye < 2; ++eye) {
+        if (values.lidsKept[eye]) continue;
         const double readings[4] = {values.lidClosed[eye], values.lidUp[eye], values.lidOpen[eye], values.lidDown[eye]};
         for (int i = 0; i < 4; ++i) root.set(kLidFitKeys[eye][i], JsonValue::makeNumber(readings[i]));
     }
     // A fitted eye's scale fine-tunes the fit, so a tweak of the old fit starts over at 1.0
-    root.set(key::kLidScaleLeft, JsonValue::makeNull());
-    root.set(key::kLidScaleRight, JsonValue::makeNull());
+    if (!values.lidsKept[0]) root.set(key::kLidScaleLeft, JsonValue::makeNull());
+    if (!values.lidsKept[1]) root.set(key::kLidScaleRight, JsonValue::makeNull());
 }
 
 std::vector<std::string> fitResetKeys() {

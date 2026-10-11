@@ -2358,6 +2358,11 @@ bool writeFitValues(PanelModel& model, const gaze_fit::Values& values, gaze_fit:
     }
     if (full && values.hasLids) {
         for (int eye = 0; eye < 2; ++eye) {
+            if (values.lidsKept[eye]) {
+                std::fprintf(stderr, "[fit] %s eyelid: kept as it was (Valve's openness stuck shut, the eye camera "
+                             "saw it open)\n", eye == 0 ? "left" : "right");
+                continue;
+            }
             std::fprintf(stderr, "[fit] %s eyelid: closed %.3f, up %.3f, ahead %.3f, down %.3f\n",
                          eye == 0 ? "left" : "right", values.lidClosed[eye], values.lidUp[eye], values.lidOpen[eye],
                          values.lidDown[eye]);

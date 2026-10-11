@@ -226,6 +226,11 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
                 c.openness[0] = openness.v[0];
                 c.openness[1] = openness.v[1];
             }
+            if (const JsonValue* open = capture->get("camera_open"); open != nullptr && open->isArray()) {
+                for (size_t eye = 0; eye < 2 && eye < open->items.size(); ++eye) {
+                    c.cameraOpen[eye] = open->items[eye].isBool() && open->items[eye].boolean;
+                }
+            }
         }
     }
 

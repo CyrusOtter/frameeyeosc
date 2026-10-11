@@ -2633,6 +2633,14 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                     reset = true;
                     title = fit.phase != Phase::Done ? t.fitFitted
                                                      : (fit.mode == Mode::Center ? t.fitDoneCenter : t.fitDone);
+                    // First, so it shows whatever follows: an eye the eye camera stood in for, Valve's openness stuck
+                    // shut (its lid fit kept)
+                    const std::string standIn = standInText(t, fit);
+                    for (size_t start = 0; start < standIn.size();) {
+                        const size_t end = std::min(standIn.find('\n', start), standIn.size());
+                        paragraphs.push_back(standIn.substr(start, end - start));
+                        start = end + 1;
+                    }
                     const gaze_fit::Values& r = saved.values;
                     // One line each: the gaze center, the gaze range, and each eye's lid readings
                     if (saved.gazeFitted) {

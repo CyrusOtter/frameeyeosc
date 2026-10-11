@@ -131,6 +131,9 @@ struct Measured {
     double spread = 0.0;
     double openness[2] = {0.0, 0.0};  ///< left, right
     bool hasOpenness = false;
+    /** Each eye that the eye camera saw open while Valve read it closing (frameeyeosc's camera_open): Valve's openness
+     *  can get stuck at 0 for a whole wear, and then that eye's openness here is not the eye's (see standIns). */
+    bool cameraOpen[2] = {false, false};
     int samples = 0;    ///< usable samples averaged...
     int received = 0;   ///< ...of these that came in (0 = not reported)
     double rateHz = NAN;  ///< the tracker's rate over the capture
@@ -148,7 +151,8 @@ int samplesNeeded(const Measured& measured);
 struct FailureDetail {
     int tries = 0;                      ///< Unsteady / NotClosed: the tries made...
     Measured last;                      ///< ...and the last one
-    double closedBelow[2] = {NAN, NAN};  ///< NotClosed: each eye had to read below this (kClosedShare of ahead)
+    double closedBelow[2] = {NAN, NAN};  ///< NotClosed: each eye had to read below this (kClosedShare of ahead; NaN:
+                                         ///< not checked, standIns)
     int eye = -1;                       ///< NoMovement: -1 (the gaze); NoLidRange: the eye
     double movedDeg = NAN;              ///< NoMovement: how far it moved its way...
     double neededDeg = NAN;             ///< ...and how far it had to
@@ -179,9 +183,19 @@ bool usable(const Measured& measured);
  * Whether the eyes-shut capture is long enough and the eyes were shut.
  * @param closed the eyes-shut capture
  * @param center the straight-ahead capture (its openness is "open")
+ * @param standIn the eyes not checked (see standIns; may be null: none)
  * @return true if usable
  */
-bool usableClosed(const Measured& closed, const Measured& center);
+bool usableClosed(const Measured& closed, const Measured& center, const bool* standIn = nullptr);
+
+/**
+ * The eyes whose openness the lid fit can't use: Valve read them stuck shut (at 0) while the eye camera saw them open,
+ * in any of the captures the lid fit reads (up, center, down and eyes shut; frameeyeosc lets their gaze count then,
+ * as long as the other eye reads open). Their lid fit stays as it was.
+ * @param points the captures, indexed by Point (those not taken yet left as Measured())
+ * @param out left, right
+ */
+void standIns(const Measured points[kPointCount], bool out[2]);
 
 /** What a whole fit measured besides what it wrote, for the log. */
 struct Notes {
@@ -189,6 +203,9 @@ struct Notes {
     double gainUp = NAN;
     double gainDown = NAN;
     int upGainFits = 0;     ///< the whole fits the written up gain is the mean of, this one included
+    /** The eyes the eye camera stood in for, Valve's openness stuck shut (standIns; for re-centering, the center
+     *  capture's): measured all the same, but a whole fit kept their lid fit. */
+    bool standIn[2] = {false, false};
 };
 
 /** The settings a fit writes. */
@@ -199,7 +216,10 @@ struct Values {
     double gainUp = 1.0;
     double gainDown = 1.0;
     double rollDeg = 0.0;  ///< the headset's tilt (gaze_roll_deg): a whole fit writes 0 (it isn't measured any more)
-    bool hasLids = false;  ///< the eyelid readings below are set
+    bool hasLids = false;  ///< the eyelid readings below are set...
+    /** ...except for these eyes, when a fit set them: not measured (standIns), so the lid fit in config.json and the
+     *  eye's scale stay as they are (the readings below are whatever came in, possibly none). */
+    bool lidsKept[2] = {false, false};
     double lidClosed[2] = {0.0, 0.0};  ///< left, right
     double lidUp[2] = {0.0, 0.0};
     double lidOpen[2] = {0.0, 0.0};
@@ -260,7 +280,8 @@ bool fitGaze(const Measured points[kPointCount], Values& out, Point& failed, Fai
              Notes* notes = nullptr, const std::vector<double>& previousUpGains = {});
 
 /**
- * Each eye's lid fit: the eyes-shut reading, and the open readings looking up, straight ahead and down.
+ * Each eye's lid fit: the eyes-shut reading, and the open readings looking up, straight ahead and down. An eye the
+ * eye camera stood in for (standIns) is neither checked nor fitted: its readings in `out` stay and lidsKept is set.
  * @param points the captures, indexed by Point (Closed included)
  * @param out where the lid readings go (hasLids set)
  * @param detail on failure, which eye and reading (may be null)

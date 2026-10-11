@@ -105,6 +105,8 @@ EyeStatus runningWith(long long id, bool done, const Measured& m, bool gaze = tr
         c.hasOpenness = done && m.hasOpenness;
         c.openness[0] = m.openness[0];
         c.openness[1] = m.openness[1];
+        c.cameraOpen[0] = done && m.cameraOpen[0];
+        c.cameraOpen[1] = done && m.cameraOpen[1];
     }
     return status;
 }
@@ -610,6 +612,143 @@ void testFailures() {
     }
 }
 
+/**
+ * A capture whose right eye Valve read stuck at 0 while the eye camera saw it open (frameeyeosc's camera_open).
+ * @param m the capture as it would have been
+ * @return the capture
+ */
+Measured rightStuck(Measured m) {
+    m.openness[1] = 0.0;
+    m.cameraOpen[1] = true;
+    return m;
+}
+
+void testStandIn() {
+    // 2026-10-11: Valve read the right eye 0.000 for a whole wear while it was open. frameeyeosc let the gaze count
+    // because the eye camera saw it open, and says so per capture; shut, the camera sees the eye closed, so that
+    // capture isn't flagged, and Valve's 0 is no use either
+    Measured points[kPointCount];
+    fivePoints(points);
+    for (int i = 0; i < 5; ++i) points[i] = rightStuck(points[i]);
+    points[static_cast<int>(Point::Closed)] = shut(0.15, 0.0);
+    bool standIn[2] = {true, false};
+    standIns(points, standIn);
+    CHECK(!standIn[0] && standIn[1]);
+    // The side dots don't count (the lid fit doesn't read them); any one of the others does
+    Measured upOnly[kPointCount];
+    fivePoints(upOnly);
+    upOnly[static_cast<int>(Point::Left)].cameraOpen[0] = true;
+    standIns(upOnly, standIn);
+    CHECK(!standIn[0] && !standIn[1]);
+    upOnly[static_cast<int>(Point::Up)].cameraOpen[1] = true;
+    standIns(upOnly, standIn);
+    CHECK(!standIn[0] && standIn[1]);
+
+    // The eyes-shut step checks only the left eye then: the right eye's "open" was Valve's 0 too
+    const Measured& center = points[0];
+    const bool rightOnly[2] = {false, true};
+    CHECK(!usableClosed(points[5], center));
+    CHECK(usableClosed(points[5], center, rightOnly));
+    CHECK(!usableClosed(shut(0.85, 0.0), center, rightOnly));  // the left eye stayed open
+    // Not flagged, the same as before
+    const bool none[2] = {false, false};
+    CHECK(usableClosed(shut(), points[0], none) == usableClosed(shut(), points[0]));
+
+    // The lid fit leaves the right eye as it was (here a fit from before) and fits the left one
+    Values v;
+    v.lidClosed[1] = 0.2;
+    v.lidUp[1] = 0.9;
+    v.lidOpen[1] = 0.85;
+    v.lidDown[1] = 0.7;
+    FailureDetail detail;
+    CHECK(fitLids(points, v, &detail) && v.hasLids && !v.lidsKept[0] && v.lidsKept[1]);
+    CHECK(near(v.lidClosed[0], 0.15) && near(v.lidUp[0], 0.93) && near(v.lidOpen[0], 0.92) && near(v.lidDown[0], 0.77));
+    CHECK(near(v.lidClosed[1], 0.2) && near(v.lidUp[1], 0.9) && near(v.lidOpen[1], 0.85) && near(v.lidDown[1], 0.7));
+    // Unflagged, Valve's 0 fails the right eye's range check, as it would have
+    Measured unflagged[kPointCount];
+    for (int i = 0; i < kPointCount; ++i) {
+        unflagged[i] = points[i];
+        unflagged[i].cameraOpen[1] = false;
+    }
+    Values lids;
+    CHECK(!fitLids(unflagged, lids, &detail) && detail.eye == 1 && !lids.hasLids);
+    // ...and the left eye is still checked with the right one flagged
+    Measured leftShallow[kPointCount];
+    for (int i = 0; i < kPointCount; ++i) leftShallow[i] = points[i];
+    leftShallow[static_cast<int>(Point::Closed)] = shut(0.85, 0.0);
+    CHECK(!fitLids(leftShallow, lids, &detail) && detail.eye == 0);
+    // An ordinary fit keeps nothing
+    Measured ordinary[kPointCount];
+    fivePoints(ordinary);
+    CHECK(fitLids(ordinary, lids) && !lids.lidsKept[0] && !lids.lidsKept[1]);
+
+    // The try's log line says which eye
+    CHECK(tryText(Point::Center, 1, points[0], Measured(), "ok") ==
+          "center try 1: 120 samples (min 45), R open on the eye camera, spread 0.5° (max 2.7°) -> ok");
+    CHECK(tryText(Point::Closed, 1, points[5], center, "ok") ==
+          "closed try 1: 130 samples (min 45), openness L 0.150 R 0.000 (below 0.644 / -) -> ok");
+    Measured both = points[0];
+    both.cameraOpen[0] = true;
+    CHECK(tryText(Point::Center, 1, both, Measured(), "ok").find(", L and R open on the eye camera, ") !=
+          std::string::npos);
+    // Unflagged, as before
+    Measured ordinaryCenter = points[0];
+    ordinaryCenter.openness[1] = 0.81;
+    ordinaryCenter.cameraOpen[1] = false;
+    CHECK(tryText(Point::Closed, 1, shut(), ordinaryCenter, "ok") ==
+          "closed try 1: 130 samples (min 45), openness L 0.150 R 0.260 (below 0.644 / 0.567) -> ok");
+
+    // A whole fit: done, the right eye's lid fit and scale kept, and the notes say which eye
+    Session s;
+    Values current;
+    current.hasLids = true;
+    current.lidClosed[1] = 0.2;
+    current.lidOpen[1] = 0.85;
+    s.start(Mode::Full, current, 0.0);
+    Actions a = runFull(s, points);
+    CHECK(a.writeValues && s.view().phase == Phase::Done);
+    CHECK(a.values.hasLids && !a.values.lidsKept[0] && a.values.lidsKept[1]);
+    CHECK(near(a.values.lidClosed[0], 0.15) && near(a.values.lidClosed[1], 0.2) && near(a.values.lidOpen[1], 0.85));
+    CHECK(!s.view().notes.standIn[0] && s.view().notes.standIn[1]);
+    // An ordinary one has no stand-in
+    Measured plain[kPointCount];
+    fivePoints(plain);
+    s.start(Mode::Full, current, 0.0);
+    a = runFull(s, plain);
+    CHECK(a.writeValues && !a.values.lidsKept[0] && !a.values.lidsKept[1]);
+    CHECK(!s.view().notes.standIn[0] && !s.view().notes.standIn[1]);
+
+    // Re-centering: the zero point as usual, and the notes say which eye
+    double now = 0.0;
+    long long id = 0;
+    s.start(Mode::Center, Values(), now);
+    a = runStep(s, now, id, points[0]);
+    CHECK(a.writeValues && near(a.values.offsetX, 0.012) && !s.view().notes.standIn[0] && s.view().notes.standIn[1]);
+
+    // Read from status.json's gaze_capture; a frameeyeosc before 0.7.7 doesn't say, which reads as neither
+    const char* withFlag =
+        "{\"version\":1,\"pid\":1,\"time\":1791200000,\"gaze_capture\":{\"id\":3,\"target\":\"center\",\"state\":\"done\","
+        "\"x\":0.01,\"y\":-0.02,\"spread\":0.01,\"x_left\":0.0,\"x_right\":0.0,\"openness\":[0.98,0.0],"
+        "\"camera_open\":[false,true],\"samples\":125,\"received\":135,\"rate\":90.0}}";
+    const EyeStatus flagged = parseStatus(withFlag, 1791200000, false);
+    CHECK(flagged.capture.present && flagged.capture.done && flagged.capture.hasOpenness);
+    CHECK(!flagged.capture.cameraOpen[0] && flagged.capture.cameraOpen[1]);
+    const EyeStatus older = parseStatus(
+        "{\"version\":1,\"pid\":1,\"time\":1791200000,\"gaze_capture\":{\"id\":3,\"target\":\"center\",\"state\":\"done\","
+        "\"openness\":[0.98,0.0],\"samples\":0,\"received\":135}}",
+        1791200000, false);
+    CHECK(older.capture.present && !older.capture.cameraOpen[0] && !older.capture.cameraOpen[1]);
+
+    // The eyes never shut with the right eye flagged: only the left eye's limit is in the numbers (from 0 again, as
+    // the other runs: runStep's steps come out exact there)
+    now = 0.0;
+    s.start(Mode::Full, Values(), now);
+    for (int i = 0; i < 5; ++i) runStep(s, now, id, points[i]);
+    for (int i = 0; i < kMaxAttempts; ++i) runStep(s, now, id, shut(0.85, 0.0), kCloseSettleSec, false);
+    CHECK(s.view().failure == Failure::NotClosed);
+    CHECK(near(s.view().detail.closedBelow[0], 0.7 * 0.92) && std::isnan(s.view().detail.closedBelow[1]));
+}
+
 }  // namespace
 
 /**
@@ -621,6 +760,7 @@ int main() {
     testUpGains();
     testLoggedCaptures();
     testCenterAndUsable();
+    testStandIn();
     testFullSession();
     testFullSessionUpGains();
     testCenterSession();

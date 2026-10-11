@@ -251,7 +251,8 @@ AutoRecenter autoRecenter(const ConfigFile& config);
 /**
  * Write an eye fit's result into config.json: the gaze zero point; for the whole fit also the gains (sideways and
  * down 1), the tilt (0), each eye's own sideways values taken out (null), each eye's lid readings, and
- * lid_scale_left/right back to null when it measured the eyelids (an old tweak must not sit on a new fit).
+ * lid_scale_left/right back to null when it measured the eyelids (an old tweak must not sit on a new fit); an eye in
+ * lidsKept keeps both its lid readings and its scale.
  * @param root the config's root object
  * @param values the result
  * @param mode the mode

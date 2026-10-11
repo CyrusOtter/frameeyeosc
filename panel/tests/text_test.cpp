@@ -115,6 +115,10 @@ void testFailureTexts() {
     fit.detail.last.samples = 20;
     SAME(failureDetailText(en, fit),
          "Eyes closed: 20 of 45 samples usable · L 0.62 (needs below 0.56) · R 0.40 (needs below 0.53) · 3 tries");
+    // An eye the eye camera stood in for wasn't checked, so it isn't in the numbers
+    fit.detail.last.samples = 200;
+    fit.detail.closedBelow[1] = NAN;
+    SAME(failureDetailText(ja, fit), "目を閉じる: 左 0.62（0.56 未満が必要）・3 回");
 
     // A point that hardly moved
     fit = gaze_fit::View();
@@ -215,6 +219,29 @@ void testFitRecord() {
     fillFitResult(s, fit);
     CHECK(s.result == report::Result::Ok);
     CHECK(s.reasonEn.find("+0.021") != std::string::npos && s.reasonEn.find("-0.013") != std::string::npos);
+    const std::string plain = s.reason;
+    CHECK(standInText(uiText(Language::Ja), fit).empty());
+
+    // An eye the eye camera stood in for (Valve's openness stuck at 0): said on the tab and in the record
+    fit.notes.standIn[1] = true;
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    SAME(standInText(ja, fit), ja.fitStandInCenterRight);
+    fillFitResult(s, fit);
+    SAME(s.reason, plain + " " + ja.fitStandInCenterRight);
+    CHECK(s.reasonEn.find(en.fitStandInCenterRight) != std::string::npos);
+    fit.mode = gaze_fit::Mode::Full;
+    SAME(standInText(en, fit), en.fitStandInRight);
+    fit.notes.standIn[0] = true;
+    SAME(standInText(ja, fit), std::string(ja.fitStandInLeft) + "\n" + ja.fitStandInRight);
+    fillFitResult(s, fit);
+    CHECK(s.reason.find('\n') == std::string::npos);
+    // Only once it is done
+    fit.phase = gaze_fit::Phase::Failed;
+    CHECK(standInText(ja, fit).empty());
+    // The words say which eye, in the panel's own names for them
+    CHECK(std::string(ja.fitStandInRight).find("右目") != std::string::npos);
+    CHECK(std::string(en.fitStandInLeft).find("left") != std::string::npos);
 }
 
 /**

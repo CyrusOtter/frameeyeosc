@@ -145,10 +145,25 @@ std::string tryText(Point point, int attempt, const Measured& measured, const Me
         n = std::snprintf(text, sizeof(text), "%s try %d: %d samples (min %d), ", target(point).name, attempt,
                           measured.samples, kMinSamples);
     }
+    // An eye Valve read stuck shut while the eye camera saw it open: its gaze counted, its openness isn't the eye's
+    if (measured.cameraOpen[0] || measured.cameraOpen[1]) {
+        const char* eyes = measured.cameraOpen[0] && measured.cameraOpen[1] ? "L and R"
+                           : measured.cameraOpen[0]                         ? "L"
+                                                                            : "R";
+        n += std::snprintf(text + n, sizeof(text) - n, "%s open on the eye camera, ", eyes);
+    }
     if (point == Point::Closed) {
-        const auto limit = [&](int eye) { return kClosedShare * center.openness[eye]; };
-        std::snprintf(text + n, sizeof(text) - n, "openness L %.3f R %.3f (below %.3f / %.3f) -> %s",
-                      measured.openness[0], measured.openness[1], limit(0), limit(1), outcome);
+        // An eye the eye camera stood in for at the center dot isn't checked here
+        char limits[2][16];
+        for (int eye = 0; eye < 2; ++eye) {
+            if (center.cameraOpen[eye] || measured.cameraOpen[eye]) {
+                std::snprintf(limits[eye], sizeof(limits[eye]), "-");
+            } else {
+                std::snprintf(limits[eye], sizeof(limits[eye]), "%.3f", kClosedShare * center.openness[eye]);
+            }
+        }
+        std::snprintf(text + n, sizeof(text) - n, "openness L %.3f R %.3f (below %s / %s) -> %s",
+                      measured.openness[0], measured.openness[1], limits[0], limits[1], outcome);
     } else if (std::isfinite(measured.spread) && measured.samples > 0) {
         std::snprintf(text + n, sizeof(text) - n, "spread %.1f° (max %.1f°) -> %s", measured.spread * kFullScaleDeg,
                       kMaxSpread * kFullScaleDeg, outcome);
@@ -163,12 +178,22 @@ bool usable(const Measured& measured) {
            std::isfinite(measured.spread) && measured.spread <= kMaxSpread;
 }
 
-bool usableClosed(const Measured& closed, const Measured& center) {
+bool usableClosed(const Measured& closed, const Measured& center, const bool* standIn) {
     if (closed.samples < samplesNeeded(closed) || !closed.hasOpenness || !center.hasOpenness) return false;
     for (int eye = 0; eye < 2; ++eye) {
+        if (standIn != nullptr && standIn[eye]) continue;
         if (!(closed.openness[eye] < kClosedShare * center.openness[eye])) return false;
     }
     return true;
+}
+
+void standIns(const Measured points[kPointCount], bool out[2]) {
+    for (int eye = 0; eye < 2; ++eye) {
+        out[eye] = false;
+        for (Point point : {Point::Up, Point::Center, Point::Down, Point::Closed}) {
+            out[eye] = out[eye] || at(points, point).cameraOpen[eye];
+        }
+    }
 }
 
 double eyeAngle(double yawDeg, int eye, double ipd) {
@@ -239,7 +264,11 @@ bool fitLids(const Measured points[kPointCount], Values& out, FailureDetail* det
     const Measured& closed = at(points, Point::Closed);
     const Measured* open[3] = {&at(points, Point::Up), &at(points, Point::Center), &at(points, Point::Down)};
     const Point openPoints[3] = {Point::Up, Point::Center, Point::Down};
+    // An eye Valve read stuck shut while the eye camera saw it open: its openness says nothing, so it keeps its fit
+    bool kept[2];
+    standIns(points, kept);
     for (int eye = 0; eye < 2; ++eye) {
+        if (kept[eye]) continue;
         for (int i = 0; i < 3; ++i) {
             const Measured* m = open[i];
             if (!m->hasOpenness || !(m->openness[eye] >= closed.openness[eye] + kMinLidRange)) {
@@ -254,6 +283,8 @@ bool fitLids(const Measured points[kPointCount], Values& out, FailureDetail* det
         }
     }
     for (int eye = 0; eye < 2; ++eye) {
+        out.lidsKept[eye] = kept[eye];
+        if (kept[eye]) continue;
         out.lidClosed[eye] = roundTo(closed.openness[eye], 3);
         out.lidUp[eye] = roundTo(open[0]->openness[eye], 3);
         out.lidOpen[eye] = roundTo(open[1]->openness[eye], 3);
@@ -337,8 +368,11 @@ void Session::finish(Actions& actions) {
     Point failed = Point::Center;
     notes_ = Notes();
     if (mode_ == Mode::Center) {
-        result_ = fitCenter(measured_[static_cast<int>(Point::Center)], current_);
+        const Measured& center = measured_[static_cast<int>(Point::Center)];
+        result_ = fitCenter(center, current_);
+        for (int eye = 0; eye < 2; ++eye) notes_.standIn[eye] = center.cameraOpen[eye];
     } else {
+        standIns(measured_, notes_.standIn);
         result_ = current_;
         if (!fitGaze(measured_, result_, failed, &detail_, &notes_, upGains_)) {
             failMovement(failed);
@@ -409,10 +443,16 @@ Actions Session::tick(double now, const Dashboard& dashboard, const EyeStatus& s
             measured.hasOpenness = capture.hasOpenness;
             measured.openness[0] = capture.openness[0];
             measured.openness[1] = capture.openness[1];
+            measured.cameraOpen[0] = capture.cameraOpen[0];
+            measured.cameraOpen[1] = capture.cameraOpen[1];
             const bool closedStep = point() == Point::Closed;
             // The full fit needs each gaze point's openness too, for the lid fit
             const Measured& center = measured_[static_cast<int>(Point::Center)];
-            const bool ok = closedStep ? usableClosed(measured, center)
+            // An eye the eye camera stood in for at a dot, or now, isn't checked shut (its lid fit stays as it was)
+            bool standIn[2];
+            standIns(measured_, standIn);
+            for (int eye = 0; eye < 2; ++eye) standIn[eye] = standIn[eye] || measured.cameraOpen[eye];
+            const bool ok = closedStep ? usableClosed(measured, center, standIn)
                                        : usable(measured) && (mode_ != Mode::Full || measured.hasOpenness);
             const bool last = attempt_ >= kMaxAttempts;
             actions.log = tryText(point(), attempt_, measured, center, ok ? "ok" : (last ? "failed" : "again"));
@@ -424,7 +464,9 @@ Actions Session::tick(double now, const Dashboard& dashboard, const EyeStatus& s
                 detail_.tries = kMaxAttempts;
                 detail_.last = measured;
                 if (closedStep) {
-                    for (int eye = 0; eye < 2; ++eye) detail_.closedBelow[eye] = kClosedShare * center.openness[eye];
+                    for (int eye = 0; eye < 2; ++eye) {
+                        detail_.closedBelow[eye] = standIn[eye] ? NAN : kClosedShare * center.openness[eye];
+                    }
                 }
                 fail(closedStep ? Failure::NotClosed : Failure::Unsteady);
             } else {

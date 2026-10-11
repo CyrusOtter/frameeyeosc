@@ -33,6 +33,10 @@ struct GazeCaptureStatus {
     double xEye[2] = {0.0, 0.0};  ///< each eye's own raw sideways gaze, left / right
     bool hasOpenness = false;  ///< openness is there (done with samples)
     double openness[2] = {0.0, 0.0};  ///< each eye's average Frame openness, before any scale
+    /** Each eye that the eye camera saw open while Valve's eye server read it closing, in most of the samples
+     *  ("camera_open"; Valve's openness can get stuck at 0 for a whole wear): its openness above is not the eye's.
+     *  False from a frameeyeosc before 0.7.7. */
+    bool cameraOpen[2] = {false, false};
     int samples = 0;
     int received = 0;          ///< samples that came in after the skipped start (0 from frameeyeosc before 0.5.3)
     double rate = NAN;         ///< the tracker's rate over the capture (samples a second)
