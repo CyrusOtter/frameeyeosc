@@ -1194,10 +1194,11 @@ impl CrossEyeLevel {
         if learn {
             self.recent.push_back((time, raw));
         }
-        while self.recent.front().is_some_and(|(at, _)| time - at > CROSS_EYE_LEVEL_S) {
+        // Also those from after `time`, and a next time too far ahead: the clock went back (the eye server restarted)
+        while self.recent.front().is_some_and(|(at, _)| time - at > CROSS_EYE_LEVEL_S || *at > time) {
             self.recent.pop_front();
         }
-        if self.next.is_none_or(|next| time >= next) {
+        if self.next.is_none_or(|next| time >= next || next - time > CROSS_EYE_LEVEL_EVERY_S) {
             self.next = Some(time + CROSS_EYE_LEVEL_EVERY_S);
             // With fewer, the last level holds
             if self.recent.len() >= CROSS_EYE_LEVEL_MIN {
@@ -1297,8 +1298,8 @@ struct SideCheck {
 impl SideCheck {
     /// At `time`, with the eye server's `openness` and how far each eye looks outward (`outward_deg`, see
     /// outward_degrees; inward is negative): the camera's eyelids as read (`camera`), with a "closed" of an eye looking
-    /// to the side turned into that eye's last open one (relaxed open if there was none), unless the eye server read
-    /// that eye shut lately or the other eye closing with it in a blink (see CAMERA_SIDE_BLINK_SYNC).
+    /// to the side turned into that eye's last open one (relaxed open if there was none, and at most), unless the eye
+    /// server read that eye shut lately or the other eye closing with it in a blink (see CAMERA_SIDE_BLINK_SYNC).
     fn step(
         &mut self,
         time: f64,
@@ -1330,7 +1331,9 @@ impl SideCheck {
             }
             let shut = self.shut_at[eye].is_some_and(|at| time - at <= CAMERA_SIDE_SHUT_RECENT);
             if outward_deg[eye].abs() > CAMERA_SIDE_DEG && !shut && !self.blink_with_other(eye, time) {
-                Some(CameraLid { lid: self.open_lid[eye].unwrap_or(LID_RELAXED), closed: false, ..lid })
+                // No wider than relaxed open, like eyecam-rec's own hold at the lens edge
+                let held = self.open_lid[eye].unwrap_or(LID_RELAXED).min(LID_RELAXED);
+                Some(CameraLid { lid: held, closed: false, ..lid })
             } else {
                 Some(lid)
             }
@@ -3794,6 +3797,8 @@ impl Bridge {
             self.send_livelink_neutral();
         }
         self.smoother.reset();
+        // The next wear may read differently; reset keeps what this one reads only over short gaps
+        self.smoother.cross_eye.level = CrossEyeLevel::default();
         self.active_since = None;
         self.latest = None;
         Ok(())
@@ -4354,6 +4359,35 @@ mod tests {
             })
             .collect();
         assert!(!any_cross_eye(&run(&independent(), &gapped)[..1710]));
+    }
+
+    #[test]
+    fn the_wear_level_goes_on_after_the_sample_clock_goes_back() {
+        let mut level = CrossEyeLevel::default();
+        let feed = |level: &mut CrossEyeLevel, start: f64, value: f32| {
+            (0..CROSS_EYE_LEVEL_MIN + 90).map(|i| level.add(start + i as f64 / 90.0, value, true)).last().unwrap()
+        };
+        assert_eq!(feed(&mut level, 1000.0, 17.0), Some(17.0));
+        // The eye server restarted and its clock with it: the samples from "after" it go, the last level holds until
+        // there are enough new ones, and then it follows them (instead of waiting until the clock is past 1011 s)
+        assert_eq!(level.add(5.0, 3.0, true), Some(17.0));
+        assert!(level.recent.len() == 1 && level.next == Some(5.0 + CROSS_EYE_LEVEL_EVERY_S));
+        assert_eq!(feed(&mut level, 5.0 + 1.0 / 90.0, 3.0), Some(3.0));
+    }
+
+    #[test]
+    fn the_wear_level_is_kept_over_a_gap_but_not_after_tracking_stops() {
+        let mut bridge = test_bridge(independent());
+        let mark = |bridge: &mut Bridge| {
+            bridge.smoother.cross_eye.level.recent.push_back((5.0, 17.0));
+            bridge.smoother.cross_eye.level.level = Some(17.0);
+        };
+        mark(&mut bridge);
+        bridge.smoother.reset();
+        assert_eq!(bridge.smoother.cross_eye.level.level, Some(17.0));
+        bridge.on_lost("test").unwrap();
+        let level = &bridge.smoother.cross_eye.level;
+        assert!(level.level.is_none() && level.recent.is_empty() && level.next.is_none());
     }
 
     #[test]
@@ -7887,6 +7921,11 @@ mod tests {
         let mut check = SideCheck { open_lid: [Some(0.62), Some(0.7)], ..SideCheck::default() };
         assert_eq!(check.step(4.0, [0.9; 2], [20.0; 2], [lid(0.0, true), None]), [lid(0.62, false), None]);
         assert_eq!(check.step(4.2, [0.9, 0.2], [20.0; 2], [lid(0.0, true), None]), [lid(0.62, false), None], "0.2 s apart");
+        // A last open eyelid that was widened is held at relaxed open
+        let mut check = SideCheck::default();
+        check.step(5.0, [0.9; 2], [20.0; 2], [lid(0.9, false), lid(0.7, false)]);
+        let held = check.step(5.01, [0.9; 2], [20.0; 2], [lid(0.0, true); 2]);
+        assert_eq!(held, [lid(LID_RELAXED, false), lid(0.7, false)]);
     }
 
     #[test]
