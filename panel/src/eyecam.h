@@ -520,6 +520,16 @@ bool isCalib(Run run);
 bool baselineWarming(const Status& status);
 
 /**
+ * Whether the eyelids from the eye cameras become usable for frameeyeosc only when eyecam-rec's warm-up ends: read
+ * live, the relaxed eyes still being learned, and no baseline for this wear yet (calib_state kCalibWearBit or
+ * kCalibAutoBit, as frameeyeosc's Live::lids_usable wants). Not before the setup is done either: the learned baseline
+ * only counts after it (an eyecam-rec without "setup_done" counts as done).
+ * @param status the status
+ * @return true while that warm-up is all they wait for
+ */
+bool lidsAwaitWarmup(const Status& status);
+
+/**
  * eyecam-rec's line in the panel's language: in English its message_en when there is one, else (and in Japanese)
  * its message.
  * @param status the status

@@ -379,6 +379,11 @@ bool baselineWarming(const Status& status) {
     return status.hasBaseline && status.baseline == "warming";
 }
 
+bool lidsAwaitWarmup(const Status& status) {
+    return status.live && baselineWarming(status) && (status.calibState & (kCalibWearBit | kCalibAutoBit)) == 0 &&
+           (!status.hasSetupDone || status.setupDone);
+}
+
 const std::string& shownMessage(const Status& status, Language language) {
     return language == Language::En && !status.messageEn.empty() ? status.messageEn : status.message;
 }

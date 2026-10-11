@@ -162,6 +162,19 @@ void testParse() {
             "{\"state\": \"idle\", \"baseline\": 1, \"warmup_remaining_s\": \"5\", \"calib_saved\": \"yes\"}",
             kNow);
         CHECK(!odd.hasBaseline && std::isnan(odd.warmupRemainingS) && !odd.hasCalibSaved && !odd.calibSaved);
+        // The eyelids wait for the warm-up only while read live, with no baseline for this wear, after the setup
+        const char* live = "{\"state\": \"idle\", \"live\": true, \"calib_state\": %d, \"baseline\": \"warming\", "
+                           "\"setup_done\": %s}";
+        const auto lids = [&](int calib, const char* setup) {
+            char text[160];
+            std::snprintf(text, sizeof(text), live, calib, setup);
+            return eyecam::lidsAwaitWarmup(eyecam::parseStatus(text, kNow));
+        };
+        CHECK(lids(0, "true") && lids(eyecam::kCalibUserBit, "true"));
+        CHECK(!lids(eyecam::kCalibWearBit, "true") && !lids(eyecam::kCalibAutoBit, "true") && !lids(0, "false"));
+        CHECK(!eyecam::lidsAwaitWarmup(warming) && !eyecam::lidsAwaitWarmup(ready));  // not live; ready
+        CHECK(eyecam::lidsAwaitWarmup(eyecam::parseStatus(
+            "{\"state\": \"idle\", \"live\": true, \"calib_state\": 0, \"baseline\": \"warming\"}", kNow)));
     }
 
     // Only a state: the rest missing (NaN numbers, no step)
