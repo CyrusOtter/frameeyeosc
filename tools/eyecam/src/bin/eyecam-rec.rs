@@ -132,6 +132,7 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --no-gaze-drop     with --replay: no EyeWide hold after a downward glance (evaluation)
   --no-edge-hold     with --replay: a pupil lost at the window's (temporal) edge may count as closed (the old rule; evaluation)
   --no-ext-search    with --replay: no pupil search past the window's (temporal) edge (the old rule; evaluation)
+  --no-guide         with --replay: no search for a missed pupil where the eye tracker's gaze puts it (evaluation)
   --wide-curve S,W   with --replay: EyeWide = (rise - S * step) / (W * step) (evaluation)
   --widen-sensitivity X  with --replay: the curve for widen sensitivity X in 0..1 (default 0.5, as live)
   --preview DIR      with --replay: also write the panel's eye preview (DIR/preview, as `preview on` does live), the
@@ -225,6 +226,7 @@ fn parse_args() -> Result<Args> {
             "--no-gaze-drop" => args.tune.gaze_drop = false,
             "--no-edge-hold" => args.tune.edge_hold = false,
             "--no-ext-search" => args.tune.ext_search = false,
+            "--no-guide" => args.tune.guide = false,
             "--widen-sensitivity" => {
                 let v = number(value("--widen-sensitivity")?, "--widen-sensitivity")?;
                 (args.tune.wide_start, args.tune.wide_width) = eyecam::live::wide_curve(v);
@@ -811,6 +813,7 @@ struct Live {
     pitch: [f32; 2],
     /// Valve's openness per eye, read with the pitch (for the drift log).
     open: [f32; 2],
+    yaw: [f32; 2],
     pitch_at: f64,
     dropped: u64,
     /// Each camera's frame rate (status.json cam_fps).
@@ -829,21 +832,23 @@ impl Live {
             valve_retry: 0.0,
             pitch: [f32::NAN; 2],
             open: [f32::NAN; 2],
+            yaw: [f32::NAN; 2],
             pitch_at: f64::NEG_INFINITY,
             dropped: 0,
             rate: Default::default(),
         })
     }
 
-    /// Keep the latest Valve gaze pitch and openness per eye (the eye server's shared memory, read-only).
+    /// Keep the latest Valve gaze pitch and yaw and openness per eye (the eye server's shared memory, read-only).
     fn poll_valve(&mut self, now: f64) {
         if self.valve.is_none() && now >= self.valve_retry {
             self.valve = Shm::open().ok();
             self.valve_retry = now + 5.0;
         }
         if let Some(s) = self.valve.as_mut().and_then(Shm::poll) {
-            for (p, g) in self.pitch.iter_mut().zip(&s.gaze) {
+            for ((p, y), g) in self.pitch.iter_mut().zip(&mut self.yaw).zip(&s.gaze) {
                 *p = g[1].clamp(-1.0, 1.0).asin().to_degrees();
+                *y = g[0].clamp(-1.0, 1.0).asin().to_degrees();
             }
             self.open = s.openness;
             self.pitch_at = now;
@@ -865,8 +870,9 @@ impl Live {
             data.extend_from_slice(&frame[r * STRIDE..r * STRIDE + WIDTH]);
         }
         let fresh = now - self.pitch_at < 0.5;
-        let (pitch, open) = if fresh { (self.pitch[eye], self.open[eye]) } else { (f32::NAN, f32::NAN) };
-        if self.tx.try_send(Msg::Frame { eye, upside_down, t_cam_ns, pitch, open, data }).is_err() {
+        let (pitch, yaw, open) =
+            if fresh { (self.pitch[eye], self.yaw[eye], self.open[eye]) } else { (f32::NAN, f32::NAN, f32::NAN) };
+        if self.tx.try_send(Msg::Frame { eye, upside_down, t_cam_ns, pitch, yaw, open, data }).is_err() {
             self.dropped += 1;
         }
     }

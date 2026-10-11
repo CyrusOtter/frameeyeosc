@@ -87,11 +87,12 @@ pub struct Session {
     map: [Option<Vec<usize>>; 2],
 }
 
-/// Valve samples: time, per-eye gaze pitch (degrees) and openness.
+/// Valve samples: time, per-eye gaze pitch and yaw (degrees) and openness.
 #[derive(Default)]
 pub struct Valve {
     pub t: Vec<f64>,
     pub pitch: [Vec<f64>; 2],
+    pub yaw: [Vec<f64>; 2],
     pub open: [Vec<f64>; 2],
 }
 
@@ -163,11 +164,13 @@ impl Session {
         if let Ok((h, rows)) = read_csv(&dir.join("valve.csv")) {
             let ts = col(&h, "sample_time")?;
             let gy = [col(&h, "gaze_l_y")?, col(&h, "gaze_r_y")?];
+            let gx = [col(&h, "gaze_l_x")?, col(&h, "gaze_r_x")?];
             let op = [col(&h, "open_l")?, col(&h, "open_r")?];
             for r in &rows {
                 valve.t.push(num(&r[ts]));
                 for e in 0..2 {
                     valve.pitch[e].push(num(&r[gy[e]]).clamp(-1.0, 1.0).asin().to_degrees());
+                    valve.yaw[e].push(num(&r[gx[e]]).clamp(-1.0, 1.0).asin().to_degrees());
                     valve.open[e].push(num(&r[op[e]]));
                 }
             }
@@ -400,6 +403,7 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
     let mut img = vec![0u8; FRAME];
     let pitch_of = |e: usize, t: f64| s.valve.nearest(t).map_or(f64::NAN, |j| s.valve.pitch[e][j]);
     let open_of = |e: usize, t: f64| s.valve.nearest(t).map_or(f64::NAN, |j| s.valve.open[e][j]);
+    let yaw_of = |e: usize, t: f64| s.valve.nearest(t).map_or(f64::NAN, |j| s.valve.yaw[e][j]);
     if opts.prewarm {
         let mut warm = [EyeEngine::default(), EyeEngine::default()];
         'pass: for k in 0..n {
@@ -407,6 +411,7 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 if k < s.frames(e) {
                     s.read(e, k, &mut img).map_err(|err| err.to_string())?;
                     let t = s.t_cam[e].get(k).copied().unwrap_or(f64::NAN);
+                    warm[e].set_gaze_yaw(yaw_of(e, t));
                     warm[e].process_open(&img, pitch_of(e, t), open_of(e, t), t, &params[e]);
                 }
             }
@@ -467,6 +472,7 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
             let j = s.valve.nearest(t);
             let pitch = j.map_or(f64::NAN, |j| s.valve.pitch[e][j]);
             let v_open = j.map_or(f64::NAN, |j| s.valve.open[e][j]);
+            engines[e].set_gaze_yaw(j.map_or(f64::NAN, |j| s.valve.yaw[e][j]));
             let t0 = std::time::Instant::now();
             let o = engines[e].process_open(&img, pitch, v_open, t, &params[e]);
             busy += t0.elapsed();
@@ -635,6 +641,7 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
             let j = s.valve.nearest(t);
             let pitch = j.map_or(f64::NAN, |j| s.valve.pitch[e][j]);
             let open = j.map_or(f64::NAN, |j| s.valve.open[e][j]);
+            engines[e].set_gaze_yaw(j.map_or(f64::NAN, |j| s.valve.yaw[e][j]));
             let o = engines[e].process_open(&img, pitch, open, t, &params[e]);
             if let (Some(l), _) = s.label_at(t, live::STEP_DELAY) {
                 samples[e].push(Sample::from_out(Label::parse(l), &o, t));

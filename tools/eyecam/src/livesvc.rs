@@ -85,9 +85,10 @@ pub enum CollectKind {
 pub enum Msg {
     /// A raw frame of an anatomical eye (0 = L, 1 = R), 400x400 as stored; `upside_down`: its camera stores it upside
     /// down (the left eye's, see vision::UPSIDE_DOWN_EYE; decided by the camera, so --swap renaming the eyes does not
-    /// move it, ring::Ring::upside_down). `pitch` and `open`: Valve's gaze pitch (degrees) and openness for that eye
-    /// (NaN without them; the openness is a hint for the extended pupil search and goes into the drift log).
-    Frame { eye: usize, upside_down: bool, t_cam_ns: u64, pitch: f32, open: f32, data: Vec<u8> },
+    /// move it, ring::Ring::upside_down). `pitch`, `yaw` and `open`: Valve's gaze pitch and yaw (degrees) and openness
+    /// for that eye (NaN without them; the gaze guides the search for a pupil the searches miss, the openness is a hint
+    /// for the extended pupil search and goes into the drift log).
+    Frame { eye: usize, upside_down: bool, t_cam_ns: u64, pitch: f32, yaw: f32, open: f32, data: Vec<u8> },
     /// Start collecting labelled samples for a calibration.
     Collect(CollectKind),
     /// A protocol step began at `t0` (CLOCK_MONOTONIC_RAW seconds, the camera clock).
@@ -448,7 +449,8 @@ impl Worker {
         });
     }
 
-    fn frame(&mut self, eye: usize, upside_down: bool, t_cam_ns: u64, pitch: f32, open: f32, data: &[u8]) {
+    #[allow(clippy::too_many_arguments)]
+    fn frame(&mut self, eye: usize, upside_down: bool, t_cam_ns: u64, pitch: f32, yaw: f32, open: f32, data: &[u8]) {
         if !self.live || data.len() != W * H {
             return;
         }
@@ -485,6 +487,7 @@ impl Worker {
             }
         }
         let started = Instant::now();
+        self.engines[eye].set_gaze_yaw(yaw as f64);
         let mut o = self.engines[eye].process_open(img, pitch as f64, open as f64, t, &self.params[eye]);
         let processed = started.elapsed();
         let started = Instant::now();
@@ -896,8 +899,8 @@ pub fn spawn(
             w.publish_state();
             loop {
                 match rx.recv_timeout(Duration::from_millis(50)) {
-                    Ok(Msg::Frame { eye, upside_down, t_cam_ns, pitch, open, data }) => {
-                        w.frame(eye, upside_down, t_cam_ns, pitch, open, &data)
+                    Ok(Msg::Frame { eye, upside_down, t_cam_ns, pitch, yaw, open, data }) => {
+                        w.frame(eye, upside_down, t_cam_ns, pitch, yaw, open, &data)
                     }
                     Ok(Msg::Collect(kind)) => {
                         w.collect = Some(kind);
@@ -1045,7 +1048,7 @@ mod tests {
         let send = |k: u64| {
             for eye in 0..2 {
                 let data = frame.clone();
-                tx.send(Msg::Frame { eye, upside_down: eye == 0, t_cam_ns: 50_000_000_000 + k * 11_111_111, pitch: f32::NAN, open: f32::NAN, data }).unwrap();
+                tx.send(Msg::Frame { eye, upside_down: eye == 0, t_cam_ns: 50_000_000_000 + k * 11_111_111, pitch: f32::NAN, yaw: f32::NAN, open: f32::NAN, data }).unwrap();
             }
         };
         // Not asked: frames, but no file
@@ -1106,7 +1109,7 @@ mod tests {
             for eye in 0..2 {
                 let data = frame.clone();
                 let open = [0.8, 0.6][eye];
-                tx.send(Msg::Frame { eye, upside_down: false, t_cam_ns: 50_000_000_000 + k * 1_000_000_000 / 90, pitch: -10.0, open, data }).unwrap();
+                tx.send(Msg::Frame { eye, upside_down: false, t_cam_ns: 50_000_000_000 + k * 1_000_000_000 / 90, pitch: -10.0, yaw: f32::NAN, open, data }).unwrap();
             }
         }
         tx.send(Msg::Shutdown).unwrap();
@@ -1216,9 +1219,12 @@ mod tests {
                     img = raw;
                 }
                 let pitch = s.valve.nearest(t).map_or(f32::NAN, |j| s.valve.pitch[e][j] as f32);
+                let yaw = s.valve.nearest(t).map_or(f32::NAN, |j| s.valve.yaw[e][j] as f32);
                 let open = s.valve.nearest(t).map_or(f32::NAN, |j| s.valve.open[e][j] as f32);
                 let upside_down = s.upside_down(e);
-                tx.send(Msg::Frame { eye: e, upside_down, t_cam_ns: (t * 1e9) as u64, pitch, open, data: img.clone() }).unwrap();
+                let frame =
+                    Msg::Frame { eye: e, upside_down, t_cam_ns: (t * 1e9) as u64, pitch, yaw, open, data: img.clone() };
+                tx.send(frame).unwrap();
             }
         }
         let (rtx, rrx) = mpsc::channel();

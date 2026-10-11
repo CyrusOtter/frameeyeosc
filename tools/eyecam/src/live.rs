@@ -109,6 +109,34 @@ const EXT_TRACK_S: f64 = 1.0;
 const EXT_TRACK_PX: f64 = 40.0;
 const EXT_A_PX: (f64, f64) = (8.0, 45.0);
 const EXT_VALVE_OPEN: f64 = 0.6;
+/// Gaze-guided search (GazeMap): where the searches find no pupil, the eye tracker's gaze for this eye says where it
+/// is, to within 2.7 px (median; p90 7.8) on one wearer's right eye (a quadratic fitted on two rounds of cued
+/// expressions and tested on a third), whose pupil the searches found in 18-62% of the frames of widened, raised,
+/// relaxed and glancing eyes: lashes, a dark iris (the blob is only the pupil's darkest core) and the shading below the
+/// eye. Refining there at the open pupil's size found it in 93-100% (brows raised: 78%). The map learns from the pupils
+/// the searches find mostly whole (vis GAZE_MAP_MIN_VIS or more), the older ones fading with GAZE_MAP_TAU_S (the
+/// headset slips), and guides only after GAZE_MAP_MIN_FINDS of them, spread over GAZE_MAP_MIN_SPREAD degrees each way,
+/// while lately GAZE_MAP_MIN_HITS of its predictions fell within GAZE_MAP_HIT open-pupil semi-axes of the pupil found
+/// (inside the pupil, where refining starts right). A share, not the mean error: the left eye's gaze from the eye
+/// tracker is noisier (p50 7.4 px, p90 19.7) with a long tail, and an error mean over it kept the map from guiding for
+/// two minutes. A count of finds, not seconds of them: with the right eye's few whole pupils (1-35% of the frames),
+/// waiting for 5 s worth of finds took 90 s. The quadratic terms are pulled toward none (GAZE_MAP_RIDGE per unit of
+/// weight), so with a narrow spread it is nearly linear.
+const GAZE_MAP_TAU_S: f64 = 30.0;
+const GAZE_MAP_MIN_FINDS: f64 = 150.0;
+const GAZE_MAP_MIN_SPREAD: f64 = 2.0;
+const GAZE_MAP_MIN_VIS: f64 = 0.5;
+const GAZE_MAP_HIT: f64 = 0.5;
+const GAZE_MAP_MIN_HITS: f64 = 0.7;
+const GAZE_MAP_RIDGE: f64 = 100.0;
+/// A guided pupil (Extractor::refine_at) must be centred within GUIDE_MAX_OFF open-pupil semi-axes of where the map put
+/// it (the eye tracker reads a widened eye's gaze several degrees higher while the pupil stays: 14 px off in the median
+/// there), GUIDE_SIZE times the open pupil's semi-axis, as dark as the open pupil (GUIDE_DARK levels at most above
+/// it: a closed lid's skin is 24 or more brighter) and have GUIDE_MIN_VIS of its edge found.
+const GUIDE_MAX_OFF: f64 = 0.6;
+const GUIDE_SIZE: (f64, f64) = (0.7, 1.35);
+const GUIDE_DARK: f64 = 15.0;
+const GUIDE_MIN_VIS: f64 = 0.35;
 /// The lid features are causal medians over this long (5 frames at 90 fps; an odd number, at least 3).
 const MEDIAN_S: f64 = 5.0 / FPS;
 /// The long-run medians (iris radius, the open eye's box level, pupil size and darkness, typical pitch) take a
@@ -236,13 +264,142 @@ pub struct Tune {
     pub edge_hold: bool,
     /// Look for a pupil the window's left edge cuts past it (see EXT_MAX_PX).
     pub ext_search: bool,
+    /// Look for a pupil the searches missed where the eye tracker's gaze puts it (GazeMap).
+    pub guide: bool,
 }
 
 impl Default for Tune {
     fn default() -> Self {
         let (wide_start, wide_width) = wide_curve(DEFAULT_WIDEN_SENSITIVITY);
-        Self { wide_start, wide_width, track: true, gaze_drop: true, edge_hold: true, ext_search: true }
+        Self { wide_start, wide_width, track: true, gaze_drop: true, edge_hold: true, ext_search: true, guide: true }
     }
+}
+
+/// The terms of GazeMap's quadratic in the eye tracker's yaw and pitch (degrees).
+fn gaze_terms(yaw: f64, pitch: f64) -> [f64; 6] {
+    [1.0, yaw, pitch, yaw * yaw, pitch * pitch, yaw * pitch]
+}
+
+/// Where the eye tracker's gaze for this eye (yaw, pitch, degrees) puts the pupil centre in this camera's picture (see
+/// GAZE_MAP_TAU_S): weighted least squares, each term's sums fading with time.
+#[derive(Clone, Debug)]
+struct GazeMap {
+    ata: [[f64; 6]; 6],
+    atx: [f64; 6],
+    aty: [f64; 6],
+    /// The summed weight, and the time of the last sample.
+    weight: f64,
+    last_t: f64,
+    /// The fitted quadratic for x and y, refitted every few samples.
+    coef: Option<([f64; 6], [f64; 6])>,
+    since_fit: u32,
+    /// The share of its recent predictions that fell within GAZE_MAP_HIT of the pupil found (a moving average over
+    /// about 90 finds, from GAZE_MAP_MIN_FINDS / 3 finds on).
+    hits: f64,
+}
+
+impl Default for GazeMap {
+    fn default() -> Self {
+        Self {
+            ata: [[0.0; 6]; 6],
+            atx: [0.0; 6],
+            aty: [0.0; 6],
+            weight: 0.0,
+            last_t: f64::NAN,
+            coef: None,
+            since_fit: 0,
+            hits: 0.0,
+        }
+    }
+}
+
+impl GazeMap {
+    /// A pupil found mostly whole at (`x`, `y`) with semi-axis `a`, at `t`, with the eye tracker's gaze (`yaw`,
+    /// `pitch`).
+    fn add(&mut self, t: f64, yaw: f64, pitch: f64, (x, y): (f64, f64), a: f64) {
+        if self.weight >= GAZE_MAP_MIN_FINDS / 3.0
+            && let Some(predicted) = self.predict_raw(yaw, pitch)
+        {
+            let hit = (predicted.0 - x).hypot(predicted.1 - y) <= GAZE_MAP_HIT * a;
+            self.hits += (f64::from(u8::from(hit)) - self.hits) / 90.0;
+        }
+        let fade =
+            if self.last_t.is_finite() && t > self.last_t { (-(t - self.last_t) / GAZE_MAP_TAU_S).exp() } else { 1.0 };
+        self.last_t = t;
+        let q = gaze_terms(yaw, pitch);
+        for i in 0..6 {
+            self.atx[i] = self.atx[i] * fade + q[i] * x;
+            self.aty[i] = self.aty[i] * fade + q[i] * y;
+            for j in 0..6 {
+                self.ata[i][j] = self.ata[i][j] * fade + q[i] * q[j];
+            }
+        }
+        self.weight = self.weight * fade + 1.0;
+        self.since_fit += 1;
+        if self.since_fit >= 15 || self.coef.is_none() {
+            self.since_fit = 0;
+            self.coef = self.fit();
+        }
+    }
+
+    fn fit(&self) -> Option<([f64; 6], [f64; 6])> {
+        let mut a = self.ata;
+        for (i, row) in a.iter_mut().enumerate().skip(3) {
+            row[i] += GAZE_MAP_RIDGE * self.weight;
+        }
+        Some((solve6(a, self.atx)?, solve6(a, self.aty)?))
+    }
+
+    /// Weighted spread (standard deviation) of the yaw and pitch it has seen.
+    fn spread(&self) -> (f64, f64) {
+        let w = self.weight.max(1e-9);
+        let var = |i: usize| (self.ata[i][i] / w - (self.ata[0][i] / w).powi(2)).max(0.0).sqrt();
+        (var(1), var(2))
+    }
+
+    fn predict_raw(&self, yaw: f64, pitch: f64) -> Option<(f64, f64)> {
+        let (cx, cy) = self.coef?;
+        let q = gaze_terms(yaw, pitch);
+        let dot = |c: &[f64; 6]| c.iter().zip(&q).map(|(a, b)| a * b).sum::<f64>();
+        Some((dot(&cx), dot(&cy)))
+    }
+
+    /// Where the pupil is for this gaze, once the map is trusted (GAZE_MAP_MIN_FINDS, GAZE_MAP_MIN_SPREAD,
+    /// GAZE_MAP_MIN_HITS).
+    fn predict(&self, yaw: f64, pitch: f64) -> Option<(f64, f64)> {
+        let (sy, sp) = self.spread();
+        let trusted = self.weight >= GAZE_MAP_MIN_FINDS
+            && sy >= GAZE_MAP_MIN_SPREAD
+            && sp >= GAZE_MAP_MIN_SPREAD
+            && self.hits >= GAZE_MAP_MIN_HITS;
+        if trusted { self.predict_raw(yaw, pitch) } else { None }
+    }
+}
+
+/// Solve the 6x6 system `a` x = `b` (Gaussian elimination with partial pivoting); None if it is singular.
+fn solve6(a: [[f64; 6]; 6], b: [f64; 6]) -> Option<[f64; 6]> {
+    let mut m = [[0.0; 7]; 6];
+    for i in 0..6 {
+        m[i][..6].copy_from_slice(&a[i]);
+        m[i][6] = b[i];
+    }
+    for c in 0..6 {
+        let p = (c..6).max_by(|&i, &j| m[i][c].abs().total_cmp(&m[j][c].abs()))?;
+        if m[p][c].abs() < 1e-12 {
+            return None;
+        }
+        m.swap(c, p);
+        let pivot = m[c];
+        for (r, row) in m.iter_mut().enumerate() {
+            if r != c {
+                let f = row[c] / pivot[c];
+                for (value, p) in row[c..].iter_mut().zip(&pivot[c..]) {
+                    *value -= f * p;
+                }
+            }
+        }
+    }
+    Some(std::array::from_fn(|i| m[i][6] / m[i][i]))
 }
 
 /// What the engine knows about the calibration, for one eye.
@@ -485,6 +642,10 @@ pub struct EyeEngine {
     gaze_hold_until: f64,
     /// Kept for the shared memory / status.json; the baselines follow the wearer now, so it stays false.
     pub recalib_suggested: bool,
+    /// The eye tracker's gaze yaw for the next frame (degrees, NaN if unknown; set_gaze_yaw), and where its gaze puts
+    /// the pupil (GazeMap).
+    yaw: f64,
+    gaze_map: GazeMap,
 }
 
 /// The per-wear open-eye levels (pixels): learnt from the first `WARMUP_S` of usable frames, then followed slowly.
@@ -628,6 +789,8 @@ impl Default for EyeEngine {
             pitch_recent: VecDeque::new(),
             gaze_hold_until: f64::NEG_INFINITY,
             recalib_suggested: false,
+            yaw: f64::NAN,
+            gaze_map: GazeMap::default(),
         }
     }
 }
@@ -746,6 +909,12 @@ impl EyeEngine {
         self.base.seed(w.b_n * w.r_px, w.ap_n * w.r_px);
     }
 
+    /// The eye tracker's gaze yaw for this eye (degrees, as the pitch passed to `process`; NaN if unknown) for the next
+    /// frame: with the pitch it guides the search for a pupil the searches miss (GazeMap).
+    pub fn set_gaze_yaw(&mut self, yaw: f64) {
+        self.yaw = yaw;
+    }
+
     /// Process one upright frame. `pitch`: Valve gaze pitch of this eye (degrees) or NaN; `t`: frame time (s).
     pub fn process(&mut self, img: &[u8], pitch: f64, t: f64, params: &Params) -> Out {
         self.process_open(img, pitch, f64::NAN, t, params)
@@ -806,6 +975,27 @@ impl EyeEngine {
             (f.pupil_cx, f.pupil_cy, f.pupil_a, f.pupil_b, f.pupil_vis) = (f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN);
             (f.iris_r, f.iris_n) = (f64::NAN, 0);
         }
+        // Nothing found: where the eye tracker's gaze puts the pupil, at the open pupil's size (GazeMap); not while
+        // Valve reads the eye closing, as for the extended search (what a blink leaves near the pupil, EXT_VALVE_OPEN)
+        let gaze_known = self.yaw.is_finite() && pitch.is_finite();
+        if p.is_none()
+            && params.tune.guide
+            && gaze_known
+            && !self.ex.search.ext.closing
+            && self.a_open.len() >= 30
+            && self.inner_open.len() >= 30
+            && let Some(c) = self.gaze_map.predict(self.yaw, pitch)
+        {
+            let (a, dark) = (self.a_open.value, self.inner_open.value + GUIDE_DARK);
+            let accept = |q: &Pupil| {
+                (q.cx - c.0).hypot(q.cy - c.1) <= GUIDE_MAX_OFF * a
+                    && (GUIDE_SIZE.0..=GUIDE_SIZE.1).contains(&(q.a / a))
+                    && q.inner <= dark
+                    && q.vis >= GUIDE_MIN_VIS
+            };
+            p = self.ex.refine_at(&mut f, c, a, r_ref, self.xmax, accept);
+        }
+        let guided = f.diag.guided;
         // The extended search's edge follows the pupil: EXT_NEAR_PX left of one found near it, all the way out when it
         // is lost near it (or a blob cut by x_min looked like an ellipse), slowly back while it is well inside x_min.
         let lost_near = self.prev_p.is_some_and(|q| q.cx - q.a - self.find_x_min < EXT_NEAR_PX);
@@ -824,19 +1014,24 @@ impl EyeEngine {
             self.prev = Some((pp.cx, pp.cy));
             self.prev_p = Some(pp);
             self.prev_p_t = t;
-            if !box_bright && sampled {
+            // The open pupil's levels and the gaze map learn from what the searches find, not from guided pupils
+            if !box_bright && sampled && !guided {
                 self.a_open.push(pp.a, long_hz);
                 self.inner_open.push(pp.inner, long_hz);
                 if pp.vis >= PUPIL_MIN_VIS {
                     self.ba_open.push(pp.b / pp.a, long_hz);
                 }
             }
+            if !box_bright && !guided && gaze_known && pp.vis >= GAZE_MAP_MIN_VIS {
+                self.gaze_map.add(t, self.yaw, pitch, (pp.cx, pp.cy), pp.a);
+            }
         }
         // Not from the extended search: early in a wear the iris radius's median still jumps between modes (56 and 83 px
         // on the 2026-10-09 18:16 user calibration's left eye), the box is sized by it, and two edge pupils found at
         // 0.9 s flipped it half a second early, so the open eye's box level was learnt 12% brighter and the blink at
         // 3.6 s (Valve's openness 0 for 0.2 s) never read 1.3 x. Their own box and lids still use the radius in use.
-        if f.ok_pupil && !f.diag.extended && f.iris_r.is_finite() && f.iris_n >= 4 && sampled {
+        // Nor from a guided search.
+        if f.ok_pupil && !f.diag.extended && !guided && f.iris_r.is_finite() && f.iris_n >= 4 && sampled {
             self.r_est.push(f.iris_r, long_hz);
         }
         if !self.t_first.is_finite() {
@@ -870,7 +1065,7 @@ impl EyeEngine {
             self.prev = None;
             f.diag.prior_reset = true;
         }
-        if f.ok_pupil && sampled {
+        if f.ok_pupil && !guided && sampled {
             self.box_open.push(box_f, long_hz);
         }
 
@@ -2237,6 +2432,42 @@ pub fn user_params_json(u: &[UserParams; 2]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where a synthetic eye's pupil sits for a gaze: a slightly curved map, as measured on one wearer's right eye.
+    fn true_pupil(yaw: f64, pitch: f64) -> (f64, f64) {
+        (205.0 - 1.4 * yaw + 0.02 * yaw * yaw, 185.0 - 1.3 * pitch + 0.01 * yaw * pitch)
+    }
+
+    #[test]
+    fn the_gaze_map_learns_where_the_pupil_is_and_guides_only_once_it_is_trusted() {
+        let mut map = GazeMap::default();
+        // Gaze all over -10..10 degrees both ways, a find every 1/90 s
+        let gazes: Vec<(f64, f64)> = (0..400).map(|i| ((i % 21) as f64 - 10.0, (i / 21 % 21) as f64 - 10.0)).collect();
+        for (k, &(yaw, pitch)) in gazes.iter().enumerate() {
+            if k == 100 {
+                assert!(map.predict(0.0, 0.0).is_none(), "not before GAZE_MAP_MIN_FINDS");
+            }
+            map.add(k as f64 / 90.0, yaw, pitch, true_pupil(yaw, pitch), 30.0);
+        }
+        let (x, y) = map.predict(4.0, -6.0).expect("trusted");
+        let (tx, ty) = true_pupil(4.0, -6.0);
+        assert!((x - tx).abs() < 1.0 && (y - ty).abs() < 1.0, "({x}, {y}) vs ({tx}, {ty})");
+        // A gaze that hardly moves: no spread, never trusted
+        let mut still = GazeMap::default();
+        for k in 0..400 {
+            let yaw = 0.3 * ((k % 7) as f64 - 3.0) / 3.0;
+            still.add(k as f64 / 90.0, yaw, 1.0, true_pupil(yaw, 1.0), 30.0);
+        }
+        assert!(still.predict(0.0, 1.0).is_none());
+        // The headset slipped 30 px: predictions miss until the old finds have faded and it hits again (45 s)
+        for k in 0..4000 {
+            let (yaw, pitch) = gazes[k % gazes.len()];
+            let (x, y) = true_pupil(yaw, pitch);
+            map.add(10.0 + k as f64 / 90.0, yaw, pitch, (x + 30.0, y), 30.0);
+        }
+        let (x, _) = map.predict(4.0, -6.0).expect("trusted again");
+        assert!((x - (tx + 30.0)).abs() < 3.0, "{x}");
+    }
 
     #[test]
     fn wide_gate_needs_100_ms_above_half_and_stays_on_down_to_the_off_level() {

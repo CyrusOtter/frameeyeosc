@@ -93,6 +93,11 @@ impl ExtCheck {
 /// eye closing). With the links cut, the shading left of the pupil is blobs of its own that touch the window's edges,
 /// and the edge test drops them.
 const SPLIT_K: usize = 4;
+/// A blob found only as the darkest core of a pupil whose iris is nearly as dark (one wearer's right eye with the eye
+/// wide open: blob radius ~12, pupil ~25) puts the rays' outer ring (1.25-1.7 x its radius) inside the pupil, and no
+/// ray finds an edge. Such a blob is refined once more at the last pupil's semi-axis when that is SIZE_RETRY.0 times
+/// its radius or more, and the pupil found must come out SIZE_RETRY.1 to .2 times that semi-axis.
+const SIZE_RETRY: (f64, f64, f64) = (1.3, 0.7, 1.35);
 
 /// How the pupil is searched for.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -167,6 +172,11 @@ pub struct Diag {
     /// The pupil that search found is within RETRY_MIN_JUMP of the prior, so it is anchored like the first search's
     /// although the second one ran.
     pub split_near_prior: bool,
+    /// The pupil was refined at the last pupil's size, not at its blob's (SIZE_RETRY).
+    pub resized: bool,
+    /// The searches found nothing, and the pupil was found refining where the eye tracker's gaze puts it
+    /// (Extractor::refine_at).
+    pub guided: bool,
 }
 
 impl Default for Diag {
@@ -187,6 +197,8 @@ impl Default for Diag {
             ext_refused: false,
             split: false,
             split_near_prior: false,
+            resized: false,
+            guided: false,
         }
     }
 }
@@ -419,8 +431,10 @@ impl Extractor {
             let blob = self.cands.first().copied();
             blob.and_then(|b| self.refine_pupil(b.c, b.r, xmax)).map(|x| x.0)
         } else {
+            // The last pupil's size, for blobs that are only its darkest core (SIZE_RETRY)
+            let size = prev_p.map(|p| p.a);
             self.find_pupil_blob(search.x_min, xmax, prev, 0, &mut f.diag);
-            let mut p = self.refine_candidates(xmax, None, None, None, &mut f.diag);
+            let mut p = self.refine_candidates(xmax, None, None, None, size, &mut f.diag);
             if p.is_none()
                 && let Some(pv) = prev
             {
@@ -429,7 +443,7 @@ impl Extractor {
                 // pupil, as in a squint, which the prototype does not count as a pupil either).
                 f.diag.retried = true;
                 self.find_pupil_blob(search.x_min, xmax, None, 0, &mut f.diag);
-                p = self.refine_candidates(xmax, Some(pv), None, None, &mut f.diag);
+                p = self.refine_candidates(xmax, Some(pv), None, None, size, &mut f.diag);
             }
             if p.is_none() && ext && !search.ext.closing {
                 // Nothing inside x_min: once more from the extended edge, for a pupil the window's edge cuts (its
@@ -442,7 +456,8 @@ impl Extractor {
                 let x_hi = (search.x_min + EXT_EDGE_PX + 2.0 * search.ext.a.1.min(EXT_MAX_A) + 4.0).min(xmax);
                 let mut d = Diag::default();
                 self.find_pupil_blob(search.find_x_min, x_hi, prev, 0, &mut d);
-                p = self.refine_candidates(xmax, None, Some((search.x_min + EXT_EDGE_PX, search.ext)), None, &mut d);
+                let zone = Some((search.x_min + EXT_EDGE_PX, search.ext));
+                p = self.refine_candidates(xmax, None, zone, None, None, &mut d);
                 f.diag.extended = p.is_some();
                 f.diag.ext_refused = d.ext_refused;
             }
@@ -455,7 +470,8 @@ impl Extractor {
                 f.diag.split = true;
                 let mut d = Diag::default();
                 self.find_pupil_blob(search.find_x_min, xmax, prev, SPLIT_K, &mut d);
-                p = self.refine_candidates(xmax, None, None, Some((search.x_min, search.ext)), &mut d);
+                p = self.refine_candidates(xmax, None, None, Some((search.x_min, search.ext)), size, &mut d);
+                f.diag.resized = d.resized;
                 f.diag.split_near_prior =
                     matches!((p, prev), (Some(p), Some((x, y))) if (p.cx - x).hypot(p.cy - y) < RETRY_MIN_JUMP);
             }
@@ -479,16 +495,23 @@ impl Extractor {
             }
             return (f, None);
         };
+        self.fill_found(&mut f, &p, r_ref, xmax);
+        (f, Some(p))
+    }
+
+    /// The features around a found pupil `p`: its own, the iris radius, the lids and the box.
+    fn fill_found(&mut self, f: &mut Features, p: &Pupil, r_ref: Option<f64>, xmax: f64) {
+        f.ok_pupil = true;
         f.pupil_cx = p.cx;
         f.pupil_cy = p.cy;
         f.pupil_a = p.a;
         f.pupil_b = p.b;
         f.pupil_vis = p.vis;
-        let (r, n) = self.iris_fit(&p, xmax);
+        let (r, n) = self.iris_fit(p, xmax);
         f.iris_r = r;
         f.iris_n = n;
         let rn = r_ref.unwrap_or(if r.is_finite() { r } else { 2.0 * p.a });
-        let (upper, lower, margin) = self.lids(&p, rn, xmax);
+        let (upper, lower, margin) = self.lids(p, rn, xmax);
         if let Some(u) = upper {
             f.upper_skin_y = u.y_at;
             f.upper_y = u.y_at + margin.unwrap_or(MARGIN_OFF);
@@ -499,7 +522,24 @@ impl Extractor {
             f.lower_frac = l.frac;
         }
         f.box_mean = self.box_mean(p.cx, p.cy, rn, xmax);
-        (f, Some(p))
+    }
+
+    /// For a frame `extract` found no pupil in: refine at `c` (where the eye tracker's gaze puts the pupil, see live.rs
+    /// GazeMap) with the open pupil's semi-axis `a`, and take the result if `accept` says it is that pupil; then `f`
+    /// gets its features as for a pupil found by the search, with `diag.guided` set.
+    pub fn refine_at(
+        &mut self,
+        f: &mut Features,
+        c: (f64, f64),
+        a: f64,
+        r_ref: Option<f64>,
+        xmax: f64,
+        accept: impl Fn(&Pupil) -> bool,
+    ) -> Option<Pupil> {
+        let p = self.refine_pupil(c, a, xmax).map(|x| x.0).filter(|p| p.cx < xmax && accept(p))?;
+        self.fill_found(f, &p, r_ref.filter(|&r| r != 0.0), xmax);
+        f.diag.guided = true;
+        Some(p)
     }
 
     /// Dark compact blobs in the opened, blurred image from column `xs` to `xmax`, best first, into `self.cands`. The
@@ -602,13 +642,16 @@ impl Extractor {
     /// edge (an arc of dark lens band fitted as an ellipse). Blobs within RETRY_MIN_JUMP of `away_from` are skipped.
     /// With `edge_zone` (the extended search), only a pupil whose small-x edge is left of its x counts, and only if its
     /// check accepts it. With `outside` (the search with thin links cut), a pupil whose small-x edge is left of its x
-    /// must pass its check, and none counts there while the check says the eye is closing.
+    /// must pass its check, and none counts there while the check says the eye is closing. A blob that does not give a
+    /// pupil at its own size is tried once more at `size` (the last pupil's semi-axis, see SIZE_RETRY), and then the
+    /// pupil has to come out that size.
     fn refine_candidates(
         &mut self,
         xmax: f64,
         away_from: Option<(f64, f64)>,
         edge_zone: Option<(f64, ExtCheck)>,
         outside: Option<(f64, ExtCheck)>,
+        size: Option<f64>,
         diag: &mut Diag,
     ) -> Option<Pupil> {
         for i in 0..self.cands.len() {
@@ -616,33 +659,42 @@ impl Extractor {
             if away_from.is_some_and(|(x, y)| (c.c.0 - x).hypot(c.c.1 - y) < RETRY_MIN_JUMP) {
                 continue;
             }
-            let Some((p, left_share)) = self.refine_pupil(c.c, c.r, xmax) else { continue };
-            let left_ok = !c.left || left_share >= EDGE_LEFT_SHARE;
-            if !left_ok {
-                diag.left_refused = true;
-                continue;
-            }
-            let before_lens = p.cx < xmax;
-            if !before_lens {
-                continue;
-            }
-            match edge_zone {
-                Some((z, _)) if p.cx - p.a >= z => continue,
-                Some((_, check)) if !check.accepts(&p) => {
+            // At the blob's own size, then at the last pupil's (SIZE_RETRY)
+            let retry = size.filter(|a| *a > SIZE_RETRY.0 * c.r);
+            for a in std::iter::once(c.r).chain(retry) {
+                let resized = a != c.r;
+                let Some((p, left_share)) = self.refine_pupil(c.c, a, xmax) else { continue };
+                if resized && !(SIZE_RETRY.1..=SIZE_RETRY.2).contains(&(p.a / a)) {
+                    continue;
+                }
+                let left_ok = !c.left || left_share >= EDGE_LEFT_SHARE;
+                if !left_ok {
+                    diag.left_refused = true;
+                    continue;
+                }
+                let before_lens = p.cx < xmax;
+                if !before_lens {
+                    continue;
+                }
+                match edge_zone {
+                    Some((z, _)) if p.cx - p.a >= z => continue,
+                    Some((_, check)) if !check.accepts(&p) => {
+                        diag.ext_refused = true;
+                        continue;
+                    }
+                    _ => {}
+                }
+                if let Some((z, check)) = outside
+                    && p.cx - p.a < z
+                    && (check.closing || !check.accepts(&p))
+                {
                     diag.ext_refused = true;
                     continue;
                 }
-                _ => {}
+                diag.left_edge = c.left;
+                diag.resized = resized;
+                return Some(p);
             }
-            if let Some((z, check)) = outside
-                && p.cx - p.a < z
-                && (check.closing || !check.accepts(&p))
-            {
-                diag.ext_refused = true;
-                continue;
-            }
-            diag.left_edge = c.left;
-            return Some(p);
         }
         None
     }
@@ -1091,6 +1143,32 @@ mod tests {
         let xmax = occluder_x(&column_means(&img));
         let (f, p) = ex.extract(&img, xmax, Some((200.0, 200.0)), Some(55.0), None);
         assert!(p.is_none() && f.diag.split, "{f:?} {p:?}");
+    }
+
+    #[test]
+    fn refining_where_the_gaze_puts_the_pupil_finds_it_and_nothing_on_a_closed_lid() {
+        let img = synthetic_eye(250.0, 200.0, 25.0);
+        let mut ex = Extractor { search: Search::live(X_MIN), ..Extractor::default() };
+        let xmax = occluder_x(&column_means(&img));
+        // The frame's images are made by extract; then refining 12 px off the centre still finds the pupil
+        let (mut f, _) = ex.extract(&img, xmax, None, None, None);
+        f = Features { diag: f.diag, ..Features::default() };
+        let p = ex.refine_at(&mut f, (258.0, 191.0), 25.0, None, xmax, |_| true).expect("pupil");
+        assert!((p.cx - 250.0).abs() < 1.0 && (p.cy - 200.0).abs() < 1.0 && (p.a - 25.0).abs() < 1.5, "{p:?}");
+        assert!(f.ok_pupil && f.diag.guided && f.box_mean.is_finite() && f.upper_skin_y.is_finite(), "{f:?}");
+        // `accept` decides: one far from where it was looked for is not taken
+        let (mut f, _) = ex.extract(&img, xmax, None, None, None);
+        assert!(ex.refine_at(&mut f, (258.0, 191.0), 25.0, None, xmax, |q| (q.cx - 258.0).abs() < 3.0).is_none());
+        assert!(!f.diag.guided);
+        // A closed eye: lid skin where the pupil was; the rays find no dark disc with an edge
+        let mut lid = img.clone();
+        for y in 140..270 {
+            for x in 180..330 {
+                lid[y * W + x] = 125;
+            }
+        }
+        let (mut f, _) = ex.extract(&lid, xmax, None, None, None);
+        assert!(ex.refine_at(&mut f, (250.0, 200.0), 25.0, None, xmax, |q| q.inner < 40.0).is_none(), "{f:?}");
     }
 
     #[test]
