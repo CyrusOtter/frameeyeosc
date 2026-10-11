@@ -404,6 +404,39 @@ pub fn components(mask: &[bool], w: usize, h: usize, bufs: &mut CcBufs, out: &mu
     }));
 }
 
+/// Binary opening of `mask` (`w` x `h`) with a (2 `k` + 1)-square, in place: erosion then dilation, each as a row
+/// pass and a column pass over running counts (outside the mask counts as unset). Set regions thinner than the square
+/// disappear, and so do the thin links between two blobs; blobs wider than it keep their shape. `tmp` is scratch.
+pub fn open_mask(mask: &mut [bool], w: usize, h: usize, k: usize, tmp: &mut Vec<bool>) {
+    if k == 0 {
+        return;
+    }
+    tmp.clear();
+    tmp.resize(w * h, false);
+    // One pass along rows (`step` 1, `n` = w, `lines` = h) or columns (`step` w, `n` = h, `lines` = w): `all` keeps
+    // a pixel when its whole window is set (erosion), else when any of it is (dilation).
+    let pass = |src: &[bool], dst: &mut [bool], n: usize, lines: usize, step: usize, line_step: usize, all: bool| {
+        for line in 0..lines {
+            let base = line * line_step;
+            let at = |i: usize| src[base + i * step] as usize;
+            let mut count: usize = (0..k.min(n)).map(at).sum();
+            for i in 0..n {
+                if i + k < n {
+                    count += at(i + k);
+                }
+                if i > k {
+                    count -= at(i - k - 1);
+                }
+                dst[base + i * step] = if all { count == 2 * k + 1 } else { count > 0 };
+            }
+        }
+    };
+    pass(mask, tmp, w, h, 1, w, true);
+    pass(tmp, mask, h, w, w, 1, true);
+    pass(mask, tmp, w, h, 1, w, false);
+    pass(tmp, mask, h, w, w, 1, false);
+}
+
 /// An ellipse as OpenCV's RotatedRect: centre, full axes (`a` along `angle_deg`, `b` across it).
 #[derive(Clone, Copy, Debug)]
 pub struct Ellipse {
@@ -559,6 +592,36 @@ impl Quad {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_a_mask_cuts_thin_links_and_keeps_blobs() {
+        let (w, h) = (60, 40);
+        let mut mask = vec![false; w * h];
+        // A 16 x 16 blob at x 5..21, y 10..26, and a 3 px wide line from it to the right edge
+        for y in 10..26 {
+            for x in 5..21 {
+                mask[y * w + x] = true;
+            }
+        }
+        for y in 16..19 {
+            for x in 21..w {
+                mask[y * w + x] = true;
+            }
+        }
+        let mut tmp = Vec::new();
+        let mut opened = mask.clone();
+        open_mask(&mut opened, w, h, 2, &mut tmp);
+        let blob = |x: usize, y: usize| (5..21).contains(&x) && (10..26).contains(&y);
+        for y in 0..h {
+            for x in 0..w {
+                assert_eq!(opened[y * w + x], blob(x, y), "({x}, {y})");
+            }
+        }
+        // k = 0 leaves it as it is
+        let mut same = mask.clone();
+        open_mask(&mut same, w, h, 0, &mut tmp);
+        assert_eq!(same, mask);
+    }
 
     #[test]
     fn gaussian_kernels_match_opencv() {

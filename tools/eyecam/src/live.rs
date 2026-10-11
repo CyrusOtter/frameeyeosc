@@ -793,7 +793,8 @@ impl EyeEngine {
         // whatever the box: the box is then measured around the blob itself, and a lash or lid line caught while the
         // eye is closing has dark lashes in its box (replays: the eye counted as open through a whole close step).
         let box_bright = self.box_open.len() >= 30 && f.box_mean > 1.3 * self.box_open.value;
-        let unanchored = no_prior || f.diag.retried;
+        // The search with thin links cut runs after the retry; a pupil it finds near the prior is anchored all the same
+        let unanchored = no_prior || (f.diag.retried && !f.diag.split_near_prior);
         if let Some(pp) = p
             && (box_bright || unanchored)
             && self.a_open.len() >= 30
