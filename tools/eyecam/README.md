@@ -178,6 +178,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `dev` | bool | 開発者モード（settings.json の `"dev": true`、既定 false）。true のときだけ校正のたびの目の映像（`eye_L.raw` など）も残す（下の「settings.json」）。録画（`start`）はこれに関係なく誰でも使える。settings.json を手で書き換えると、再起動しなくても次の書き直しで反映される |
 | `live` | bool | ライブ処理がオン（バッファを持っていて `live on`）|
 | `live_ms` | number | ライブ処理の 1 フレーム（片目）あたりの時間、直近 1 秒の平均（ms） |
+| `preview` | bool | 目のプレビューの映像（下の「目のプレビュー」）をいま出している（`preview on` から 3 秒以内で、ファイルがある）。このフィールドがない古い eyecam-rec は映像を出せない |
 | `pupil_l`, `pupil_r` | number / null | 目ごとの、直近 2 秒のフレームのうち瞳が見つかった割合（0〜1）。校正が「瞳が見えたフレーム」を数えるのと同じ数え方（閉じたまぶたのしわを除いた後）。ライブ処理がオフのときと、その目の映像が止まったときは `null`。**`locked` は映像が流れているという意味だけ**なので、校正の前に瞳が見えているかはこちらで見る。ふだん（目を開けて前を見ている）は 0.95 前後、目を閉じると 0。`calib wear` は普段の段（約 5.4 秒）のうち約 1 秒ぶん（90 fps で 90 フレーム、約 18%）以上で瞳が要る。`--fake` では 0.97 / 0.95 |
 | `cam_fps` | [number / null, number / null] | 目ごと `[左, 右]` の、カメラが届けている毎秒の枚数（直近 2 秒のフレームの、カメラの時刻で数える）。ロックしていてライブ処理がオンのときだけ。そうでないときと、その目の映像が 0.5 秒止まったときは `null`。Valve のアイトラッカーがカメラの速さを決める（ログ `~/.local/share/Steam/logs/eyetracking*.txt` の `CStereoAdspCams: Set framerate`）ので、ふつうは 90 だが 72・80・120 もあり、**ヘッドセットによっては 15**。eyecam はどの速さでも動く（下の「遅いカメラ」）。`--fake` では `--fake-camfps` の値（既定 90） |
 | `prox_min` | number | `--prox-min`（近接センサーがこれを超えて 1 秒たつと「かぶっている」。既定 20）。パネルの診断が `prox` と並べて出す |
@@ -205,6 +206,7 @@ unix stream ソケット（0600）。接続して 1 行（`\n` 終わり）送�
 | `calib wear` | `ok`（state は `calibrating` → `idle`。結果は `message` に「校正できた（かぶり）」か、`error` でやり直しの理由）または `err <理由>` |
 | `calib user` | 同上。このかぶりの `calib wear` がまだなら `err 先に calib wear をしてね` |
 | `live on` / `live off` | `ok`。ライブ処理（共有メモリ `live` の更新）のオン/オフ。既定はオン |
+| `preview on` / `preview off` | `ok`。パネルの目のプレビューの映像（下の「目のプレビュー」）。**どの state でもすぐ受け付けてすぐ返る**。`on` は 3 秒だけ効くので、映像を見ているあいだは 1 秒ごとに送り直す（送り直しが止まれば、フレームが来ていなくても 3 秒で止まる）。`off` ですぐ止まる。run フォルダが tmpfs でなければ `on` は `err 目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ` |
 | `set widen_sensitivity <0〜1>` | `ok` または `err widen_sensitivity は 0 から 1 の数で`。見開きの感度（下の「見開きの感度」）。**どの state でもすぐ受け付けてすぐ返る**（スライダーを動かしながら送ってよい）。すぐにライブの値に効き、`~/.config/eyecam/settings.json` に保存される（新しいファイルに書いて rename）。次に起動したときもその値。保存できなければ `err 保存できなかった: …` |
 
 `<名前>` は `~/eyecam-src/protocol_<名前>.txt` のこと。英数字・`_`・`-` だけで 1〜32 文字（それ以外は `err プロトコル名に使えない文字がある`）。
@@ -216,7 +218,7 @@ unix stream ソケット（0600）。接続して 1 行（`\n` 終わり）送�
 | `searching` / `recording` | `err 録画中` | `ok` | `err 録画中` |
 | `calibrating` | `err 校正中` | `ok` | `err 校正中` |
 
-`set widen_sensitivity` は上の表に関係なく、どの state（`waiting_fds` も）でも `ok`。
+`set widen_sensitivity` と `preview on` / `preview off` は上の表に関係なく、どの state（`waiting_fds` も）でも答える。
 
 そのほかの返事: `err 知らないコマンド`、`err 応答がない`（10 秒以内に処理されなかった。ふつうは起きない）。
 
@@ -241,7 +243,7 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
 それに合わせ、60 未満で失敗すると本物と同じく「。カメラの映像が毎秒 N 枚しか届いていない」が付く。
 `last_calib` は fake の `calib wear` が終わると、作った数字で入る（`--fake-calib` の目は瞳が 12 フレームで位置が `null`）。
 `set widen_sensitivity` は status.json の `widen_sensitivity` に出るだけで、settings.json には書かない（`dev` だけは本物と同じく settings.json から読んで出す）。
-共有メモリ `live` は作らない。
+共有メモリ `live` は作らない。`preview on` / `off` には `ok` と答えるが、映像は作らない（`preview` は false のまま）。
 終了すると `state: "stopped"` を書く。`--run-dir` を省くと本物と同じ `/run/user/1000/eyecam/` を使う（本物の `--serve` と同時には動かせない）。
 
 ## ライブ処理（目の開き・見開き・細め・瞳孔）
@@ -374,6 +376,62 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
 - 校正セッション 5 本での食い違い（比べたペアのうち）: 前 0.0 / 0.2 / 0.8 / 3.6 / 2.4% → 後 0.0 / 0.9 / 0.2 / 0.0 / 0.0%
   （食い違いは、まばたきのあとや段の切り替わりなど、まぶたが瞳にかかる瞬間に集中していた）
 
+### 目のプレビュー（パネル向け、`preview`）
+
+パネルの「目のプレビュー」でカメラ映像を出すとき、目ごとの小さな映像と、ライブ処理がそのフレームで見つけたものを出す。
+**頼まれているあいだだけ**（ctl.sock の `preview on` から 3 秒。パネルは 1 秒ごとに送り直す）、`--run-dir` の中の
+`preview` に書く。ディスクには書かない。
+
+- 頼まれていないあいだは何もしない（ファイルもない）。`preview off`、または送り直しが 3 秒止まると（パネルが落ちても、フレームが来ていなくても）、
+  映像と見つけたものを 0 で上書きしてからファイルを消す。eyecam-rec が終わるときも同じ。kill -9 で残ったものは、次に起動したときに消す
+- 場所は run フォルダ（既定 `/run/user/1000/eyecam/`、tmpfs）だけ。`--serve` は run フォルダが tmpfs でなければ `preview on` を断る。
+  ファイルのモードは 0600（ディレクトリは 0700）
+- 書くのはライブ処理のスレッドで、目ごとに毎秒約 15 枚（カメラの時刻で 1/15 秒の 0.9 倍たったフレーム。90 fps なら 6 枚に 1 枚）。
+  400×400 のフレームを 2×2 の平均で 200×200 にして、その場で上書きする。Frame で 1 枚約 11〜13 µs（半分にして書くまで）、両目で 1 コアの約 0.04%。
+  検出のしかたは変わらない（ライブ処理が見たフレームと、すでに求めた値を書くだけ）。ライブ処理がオフ（`live off`）や映像が止まっているあいだは書かない
+- 映像の向き: ライブ処理が見る向き。上下は正しく（左目のカメラの上下逆さまのフレームは直してある）、**両目とも耳側が左（x の小さい側）**。
+  左右は解剖学的な目（`eyes[0]` = 左目）。下の座標も同じ映像の上のもの
+- 読み方: `O_RDONLY` で開いて `mmap(PROT_READ, MAP_SHARED)`。**書かないこと**。`seq` を読む（奇数なら書いている途中）→ 全体を写す →
+  もう一度 `seq` を読み、変わっていたら読み直す（live と同じ seqlock）。`magic` / `version` / 大きさを確かめる。消えた・inode が変わったら開き直す
+- 鮮度: 目ごとの `t_mono_ns` と `CLOCK_MONOTONIC` の差で（パネルは 0.5 秒より古ければ出さない）
+- `eyecam-rec --replay DIR --out x.csv --preview RUNDIR` で、録画を録画の速さで流しながら同じファイルを `RUNDIR/preview` に書ける（開発用。tmpfs でなくても書く。
+  終わると消す）。パネルの `--fake-preview --preview-sheet --eyecam-dir RUNDIR --dump-png …` で、その映像で描ける
+
+ファイル（リトルエンディアン、81920 バイト = 20 ページ。使うのは先頭の 64 + 2 × 40064 バイト）:
+
+| オフセット | 型 | 名前 | 中身 |
+|---|---|---|---|
+| 0 | u32 | `magic` | `0x56505945`（"EYPV"） |
+| 4 | u32 | `version` | 1。並びや意味を変えたら上げる |
+| 8 | u32 | `header_size` | 64 |
+| 12 | u32 | `eye_size` | 1 目ぶんの大きさ（64 + 幅 × 高さ = 40064） |
+| 16 | u32 | `width` | 200 |
+| 20 | u32 | `height` | 200 |
+| 24 | u32 | `seq` | seqlock。書いている間は奇数 |
+| 28 | u32 | `writer_pid` | eyecam-rec のプロセス ID |
+| 32 | u64 | `writer_start_ns` | ファイルを作った時刻（`CLOCK_MONOTONIC` の ns） |
+| 40 | u64 | `t_mono_ns` | 最後に書いた映像の撮影時刻 |
+| 48 | u32 | `on` | 1 = 映像を出している、0 = 止めた（映像を 0 で上書きしてファイルを消す前に 0 にする） |
+| 52 | — | （予約） | 0 |
+| 64 | eye[2] | `eyes` | 左目（64）、右目（64 + 40064）。下の表 |
+
+各目（オフセットは目の先頭から）:
+
+| オフセット | 型 | 名前 | 中身 |
+|---|---|---|---|
+| 0 | u64 | `t_mono_ns` | この映像のフレームの撮影時刻（`CLOCK_MONOTONIC` ns）。0 ならまだ映像がない |
+| 8 | u64 | `count` | この目で書いた映像の数 |
+| 16 | u32 | `flags` | ビットの和: 1 瞳が見つかった / 2 閉じていると読んだ（live の `closed`） |
+| 20 | f32 | `pupil_x` | 見つけた瞳の中心 x（映像の px、0〜200）。見つからなければ NaN |
+| 24 | f32 | `pupil_y` | 同 y |
+| 28 | f32 | `pupil_r` | 瞳の半径（映像の px。楕円の長いほうの半径） |
+| 32 | f32 | `window_left` | 瞳を探す枠の左（耳側。かぶりごとに決まる左端の半分） |
+| 36 | f32 | `window_top` | 同 上（35 = 元の 70 行） |
+| 40 | f32 | `window_right` | 同 右（レンズ端の半分） |
+| 44 | f32 | `window_bottom` | 同 下（160 = 元の 320 行） |
+| 48 | — | （予約） | 0 |
+| 64 | u8[200×200] | `pixels` | 8 bit の灰色、上の行から。2×2 の平均（四捨五入） |
+
 ### settings.json
 
 `~/.config/eyecam/settings.json`。なければ既定値。知らないキーは無視し、範囲外・型ちがいの値は既定値になる。
@@ -505,6 +563,8 @@ eyecam-rec --replay ~/eyecam/rec_B --resample 15 --user-calib calib_A.json --cal
 # 校正を流し直す（dev で画像を残した calib_*）: ライブと同じ段の切り方・当てはめで、calib_result.json と同じ中身を書く
 eyecam-rec --replay ~/eyecam/calib_2026-10-04_03-27-31 --calib wear --user-calib ~/.config/eyecam/calib.json --out wear.json
 eyecam-rec --replay ~/eyecam/calib_2026-10-04_03-28-05 --calib user --user-calib calib_with_wear.json --out user.json
+# パネルの目のプレビューの映像を、録画の速さで流しながら RUNDIR/preview に書く（終わると消す。上の「目のプレビュー」）
+eyecam-rec --replay ~/eyecam/rec_B --limit 1800 --out x.csv --preview RUNDIR
 ```
 
 `eye_files=anatomical` がない古いセッション（eye_L.raw が右目）は自動で入れ替えて読む。画の位置で L/R を決めていたころの
