@@ -415,8 +415,8 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
 - 読み方: `O_RDONLY` で開いて `mmap(PROT_READ, MAP_SHARED)`。**書かないこと**。`seq` を読む（奇数なら書いている途中）→ 全体を写す →
   もう一度 `seq` を読み、変わっていたら読み直す（live と同じ seqlock）。`magic` / `version` / 大きさを確かめる。消えた・inode が変わったら開き直す
 - 鮮度: 目ごとの `t_mono_ns` と `CLOCK_MONOTONIC` の差で（パネルは 0.5 秒より古ければ出さない）
-- `eyecam-rec --replay DIR --out x.csv --preview RUNDIR` で、録画を録画の速さで流しながら同じファイルを `RUNDIR/preview` に書ける（開発用。tmpfs でなくても書く。
-  終わると消す）。パネルの `--fake-preview --preview-sheet --eyecam-dir RUNDIR --dump-png …` で、その映像で描ける
+- `eyecam-rec --replay DIR --out x.csv --preview RUNDIR` で、録画を録画の速さで流しながら同じファイルを `RUNDIR/preview` に書ける（開発用。ライブと同じく
+  tmpfs のフォルダだけ。/dev/shm/… など。終わると消す）。パネルの `--fake-preview --preview-sheet --eyecam-dir RUNDIR --dump-png …` で、その映像で描ける
 
 ファイル（リトルエンディアン、81920 バイト = 20 ページ。使うのは先頭の 64 + 2 × 40064 バイト）:
 
@@ -649,8 +649,9 @@ eyecam-rec --replay ~/eyecam/rec_B --resample 15 --user-calib calib_A.json --cal
 # 校正を流し直す（dev で画像を残した calib_*）: ライブと同じ段の切り方・当てはめで、calib_result.json と同じ中身を書く
 eyecam-rec --replay ~/eyecam/calib_2026-10-04_03-27-31 --calib wear --user-calib ~/.config/eyecam/calib.json --out wear.json
 eyecam-rec --replay ~/eyecam/calib_2026-10-04_03-28-05 --calib user --user-calib calib_with_wear.json --out user.json
-# パネルの目のプレビューの映像を、録画の速さで流しながら RUNDIR/preview に書く（終わると消す。上の「目のプレビュー」）
-eyecam-rec --replay ~/eyecam/rec_B --limit 1800 --out x.csv --preview RUNDIR
+# パネルの目のプレビューの映像を、録画の速さで流しながら tmpfs のフォルダの preview に書く（終わると消す。上の「目のプレビュー」）
+mkdir -m 700 /dev/shm/eyecam-preview
+eyecam-rec --replay ~/eyecam/rec_B --limit 1800 --out x.csv --preview /dev/shm/eyecam-preview
 # ドリフトの記録も書く（下の「ドリフトの記録」。wall_unix は空）
 eyecam-rec --replay ~/eyecam/rec_B --out x.csv --driftlog drift_B.csv
 ```

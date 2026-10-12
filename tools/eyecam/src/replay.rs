@@ -379,6 +379,10 @@ closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear
 /// The live engine over a session, both eyes in step, causally. Returns ms per processed frame.
 pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, String> {
     use crate::live::{self, EyeEngine, Label, Params, Sample};
+    // Eye pictures only ever go to memory, as live (preview::on_tmpfs)
+    if let Some(dir) = opts.preview.as_ref().filter(|dir| !crate::preview::on_tmpfs(dir)) {
+        return Err(format!("--preview {}: not a folder on tmpfs (the eye pictures are only written to memory; use one under /dev/shm)", dir.display()));
+    }
     let mut w = BufWriter::new(File::create(out).map_err(|e| format!("{}: {e}", out.display()))?);
     writeln!(w, "{LIVE_HEADER}").map_err(|e| e.to_string())?;
     let mut engines = [EyeEngine::default(), EyeEngine::default()];

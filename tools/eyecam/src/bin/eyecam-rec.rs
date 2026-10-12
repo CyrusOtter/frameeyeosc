@@ -135,7 +135,8 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --wide-curve S,W   with --replay: EyeWide = (rise - S * step) / (W * step) (evaluation)
   --widen-sensitivity X  with --replay: the curve for widen sensitivity X in 0..1 (default 0.5, as live)
   --preview DIR      with --replay: also write the panel's eye preview (DIR/preview, as `preview on` does live), the
-                     replay paced at the recording's own speed so a panel pointed at DIR can show it (development)
+                     replay paced at the recording's own speed so a panel pointed at DIR can show it (development; DIR
+                     must be on tmpfs, as live)
   --driftlog FILE    with --replay: also write the drift log (one row per eye per second, as `driftlog on` does
                      live) to FILE
   --seconds N        how long to record once frames are found (default 120, or the cue protocol's length)
@@ -662,21 +663,26 @@ fn set_preview(on: bool, file: &StatusFile) -> String {
 /// `driftlog on [<stem>]` / `driftlog off`: the drift log, done here in every state (the live worker writes the rows
 /// while frames come). `on` starts a new file in <data folder>/drift (closing one being written) and says where:
 /// `<stem>.eyecam.csv` for the panel's eye log `stem`, else `drift_<time>.csv`; `off` closes it. The fake daemon (no
-/// live engine) says ok and writes none.
+/// live engine) says ok and writes none. Nothing touches the disk under the lock the worker hands its frames over
+/// under: the file is made before taking it, and the one closed is waited for after letting it go.
 fn set_driftlog(on: bool, stem: Option<&str>, file: &StatusFile) -> String {
     let Some(l) = &file.live else { return "ok".into() };
     if !on {
-        l.driftlog.lock().unwrap().off(livesvc::unix_now());
+        let closing = l.driftlog.lock().unwrap().off(livesvc::unix_now());
+        closing.wait();
         return "ok".into();
     }
-    // The file is made before taking the lock the worker writes under
     let dir = l.driftlog.lock().unwrap().dir.clone();
     let made = match stem {
         Some(stem) => DriftLog::create_named(&dir, stem),
         None => DriftLog::create(&dir, &local_stamp()),
     };
-    match made {
-        Ok(log) => format!("ok {}", l.driftlog.lock().unwrap().on(log, livesvc::unix_now()).display()),
+    match made.and_then(DriftLog::start) {
+        Ok(log) => {
+            let (path, closing) = l.driftlog.lock().unwrap().on(log, livesvc::unix_now());
+            closing.wait();
+            format!("ok {}", path.display())
+        }
         Err(e) => format!("err {DRIFTLOG_FAILED}: {e}"),
     }
 }
@@ -2747,6 +2753,15 @@ mod tests {
         assert!(ms > 0.1, "{json}");
     }
 
+    /// A test's folder, removed when this goes (also when the test fails).
+    struct RemoveDir(PathBuf);
+
+    impl Drop for RemoveDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// One command on a run folder's ctl.sock, as the panel sends it: its reply line.
     fn ctl(dir: &Path, command: &str) -> String {
         let mut stream = UnixStream::connect(dir.join(status::CTL_FILE)).unwrap();
@@ -2765,8 +2780,16 @@ mod tests {
             return;
         }
         let now = || eyecam::liveshm::clock_ns(libc::CLOCK_MONOTONIC);
-        let memory = Path::new("/dev/shm").join(format!("eyecam-preview-ctl-{}", std::process::id()));
-        let disk = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(".eyecam-preview-ctl-{}", std::process::id()));
+        let name = format!(".eyecam-preview-ctl-{}", std::process::id());
+        let memory = Path::new("/dev/shm").join(&name);
+        // A folder not on tmpfs: the temporary folder where it isn't (on the Frame it is), else beside the sources
+        // (a short path, for the socket), removed again even if the test fails
+        let disk = [std::env::temp_dir(), PathBuf::from(env!("CARGO_MANIFEST_DIR"))]
+            .into_iter()
+            .find(|d| !preview::on_tmpfs(d))
+            .expect("a folder not on tmpfs")
+            .join(&name);
+        let _gone = [RemoveDir(memory.clone()), RemoveDir(disk.clone())];
         for (dir, tmpfs) in [(&memory, true), (&disk, false)] {
             let _ = fs::remove_dir_all(dir);
             let shared = Arc::new(livesvc::Shared::default());
@@ -2801,6 +2824,7 @@ mod tests {
         }
         let dir = Path::new("/dev/shm").join(format!("eyecam-drift-ctl-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
+        let _gone = RemoveDir(dir.clone());
         let shared = Arc::new(livesvc::Shared::default());
         shared.driftlog.lock().unwrap().dir = dir.join("data").join(driftlog::DIR_NAME);
         let daemon = Daemon::start(&dir, Some(shared.clone())).unwrap();
@@ -2837,6 +2861,7 @@ mod tests {
         }
         let dir = Path::new("/dev/shm").join(format!("eyecam-drift-named-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
+        let _gone = RemoveDir(dir.clone());
         let shared = Arc::new(livesvc::Shared::default());
         shared.driftlog.lock().unwrap().dir = dir.join(driftlog::DIR_NAME);
         let daemon = Daemon::start(&dir, Some(shared.clone())).unwrap();

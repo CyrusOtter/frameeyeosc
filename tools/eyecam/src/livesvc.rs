@@ -487,18 +487,13 @@ impl Worker {
         let started = Instant::now();
         let mut o = self.engines[eye].process_open(img, pitch as f64, open as f64, t, &self.params[eye]);
         let processed = started.elapsed();
-        // The panel's eye preview: this frame halved, with where the pupil was found and looked for, when one is due
-        // (only while it is asked for; its own time, not live_ms)
-        let wanted = self.shared.preview_wanted(liveshm::clock_ns(libc::CLOCK_MONOTONIC));
-        let t_mono_now = (t_cam_ns as i64 + self.mono_minus_raw).max(0) as u64;
-        self.preview.frame(wanted, eye, img, &o, t, t_mono_now);
-        self.shared.preview_on.store(self.preview.is_on(), Ordering::Relaxed);
         let started = Instant::now();
         self.check_pupils(eye, t, &mut o);
         let share = self.pupil_seen[eye].push(t, o.f.ok_pupil);
         self.shared.pupil_share[eye].store((share as f32).to_bits(), Ordering::Relaxed);
         {
-            // The drift log, while on: what the engine just worked out, read only
+            // The drift log, while on: what the engine just worked out, read only. Only handed to its thread here (no
+            // disk under this lock; see driftlog::LiveLog)
             let mut drift = self.shared.driftlog.lock().unwrap();
             if drift.is_on() {
                 let p = driftlog::Probe::of(&self.engines[eye], &o, &self.params[eye], t, open as f64);
@@ -506,6 +501,14 @@ impl Worker {
             }
         }
         self.busy += processed + started.elapsed();
+        // The panel's eye preview: this frame halved, with where the pupil was found and looked for, when one is due
+        // (only while it is asked for; after the left / right pupil check, as the frame's values go out; its own time,
+        // not live_ms)
+        let img: &[u8] = if upside_down { &self.flipped } else { data };
+        let wanted = self.shared.preview_wanted(liveshm::clock_ns(libc::CLOCK_MONOTONIC));
+        let t_mono_now = (t_cam_ns as i64 + self.mono_minus_raw).max(0) as u64;
+        self.preview.frame(wanted, eye, img, &o, t, t_mono_now);
+        self.shared.preview_on.store(self.preview.is_on(), Ordering::Relaxed);
         self.busy_n += 1;
         self.frames[eye] += 1;
         if self.collect.is_some() {
@@ -942,8 +945,9 @@ pub fn spawn(
                 }
                 w.housekeeping();
             }
-            // The drift log's last part written and its file closed
-            w.shared.driftlog.lock().unwrap().off(unix_now());
+            // The drift log's last part written and its file closed (waited for once the lock is let go)
+            let closing = w.shared.driftlog.lock().unwrap().off(unix_now());
+            closing.wait();
         })
         .map_err(|e| e.to_string())?;
     Ok((tx, handle))
@@ -1091,8 +1095,10 @@ mod tests {
         let path = {
             let mut c = shared.driftlog.lock().unwrap();
             c.dir = dir.join(driftlog::DIR_NAME);
-            let log = driftlog::DriftLog::create(&c.dir, "test").unwrap();
-            c.on(log, 1.0)
+            let log = driftlog::DriftLog::create(&c.dir, "test").unwrap().start().unwrap();
+            let (path, closing) = c.on(log, 1.0);
+            closing.wait();
+            path
         };
         // 2.5 s of made-up frames (no eye in them), Valve's openness 0.8 on the left and 0.6 on the right
         let frame: Vec<u8> = (0..W * H).map(|i| (40 + (i % W) / 4) as u8).collect();

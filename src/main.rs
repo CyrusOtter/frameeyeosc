@@ -8077,6 +8077,17 @@ mod tests {
         variance: impl Fn(usize) -> f32,
         cam: std::ops::Range<usize>,
     ) -> Vec<Sample> {
+        doubt_samples_with_gaps(settings, openness, variance, cam, 0..0)
+    }
+
+    /// As doubt_samples, with the camera's values of the left eye stale (none to use) over `gap`.
+    fn doubt_samples_with_gaps(
+        settings: &Settings,
+        openness: impl Fn(usize) -> [f32; 2],
+        variance: impl Fn(usize) -> f32,
+        cam: std::ops::Range<usize>,
+        gap: std::ops::Range<usize>,
+    ) -> Vec<Sample> {
         let mut smoother = Smoother::new(settings);
         (0..450)
             .map(|i| {
@@ -8089,10 +8100,47 @@ mod tests {
                     ..EyeData::default()
                 };
                 let closed = cam.contains(&i);
-                let camera = camera_eyes([(if closed { 0.0 } else { 0.75 }, 0.0, closed), (0.75, 0.0, false)]);
+                let mut camera = camera_eyes([(if closed { 0.0 } else { 0.75 }, 0.0, closed), (0.75, 0.0, false)]);
+                camera.fresh[0] = !gap.contains(&i);
                 process(settings, &mut smoother, [1.0; 2], &data, Some(&camera))
             })
             .collect()
+    }
+
+    #[test]
+    fn a_gap_in_the_cameras_values_starts_the_doubt_over() {
+        let settings = camera_settings();
+        let sure = |_| 0.001;
+        // The camera's left eye values stale for 33 ms (3 samples) 1.2 s into its 3.3 s closed, after it was taken as
+        // open. Through the gap the eye server's open eyelid; after it the camera's "closed" is a new stretch, closed
+        // for CAMERA_CLOSED_DOUBT_S again before it is doubted again. (Kept so: the gap is a moment the camera's word
+        // can't be checked, and its "closed" afterwards is taken as a new one, like any other.)
+        let sent = doubt_samples_with_gaps(&settings, |_| [0.9; 2], sure, 90..390, 198..201);
+        assert!(sent[170..198].iter().all(|sample| sample.lids[0] > 0.7 && sample.closed_overruled[0]), "{:?}", sent[190].lids);
+        assert!(sent[198..201].iter().all(|sample| sample.lids[0] > 0.7 && !sample.closed_overruled[0]), "{:?}", sent[199].lids);
+        assert!(sent[201..246].iter().all(|sample| sample.lids[0] == 0.0 && !sample.closed_overruled[0]), "{:?}", sent[240].lids);
+        assert_eq!(sent[201].lid_from[0], LidFrom::CameraClosed);
+        assert!(sent[248..390].iter().all(|sample| sample.closed_overruled[0]), "{:?}", sent[248].closed_overruled);
+        assert!(sent[280..390].iter().all(|sample| sample.lids[0] > 0.7), "{:?}", sent[280].lids);
+    }
+
+    #[test]
+    fn the_other_eyes_blink_does_not_close_an_eye_whose_closed_is_doubted() {
+        let settings = camera_settings();
+        let sure = |_| 0.001;
+        // The eye server reads a 0.1 s blink of the right eye only, 2 s into the camera's 3.3 s closed of the left eye
+        // (taken as open by then): the right eye closes for it, the left one stays open (its "closed" began long
+        // before the blink, see blink_with_other)
+        let wink = |i: usize| if (270..279).contains(&i) { [0.9, 0.05] } else { [0.9; 2] };
+        let sent = doubt_samples(&settings, wink, sure, 90..390);
+        assert!(sent[272..279].iter().all(|sample| sample.lids[1] == 0.0), "{:?}", sent[275].lids);
+        assert!(sent[170..390].iter().all(|sample| sample.lids[0] > 0.7 && sample.closed_overruled[0]), "{:?}", sent[275].lids);
+        // Both eyes' blink, read by the eye server: closes the left eye too, and its "closed" stands to its end (the eye
+        // server read it closing in it)
+        let blink = |i: usize| if (270..279).contains(&i) { [0.05; 2] } else { [0.9; 2] };
+        let sent = doubt_samples(&settings, blink, sure, 90..390);
+        assert!(sent[272..279].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", sent[275].lids);
+        assert!(sent[272..390].iter().all(|sample| sample.lids[0] == 0.0), "{:?}", sent[300].lids);
     }
 
     #[test]

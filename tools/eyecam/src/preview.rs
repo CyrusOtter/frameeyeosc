@@ -447,9 +447,9 @@ mod tests {
 
     #[test]
     fn the_run_folder_must_be_tmpfs() {
-        // /dev/shm is tmpfs on every Linux this runs on; the working folder (the source tree) is not
+        // /dev/shm is tmpfs on every Linux this runs on; /proc never is (proc), wherever the sources are
         assert!(on_tmpfs(Path::new("/dev/shm")));
-        assert!(!on_tmpfs(Path::new(env!("CARGO_MANIFEST_DIR"))));
+        assert!(!on_tmpfs(Path::new("/proc")));
         assert!(!on_tmpfs(Path::new("/nonexistent/x")));
     }
 }

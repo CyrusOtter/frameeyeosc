@@ -7,13 +7,17 @@
 //! A row is the frames of one eye within one second of camera time (a new wear or the log closing ends one early):
 //! shares are over its frames, positions and levels are medians over its frames, references are their values on its
 //! last frame. The file is written through a buffer and closed when the log is turned off or eyecam-rec exits; past
-//! CAP_BYTES it stops writing (`full` in status.json).
+//! CAP_BYTES it stops writing (`full` in status.json). Live, a thread of its own takes the frames and writes the file
+//! (LiveLog), so the live worker never waits on the disk.
 
 use crate::live::{self, EyeEngine, Out, Params, WearState};
 use crate::vision;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
 
 /// A file is not written past this many bytes (about a day at both eyes' rows a second).
 pub const CAP_BYTES: u64 = 50 << 20;
@@ -262,20 +266,26 @@ impl DriftLog {
         Self::create_as(dir, stem, ".eyecam.csv")
     }
 
-    /// A new file `<name><ext>` (or `<name>_<k><ext>`) in `dir`.
+    /// A new file `<name><ext>` (or `<name>_<k><ext>`) in `dir`, mode 0600 (`dir` 0700, also one that was there before
+    /// with a looser mode).
     fn create_as(dir: &Path, name: &str, ext: &str) -> Result<Self, String> {
         let made = !dir.exists();
-        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        if made {
+        let at = |e: std::io::Error| format!("{}: {e}", dir.display());
+        fs::create_dir_all(dir).map_err(at)?;
+        let mode = fs::metadata(dir).map_err(at)?.permissions().mode() & 0o777;
+        if made || mode & 0o077 != 0 {
             // Its mode set outright: the process umask is briefly 0177 while eyecam-rec binds a socket (bind_private)
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|e| format!("{}: {e}", dir.display()))?;
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(at)?;
         }
         for k in 1..100 {
             let file = if k == 1 { format!("{name}{ext}") } else { format!("{name}_{k}{ext}") };
             let path = dir.join(file);
-            match File::options().write(true).create_new(true).open(&path) {
-                Ok(f) => return Ok(Self::new(path, BufWriter::new(f), CAP_BYTES)),
+            match File::options().write(true).create_new(true).mode(0o600).open(&path) {
+                Ok(f) => {
+                    // (and set outright too, whatever the umask)
+                    f.set_permissions(fs::Permissions::from_mode(0o600)).map_err(|e| format!("{}: {e}", path.display()))?;
+                    return Ok(Self::new(path, BufWriter::new(f), CAP_BYTES));
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             }
@@ -379,19 +389,95 @@ impl<W: Write> DriftLog<W> {
     }
 }
 
-/// The drift log of `eyecam-rec --serve`: turned on and off from ctl.sock, fed by the live worker.
+/// What the live worker hands a LiveLog's thread.
+enum Msg {
+    Frame(usize, Probe, f64),
+    /// Turned off at this wall clock: the last part written and the file closed.
+    Finish(f64),
+    /// Answered once everything sent before it is done (tests).
+    #[cfg(test)]
+    Sync(mpsc::Sender<()>),
+}
+
+/// A drift log written by a thread of its own: the live worker only hands it each frame over a channel (under
+/// Shared::driftlog's lock), and the thread does the rest, the file's writes and its closing among them, so a slow disk
+/// never holds the worker up (held up, it drops camera frames once its queue of 16 is full).
+pub struct LiveLog {
+    path: PathBuf,
+    tx: mpsc::Sender<Msg>,
+    /// Its status, kept up by the thread.
+    status: Arc<Mutex<DriftStatus>>,
+    thread: JoinHandle<()>,
+}
+
+impl DriftLog {
+    /// This log written by a thread of its own (see LiveLog).
+    pub fn start(mut self) -> Result<LiveLog, String> {
+        let path = self.path.clone();
+        let status = Arc::new(Mutex::new(self.status(true)));
+        let shared = status.clone();
+        let (tx, rx) = mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("eyecam-driftlog".into())
+            .spawn(move || {
+                // (what the status was last set from: rows, bytes, full, and whether it has an error)
+                let mut seen = (self.rows, self.bytes, self.full, self.error.is_empty());
+                let mut wall_end = f64::NAN;
+                for msg in rx {
+                    match msg {
+                        Msg::Frame(eye, p, wall_unix) => self.push(eye, &p, wall_unix),
+                        Msg::Finish(wall_unix) => {
+                            wall_end = wall_unix;
+                            break;
+                        }
+                        #[cfg(test)]
+                        Msg::Sync(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                    let now = (self.rows, self.bytes, self.full, self.error.is_empty());
+                    if now != seen {
+                        seen = now;
+                        *shared.lock().unwrap() = self.status(true);
+                    }
+                }
+                // Turned off, or dropped without that (eyecam-rec ending): the last part written either way
+                self.finish(wall_end);
+                eprintln!("driftlog: closed {} ({} rows, {} bytes)", self.path.display(), self.rows, self.bytes);
+                *shared.lock().unwrap() = self.status(false);
+            })
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(LiveLog { path, tx, status, thread })
+    }
+}
+
+/// A live log being closed by its thread: `wait` for it once Shared::driftlog's lock is let go (this waits on the
+/// disk).
+#[must_use = "wait for the file to be closed, after letting go of the lock"]
+pub struct Closing(Option<JoinHandle<()>>);
+
+impl Closing {
+    pub fn wait(self) {
+        if let Some(thread) = self.0 {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// The drift log of `eyecam-rec --serve`: turned on and off from ctl.sock, fed by the live worker. Nothing here waits
+/// on the disk (see LiveLog), so the worker's frames never wait behind `on` / `off` either.
 pub struct Control {
     /// Where files go (`<data folder>/drift`).
     pub dir: PathBuf,
-    log: Option<DriftLog>,
-    /// The last file's status after it was turned off.
-    last: DriftStatus,
+    log: Option<LiveLog>,
+    /// The status of the file being written, or of the last one once it was turned off.
+    status: Arc<Mutex<DriftStatus>>,
 }
 
 impl Default for Control {
     fn default() -> Self {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-        Self { dir: home.join("eyecam").join(DIR_NAME), log: None, last: DriftStatus::default() }
+        Self { dir: home.join("eyecam").join(DIR_NAME), log: None, status: Arc::default() }
     }
 }
 
@@ -400,32 +486,43 @@ impl Control {
         self.log.is_some()
     }
 
-    /// Start a new file (closing the one being written, if any): its path.
-    pub fn on(&mut self, log: DriftLog, wall_unix: f64) -> PathBuf {
-        self.off(wall_unix);
-        let path = log.path().to_path_buf();
-        eprintln!("driftlog: writing {}", path.display());
+    /// Start a new file (closing the one being written, if any): its path, and the closing of the one before.
+    pub fn on(&mut self, log: LiveLog, wall_unix: f64) -> (PathBuf, Closing) {
+        let before = self.off(wall_unix);
+        eprintln!("driftlog: writing {}", log.path.display());
+        let path = log.path.clone();
+        self.status = log.status.clone();
         self.log = Some(log);
-        path
+        (path, before)
     }
 
-    /// Close the file being written (nothing when off).
-    pub fn off(&mut self, wall_unix: f64) {
-        if let Some(mut log) = self.log.take() {
-            log.finish(wall_unix);
-            eprintln!("driftlog: closed {} ({} rows, {} bytes)", log.path().display(), log.rows, log.bytes);
-            self.last = log.status(false);
-        }
+    /// Close the file being written (nothing when off): its closing.
+    pub fn off(&mut self, wall_unix: f64) -> Closing {
+        Closing(self.log.take().map(|log| {
+            let _ = log.tx.send(Msg::Finish(wall_unix));
+            log.thread
+        }))
     }
 
     pub fn push(&mut self, eye: usize, p: &Probe, wall_unix: f64) {
-        if let Some(log) = self.log.as_mut() {
-            log.push(eye, p, wall_unix);
+        if let Some(log) = &self.log {
+            let _ = log.tx.send(Msg::Frame(eye, *p, wall_unix));
         }
     }
 
     pub fn status(&self) -> DriftStatus {
-        self.log.as_ref().map_or_else(|| self.last.clone(), |l| l.status(true))
+        DriftStatus { on: self.is_on(), ..self.status.lock().unwrap().clone() }
+    }
+
+    /// Wait until the frames pushed so far are written (tests; with the worker running, let go of the lock first).
+    #[cfg(test)]
+    pub(crate) fn sync(&self) {
+        if let Some(log) = &self.log {
+            let (done, wait) = mpsc::channel();
+            if log.tx.send(Msg::Sync(done)).is_ok() {
+                let _ = wait.recv();
+            }
+        }
     }
 }
 
@@ -604,21 +701,25 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let mut c = Control { dir: dir.join(DIR_NAME), ..Control::default() };
         assert_eq!(c.status(), DriftStatus::default());
-        let a = c.on(DriftLog::create(&c.dir, "2026-10-12_10-00-00").unwrap(), 1.0);
+        let start = |c: &Control, stamp: &str| DriftLog::create(&c.dir, stamp).unwrap().start().unwrap();
+        let (a, closing) = c.on(start(&c, "2026-10-12_10-00-00"), 1.0);
+        closing.wait();
         assert!(a.ends_with("drift/drift_2026-10-12_10-00-00.csv"), "{}", a.display());
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(fs::metadata(&c.dir).unwrap().permissions().mode() & 0o777, 0o700);
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode(&c.dir), mode(&a)), (0o700, 0o600));
         for k in 0..100 {
             c.push(1, &probe(100.0, 90.0, k), 2.0);
         }
-        assert!(c.status().on && c.status().rows == 1);
+        c.sync();
+        assert!(c.status().on && c.status().rows == 1, "{:?}", c.status());
         // `on` again in the same second: a second file, the first one closed with its last part
-        let b = c.on(DriftLog::create(&c.dir, "2026-10-12_10-00-00").unwrap(), 3.0);
+        let (b, closing) = c.on(start(&c, "2026-10-12_10-00-00"), 3.0);
+        closing.wait();
         assert!(b.ends_with("drift_2026-10-12_10-00-00_2.csv"), "{}", b.display());
         let first = fs::read_to_string(&a).unwrap();
         assert_eq!(first.lines().count(), 3, "{first}");
         assert!(first.lines().nth(2).unwrap().starts_with("3.000,101.100,R,0,11.1,10,"), "{first}");
-        c.off(4.0);
+        c.off(4.0).wait();
         let st = c.status();
         assert!(!st.on && st.path == b.display().to_string() && st.rows == 0, "{st:?}");
         assert_eq!(fs::read_to_string(&b).unwrap(), format!("{HEADER}\n"));
@@ -653,16 +754,67 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("eyecam-driftlog-named-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let mut c = Control { dir: dir.join(DIR_NAME), ..Control::default() };
-        let a = c.on(DriftLog::create_named(&c.dir, "eyes_2026-10-12_14-03-09").unwrap(), 1.0);
+        let start = |c: &Control| DriftLog::create_named(&c.dir, "eyes_2026-10-12_14-03-09").unwrap().start().unwrap();
+        let (a, closing) = c.on(start(&c), 1.0);
+        closing.wait();
         assert!(a.ends_with("drift/eyes_2026-10-12_14-03-09.eyecam.csv"), "{}", a.display());
         for k in 0..100 {
             c.push(0, &probe(100.0, 90.0, k), 2.0);
         }
-        let b = c.on(DriftLog::create_named(&c.dir, "eyes_2026-10-12_14-03-09").unwrap(), 3.0);
+        let (b, closing) = c.on(start(&c), 3.0);
+        closing.wait();
         assert!(b.ends_with("drift/eyes_2026-10-12_14-03-09_2.eyecam.csv"), "{}", b.display());
         assert_eq!(fs::read_to_string(&a).unwrap().lines().count(), 3, "closed with its last part");
         assert!(c.status().on && c.status().path == b.display().to_string());
-        c.off(4.0);
+        c.off(4.0).wait();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A drift/ folder that was there before with a looser mode is made 0700; the files are 0600 whatever the umask
+    /// (the usual 022 would give 0644).
+    #[test]
+    fn the_folder_and_files_are_private() {
+        let dir = std::env::temp_dir().join(format!("eyecam-driftlog-mode-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let log = DriftLog::create(&dir, "2026-10-12_10-00-00").unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode(&dir), mode(log.path())), (0o700, 0o600));
+        drop(log);
+        // One that is already private is left as it is
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(DriftLog::create(&dir, "x").is_err(), "not writable: refused");
+        assert_eq!(mode(&dir), 0o500);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Live, the thread writes what the worker hands it: a frame path that only sends, the rows and the status as the
+    /// file has them, and the last part written when the log is dropped without `off` (eyecam-rec ending).
+    #[test]
+    fn a_live_log_is_written_by_its_own_thread() {
+        let dir = std::env::temp_dir().join(format!("eyecam-driftlog-live-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut c = Control { dir: dir.join(DIR_NAME), ..Control::default() };
+        let (path, closing) = c.on(DriftLog::create(&c.dir, "live").unwrap().start().unwrap(), 1.0);
+        closing.wait();
+        for s in 0..3 {
+            for k in 0..90 {
+                c.push(0, &probe(100.0 + s as f64, 90.0, k), 2.0);
+            }
+        }
+        c.sync();
+        let st = c.status();
+        assert!(st.on && st.rows == 2 && st.path == path.display().to_string(), "{st:?}");
+        // Dropped while on: the thread still writes the last second and closes the file
+        let thread = c.log.take().map(|log| log.thread).unwrap();
+        thread.join().unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 1 + 3, "{text}");
+        assert!(text.lines().nth(3).unwrap().starts_with(",102.989,L,0,13.0,90,"), "{text}");
+        let st = c.status();
+        assert!(!st.on && st.rows == 3 && st.bytes == text.len() as u64, "{st:?}");
         fs::remove_dir_all(&dir).unwrap();
     }
 }
