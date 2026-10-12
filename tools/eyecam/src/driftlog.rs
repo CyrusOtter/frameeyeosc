@@ -252,6 +252,17 @@ impl DriftLog {
     /// A new file `drift_<stamp>.csv` in `dir` (made if missing, 0700; `_2`, `_3`, ... if that name is taken), its
     /// header written.
     pub fn create(dir: &Path, stamp: &str) -> Result<Self, String> {
+        Self::create_as(dir, &format!("drift_{stamp}"), ".csv")
+    }
+
+    /// A new file for the panel's eye log `stem` (`eyes_YYYY-MM-DD_HH-MM-SS`, see is_eye_log_stem): `<stem>.eyecam.csv`
+    /// in `dir`, made as `create` makes its files (`<stem>_2.eyecam.csv`, ... if that name is taken).
+    pub fn create_named(dir: &Path, stem: &str) -> Result<Self, String> {
+        Self::create_as(dir, stem, ".eyecam.csv")
+    }
+
+    /// A new file `<name><ext>` (or `<name>_<k><ext>`) in `dir`.
+    fn create_as(dir: &Path, name: &str, ext: &str) -> Result<Self, String> {
         let made = !dir.exists();
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         if made {
@@ -260,16 +271,24 @@ impl DriftLog {
             fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         for k in 1..100 {
-            let name = if k == 1 { format!("drift_{stamp}.csv") } else { format!("drift_{stamp}_{k}.csv") };
-            let path = dir.join(name);
+            let file = if k == 1 { format!("{name}{ext}") } else { format!("{name}_{k}{ext}") };
+            let path = dir.join(file);
             match File::options().write(true).create_new(true).open(&path) {
                 Ok(f) => return Ok(Self::new(path, BufWriter::new(f), CAP_BYTES)),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             }
         }
-        Err(format!("{}: too many drift_{stamp}*.csv", dir.display()))
+        Err(format!("{}: too many {name}*{ext}", dir.display()))
     }
+}
+
+/// Whether `stem` is a panel eye log's name as `driftlog on <stem>` takes it: `eyes_YYYY-MM-DD_HH-MM-SS`, digits where
+/// the pattern has them and nothing else, so it can never name a path.
+pub fn is_eye_log_stem(stem: &str) -> bool {
+    const PATTERN: &[u8] = b"eyes_9999-99-99_99-99-99";
+    stem.len() == PATTERN.len()
+        && stem.bytes().zip(PATTERN).all(|(c, &p)| if p == b'9' { c.is_ascii_digit() } else { c == p })
 }
 
 impl<W: Write> DriftLog<W> {
@@ -602,6 +621,46 @@ mod tests {
         assert!(!st.on && st.path == b.display().to_string() && st.rows == 0, "{st:?}");
         assert_eq!(fs::read_to_string(&b).unwrap(), format!("{HEADER}\n"));
         assert!(st.to_json().starts_with("{\"on\":false,\"path\":\""), "{}", st.to_json());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_eye_log_stem_is_only_the_panels_name() {
+        assert!(is_eye_log_stem("eyes_2026-10-12_14-03-09"));
+        for bad in [
+            "",
+            "eyes_",
+            "eyes_2026-10-12_14-03-0",
+            "eyes_2026-10-12_14-03-090",
+            "eyes_2026-10-12_14-03-09_2",
+            "eyes_2026-10-12 14-03-09",
+            "eyes_2026/10/12_14-03-09",
+            "eyes_2026-1a-12_14-03-09",
+            "drift_2026-10-12_14-03-09",
+            "../eyes_2026-10-12_14-03",
+            "eyes_２026-10-12_14-03-09",
+        ] {
+            assert!(!is_eye_log_stem(bad), "{bad}");
+        }
+    }
+
+    /// `on` with the eye log's name: `<stem>.eyecam.csv`, `_2` before `.eyecam.csv` when taken; `on` again while on
+    /// closes the first file.
+    #[test]
+    fn named_files_follow_the_eye_log() {
+        let dir = std::env::temp_dir().join(format!("eyecam-driftlog-named-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut c = Control { dir: dir.join(DIR_NAME), ..Control::default() };
+        let a = c.on(DriftLog::create_named(&c.dir, "eyes_2026-10-12_14-03-09").unwrap(), 1.0);
+        assert!(a.ends_with("drift/eyes_2026-10-12_14-03-09.eyecam.csv"), "{}", a.display());
+        for k in 0..100 {
+            c.push(0, &probe(100.0, 90.0, k), 2.0);
+        }
+        let b = c.on(DriftLog::create_named(&c.dir, "eyes_2026-10-12_14-03-09").unwrap(), 3.0);
+        assert!(b.ends_with("drift/eyes_2026-10-12_14-03-09_2.eyecam.csv"), "{}", b.display());
+        assert_eq!(fs::read_to_string(&a).unwrap().lines().count(), 3, "closed with its last part");
+        assert!(c.status().on && c.status().path == b.display().to_string());
+        c.off(4.0);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

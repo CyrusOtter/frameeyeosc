@@ -239,6 +239,13 @@ Status parseStatus(const std::string& text, double mtime) {
     status.lastError = readText(root, "last_error");
     status.lastErrorEn = readText(root, "last_error_en");
     status.lastErrorUnix = readNumber(root, "last_error_unix", 0.0);
+    // The drift log (missing on an older eyecam-rec: the eye log doesn't ask for it)
+    if (const JsonValue* drift = root.get("driftlog"); drift != nullptr && drift->isObject()) {
+        status.hasDriftlog = true;
+        const JsonValue* on = drift->get("on");
+        status.driftlogOn = on != nullptr && on->isBool() && on->boolean;
+        status.driftlogPath = readText(*drift, "path");
+    }
     return status;
 }
 
@@ -767,8 +774,9 @@ Reply parseReply(const std::string& line, const std::string& command) {
     while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) text.pop_back();
     Reply reply;
     reply.command = command;
-    if (text == "ok") {
+    if (text == "ok" || text.rfind("ok ", 0) == 0) {
         reply.ok = true;
+        reply.detail = text.size() > 3 ? text.substr(3) : std::string();
         return reply;
     }
     if (text == "err" || text.rfind("err ", 0) == 0) {

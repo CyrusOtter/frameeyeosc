@@ -657,10 +657,11 @@ fn set_preview(on: bool, file: &StatusFile) -> String {
     "ok".into()
 }
 
-/// `driftlog on` / `driftlog off`: the drift log, done here in every state (the live worker writes the rows while frames
-/// come). `on` starts a new file in <data folder>/drift (closing one being written) and says where; `off` closes it.
-/// The fake daemon (no live engine) says ok and writes none.
-fn set_driftlog(on: bool, file: &StatusFile) -> String {
+/// `driftlog on [<stem>]` / `driftlog off`: the drift log, done here in every state (the live worker writes the rows
+/// while frames come). `on` starts a new file in <data folder>/drift (closing one being written) and says where:
+/// `<stem>.eyecam.csv` for the panel's eye log `stem`, else `drift_<time>.csv`; `off` closes it. The fake daemon (no
+/// live engine) says ok and writes none.
+fn set_driftlog(on: bool, stem: Option<&str>, file: &StatusFile) -> String {
     let Some(l) = &file.live else { return "ok".into() };
     if !on {
         l.driftlog.lock().unwrap().off(livesvc::unix_now());
@@ -668,7 +669,11 @@ fn set_driftlog(on: bool, file: &StatusFile) -> String {
     }
     // The file is made before taking the lock the worker writes under
     let dir = l.driftlog.lock().unwrap().dir.clone();
-    match DriftLog::create(&dir, &local_stamp()) {
+    let made = match stem {
+        Some(stem) => DriftLog::create_named(&dir, stem),
+        None => DriftLog::create(&dir, &local_stamp()),
+    };
+    match made {
         Ok(log) => format!("ok {}", l.driftlog.lock().unwrap().on(log, livesvc::unix_now()).display()),
         Err(e) => format!("err {DRIFTLOG_FAILED}: {e}"),
     }
@@ -693,7 +698,8 @@ fn ctl_reply(stream: &UnixStream, status: &Mutex<Status>, file: &StatusFile, tx:
         }
         Ok(Command::SetWidenSensitivity(v)) => set_widen_sensitivity(v, status, file),
         Ok(Command::Preview(on)) => set_preview(on, file),
-        Ok(Command::DriftLog(on)) => set_driftlog(on, file),
+        Ok(Command::DriftLogOn(stem)) => set_driftlog(true, stem.as_deref(), file),
+        Ok(Command::DriftLogOff) => set_driftlog(false, None, file),
         Ok(command) => {
             let (reply, rx) = mpsc::channel();
             if tx.send(Request { command, reply }).is_err() {
@@ -975,7 +981,7 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                     continue;
                 }
                 // Answered by the control thread; never sent here.
-                Command::SetWidenSensitivity(_) | Command::Preview(_) | Command::DriftLog(_) => {
+                Command::SetWidenSensitivity(_) | Command::Preview(_) | Command::DriftLogOn(_) | Command::DriftLogOff => {
                     answer(req, "ok");
                     continue;
                 }
@@ -2815,6 +2821,50 @@ mod tests {
         let reply = ctl(&dir, "driftlog on");
         assert!(reply.starts_with(&format!("err {DRIFTLOG_FAILED}: ")), "{reply}");
         assert!(!eyecam::message_en::message_en(reply.strip_prefix("err ").unwrap()).contains("記録"), "{reply}");
+        daemon.finish();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `driftlog on <stem>` (the panel's eye log): `<stem>.eyecam.csv` in drift/; `on` again while on closes that file
+    /// and starts the next (`_2` for the same name); a name that isn't an eye log's is refused, in both languages.
+    #[test]
+    fn the_drift_log_takes_the_eye_logs_name() {
+        if unsafe { libc::getuid() } != proto::USER_UID {
+            eprintln!("skipped: ctl.sock answers only uid {}", proto::USER_UID);
+            return;
+        }
+        let dir = Path::new("/dev/shm").join(format!("eyecam-drift-named-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let shared = Arc::new(livesvc::Shared::default());
+        shared.driftlog.lock().unwrap().dir = dir.join(driftlog::DIR_NAME);
+        let daemon = Daemon::start(&dir, Some(shared.clone())).unwrap();
+        let reply = ctl(&dir, "driftlog on eyes_2026-10-12_14-03-09");
+        let a = dir.join("drift/eyes_2026-10-12_14-03-09.eyecam.csv");
+        assert_eq!(reply, format!("ok {}", a.display()));
+        let reply = ctl(&dir, "driftlog on eyes_2026-10-12_14-03-09");
+        let b = dir.join("drift/eyes_2026-10-12_14-03-09_2.eyecam.csv");
+        assert_eq!(reply, format!("ok {}", b.display()));
+        // The first one closed (its header written out), the second one on
+        assert_eq!(fs::read_to_string(&a).unwrap(), format!("{}\n", driftlog::HEADER));
+        let json = fs::read_to_string(dir.join(status::STATUS_FILE)).unwrap();
+        assert!(json.contains(&format!("\"driftlog\":{{\"on\":true,\"path\":\"{}\",", b.display())), "{json}");
+        // A plain `on` while on: drift_<time>.csv, as before
+        let reply = ctl(&dir, "driftlog on");
+        let c = PathBuf::from(reply.strip_prefix("ok ").unwrap_or_else(|| panic!("{reply}")));
+        assert!(c.file_name().unwrap().to_str().unwrap().starts_with("drift_"), "{reply}");
+        assert_eq!(fs::read_to_string(&b).unwrap(), format!("{}\n", driftlog::HEADER));
+        for bad in ["driftlog on eyes_2026-10-12_14-03-09_2", "driftlog on ../x", "driftlog on eyes_x"] {
+            let reply = ctl(&dir, bad);
+            assert_eq!(reply, format!("err {}", status::DRIFTLOG_BAD_NAME), "{bad}");
+            assert_eq!(
+                eyecam::message_en::message_en(reply.strip_prefix("err ").unwrap()),
+                "The drift log's name must be eyes_YYYY-MM-DD_HH-MM-SS"
+            );
+        }
+        // (still on: the refused ones changed nothing)
+        let json = fs::read_to_string(dir.join(status::STATUS_FILE)).unwrap();
+        assert!(json.contains(&format!("\"driftlog\":{{\"on\":true,\"path\":\"{}\",", c.display())), "{json}");
+        assert_eq!(ctl(&dir, "driftlog off"), "ok");
         daemon.finish();
         fs::remove_dir_all(&dir).unwrap();
     }

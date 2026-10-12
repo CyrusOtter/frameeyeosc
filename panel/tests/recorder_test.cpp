@@ -1,5 +1,5 @@
-// Tests for the eye log (recorder.cpp): names, and starting, stopping and reaping a child that stands in for
-// `frameeyeosc --record`. Built with the panel as recorder-test; exits non-zero on failure. Given the path of a real
+// Tests for the eye log (recorder.cpp): names, starting, stopping and reaping a child that stands in for
+// `frameeyeosc --record`, the panel's own lines in its .log, and the commands that keep eyecam's drift log alongside it. Built with the panel as recorder-test; exits non-zero on failure. Given the path of a real
 // frameeyeosc, it also records a few seconds with it (reads the eye server read-only) and checks the CSV:
 //   panel/build/recorder-test target/release/frameeyeosc
 // Files go to a folder made under the current one, removed at the end.
@@ -153,11 +153,34 @@ void testChild(const std::string& dir) {
         CHECK(read(base + ".log").find("Stopped: 3 samples") != std::string::npos);
     }
     {
+        // The panel's own line in the .log (the drift log's file), kept between the child's lines before and after it
+        Recorder r;
+        CHECK(r.start(good, dir + "/out8", config, now()));
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        r.note("eyecam drift log: /home/steamos/eyecam/drift/eyes_x.eyecam.csv");
+        r.stop(now());
+        CHECK(waitReaped(r));
+        const std::string log = read(r.view(now()).path.substr(0, r.view(now()).path.size() - 4) + ".log");
+        const size_t recording = log.find("Recording to ");
+        const size_t note = log.find("[panel] eyecam drift log: /home/steamos/eyecam/drift/eyes_x.eyecam.csv\n");
+        const size_t stopped = log.find("Stopped: 3 samples");
+        CHECK(recording != std::string::npos && note != std::string::npos && stopped != std::string::npos);
+        CHECK(recording < note && note < stopped);
+    }
+    {
         // Ends by itself (no eye server): its last words are the error
         const std::string failing = dir + "/failing.sh";
         script(failing, "echo \"Recording to $2\" >&2\necho 'Error: the eye server is not running' >&2\nexit 1\n");
         Recorder r;
         CHECK(r.start(failing, dir + "/out2", config, now()));
+        CHECK(waitReaped(r));
+        CHECK(r.view(now()).error == "the eye server is not running");
+        // ...the panel's own line after them is not
+        const std::string quiet = dir + "/quiet.sh";
+        script(quiet, "echo 'Error: the eye server is not running' >&2\nsleep 0.3\nexit 1\n");
+        CHECK(r.start(quiet, dir + "/out2", config, now()));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        r.note("eyecam drift log: /home/steamos/eyecam/drift/eyes_x.eyecam.csv");
         CHECK(waitReaped(r));
         CHECK(r.view(now()).error == "the eye server is not running");
         // Silent: the exit code
@@ -249,6 +272,177 @@ void testChild(const std::string& dir) {
     }
 }
 
+void testDriftNames() {
+    CHECK(recorder::driftStem("/x/recordings/eyes_2026-10-12_14-03-09.csv") == "eyes_2026-10-12_14-03-09");
+    // A second recording in the same second: eyecam adds its own _2
+    CHECK(recorder::driftStem("/x/eyes_2026-10-12_14-03-09_2.csv") == "eyes_2026-10-12_14-03-09");
+    for (const char* odd : {"", "/x/eyes_2026-10-12_14-03-09.log", "/x/eyes_2026-10-12_14-03.csv",
+                            "/x/eyes_2026-10-12_14-03-09_.csv", "/x/eyes_2026-10-12_14-03-09_a.csv",
+                            "/x/drift_2026-10-12_14-03-09.csv", "/x/eyes_2026-10-12_14-03-09x.csv"}) {
+        CHECK(recorder::driftStem(odd).empty());
+    }
+    CHECK(recorder::panelDriftFile("/home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv"));
+    CHECK(recorder::panelDriftFile("/home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09_2.eyecam.csv"));
+    CHECK(!recorder::panelDriftFile("/home/steamos/eyecam/drift/drift_2026-10-12_14-03-09.csv"));
+    CHECK(!recorder::panelDriftFile("/home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.csv"));
+    CHECK(!recorder::panelDriftFile(""));
+}
+
+/**
+ * The commands a drift link sends over a sequence of loops.
+ */
+struct DriftRun {
+    recorder::DriftLink link;
+    recorder::DriftInputs in;
+
+    /**
+     * One loop.
+     * @param busy a command is still out
+     * @return the command sent, "" for none
+     */
+    std::string step(bool busy = false) {
+        std::string command;
+        return link.next(in, busy, command) ? command : std::string();
+    }
+};
+
+void testDriftLink() {
+    const std::string stem = "eyes_2026-10-12_14-03-09";
+    const std::string ours = "/home/steamos/eyecam/drift/" + stem + ".eyecam.csv";
+    const std::string byHand = "/home/steamos/eyecam/drift/drift_2026-10-12_13-00-00.csv";
+    // eyecam-rec running with the cameras in use and a drift log it can keep
+    const auto ready = [](recorder::DriftInputs& in) {
+        in.eyecamRunning = in.camerasInUse = in.hasDriftlog = true;
+    };
+    {
+        // On once the recording starts, once only; off when it ends (stopped, failed or at its limit: all the same)
+        DriftRun d;
+        ready(d.in);
+        CHECK(d.step().empty());
+        d.in.recording = true;
+        d.in.stem = stem;
+        CHECK(d.step(true).empty());  // (waits while another command is out)
+        CHECK(d.step() == "driftlog on " + stem && d.link.on() == stem);
+        d.in.driftlogOn = true;
+        d.in.driftlogPath = ours;
+        CHECK(d.step().empty() && d.step().empty());
+        d.in.recording = false;
+        CHECK(d.step(true).empty());
+        CHECK(d.step() == "driftlog off" && d.link.on().empty());
+        d.in.driftlogOn = false;
+        CHECK(d.step().empty());
+        // The next recording: on again with its own name
+        d.in.recording = true;
+        d.in.stem = "eyes_2026-10-12_15-00-00";
+        CHECK(d.step() == "driftlog on eyes_2026-10-12_15-00-00");
+        // The panel exiting: the same, with no recording
+        d.in.recording = false;
+        CHECK(d.step() == "driftlog off" && d.step().empty());
+    }
+    {
+        // Another recording right after (a new name before the end was seen): on with the new one (eyecam closes the old)
+        DriftRun d;
+        ready(d.in);
+        d.in.recording = true;
+        d.in.stem = stem;
+        CHECK(d.step() == "driftlog on " + stem);
+        d.in.stem = "eyes_2026-10-12_15-00-00";
+        CHECK(d.step() == "driftlog on eyes_2026-10-12_15-00-00");
+    }
+    {
+        // eyecam-rec coming up during a recording: on then; the cameras going out of use later: kept to the end
+        DriftRun d;
+        d.in.recording = true;
+        d.in.stem = stem;
+        d.in.hasDriftlog = true;
+        CHECK(d.step().empty());
+        d.in.eyecamRunning = true;
+        CHECK(d.step().empty());  // (set up and switched on: not yet)
+        d.in.camerasInUse = true;
+        CHECK(d.step() == "driftlog on " + stem);
+        d.in.camerasInUse = d.in.eyecamRunning = false;
+        CHECK(d.step().empty());
+        d.in.recording = false;
+        CHECK(d.step() == "driftlog off");
+    }
+    {
+        // An older eyecam-rec (no "driftlog" in its status): nothing, then or at the end
+        DriftRun d;
+        ready(d.in);
+        d.in.hasDriftlog = false;
+        d.in.recording = true;
+        d.in.stem = stem;
+        CHECK(d.step().empty());
+        d.in.recording = false;
+        CHECK(d.step().empty() && d.step().empty());
+        // ...and without the cameras in use, nothing either
+        DriftRun e;
+        ready(e.in);
+        e.in.camerasInUse = false;
+        e.in.recording = true;
+        e.in.stem = stem;
+        CHECK(e.step().empty());
+        e.in.recording = false;
+        CHECK(e.step().empty());
+    }
+    {
+        // A drift log started by hand: no "on" over it, no "off" for it, at start or at the end
+        DriftRun d;
+        ready(d.in);
+        d.in.driftlogOn = true;
+        d.in.driftlogPath = byHand;
+        CHECK(d.step().empty());
+        d.in.recording = true;
+        d.in.stem = stem;
+        CHECK(d.step().empty());
+        d.in.recording = false;
+        CHECK(d.step().empty());
+        // Started by hand while the panel's ran (it closed the panel's): the end leaves it on
+        DriftRun e;
+        ready(e.in);
+        e.in.recording = true;
+        e.in.stem = stem;
+        CHECK(e.step() == "driftlog on " + stem);
+        e.in.driftlogOn = true;
+        e.in.driftlogPath = byHand;
+        e.in.recording = false;
+        CHECK(e.step().empty() && e.link.on().empty());
+    }
+    {
+        // At start, one left on by a panel that crashed during a recording: off, once
+        DriftRun d;
+        d.in.hasDriftlog = true;
+        d.in.driftlogOn = true;
+        d.in.driftlogPath = ours;
+        CHECK(d.step().empty());  // (eyecam-rec not seen running yet)
+        d.in.eyecamRunning = true;
+        CHECK(d.step() == "driftlog off");
+        CHECK(d.step().empty());  // (status.json still says on until it is next written)
+        // With the cameras switched off it is still turned off (it is the panel's, and nothing records)
+        DriftRun e;
+        e.in = d.in;
+        CHECK(e.step() == "driftlog off");
+        // ...but not one started by hand, nor when it is off
+        DriftRun f;
+        f.in = d.in;
+        f.in.driftlogPath = byHand;
+        CHECK(f.step().empty());
+        DriftRun g;
+        g.in = d.in;
+        g.in.driftlogOn = false;
+        CHECK(g.step().empty());
+        g.in.driftlogOn = true;
+        CHECK(g.step().empty());  // (only at start)
+        // A recording running when eyecam-rec is first seen: its own "on" replaces the stale one
+        DriftRun h;
+        h.in = d.in;
+        h.in.camerasInUse = true;
+        h.in.recording = true;
+        h.in.stem = "eyes_2026-10-12_15-00-00";
+        CHECK(h.step() == "driftlog on eyes_2026-10-12_15-00-00");
+    }
+}
+
 /**
  * Record a few seconds with the real frameeyeosc and check the CSV is whole up to the stop.
  * @param program frameeyeosc
@@ -305,6 +499,8 @@ int main(int argc, char** argv) {
     testNames();
     testUniqueNames(scratch);
     testChild(scratch);
+    testDriftNames();
+    testDriftLink();
     if (argc > 1) testReal(argv[1], scratch);
     const std::string remove = "rm -rf '" + scratch + "'";
     if (std::system(remove.c_str()) != 0) std::fprintf(stderr, "could not remove %s\n", scratch.c_str());

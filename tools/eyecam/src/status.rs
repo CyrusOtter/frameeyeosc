@@ -392,10 +392,16 @@ pub enum Command {
     SetWidenSensitivity(f64),
     /// `preview on` / `preview off`: the panel's eye preview, answered by the control thread itself, in every state.
     Preview(bool),
-    /// `driftlog on` / `driftlog off`: the drift log (`driftlog`), answered by the control thread itself, in every
-    /// state.
-    DriftLog(bool),
+    /// `driftlog on [<stem>]`: start the drift log (`driftlog`), answered by the control thread itself, in every state;
+    /// with the panel's eye log name (`eyes_YYYY-MM-DD_HH-MM-SS`) its file is `<stem>.eyecam.csv`, else
+    /// `drift_<time>.csv`.
+    DriftLogOn(Option<String>),
+    /// `driftlog off`: stop it (the same).
+    DriftLogOff,
 }
+
+/// The reply to `driftlog on <stem>` with a stem that isn't an eye log's name.
+pub const DRIFTLOG_BAD_NAME: &str = "ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で";
 
 /// Parse one control line. Protocol names are 1-32 of [A-Za-z0-9_-], so they can never name a path.
 pub fn parse_command(line: &str) -> Result<Command, String> {
@@ -418,8 +424,12 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         (Some("live"), Some("off")) => Command::Live(false),
         (Some("preview"), Some("on")) => Command::Preview(true),
         (Some("preview"), Some("off")) => Command::Preview(false),
-        (Some("driftlog"), Some("on")) => Command::DriftLog(true),
-        (Some("driftlog"), Some("off")) => Command::DriftLog(false),
+        (Some("driftlog"), Some("on")) => match words.next() {
+            None => Command::DriftLogOn(None),
+            Some(stem) if crate::driftlog::is_eye_log_stem(stem) => Command::DriftLogOn(Some(stem.into())),
+            Some(_) => return Err(DRIFTLOG_BAD_NAME.into()),
+        },
+        (Some("driftlog"), Some("off")) => Command::DriftLogOff,
         (Some("set"), Some("widen_sensitivity")) => {
             let v = words.next().and_then(|w| w.parse::<f64>().ok()).filter(|v| (0.0..=1.0).contains(v));
             Command::SetWidenSensitivity(v.ok_or("widen_sensitivity は 0 から 1 の数で")?)
@@ -451,11 +461,27 @@ mod tests {
         for bad in ["preview", "preview maybe", "preview on now"] {
             assert!(parse_command(bad).is_err(), "{bad}");
         }
-        assert_eq!(parse_command("driftlog on\n"), Ok(Command::DriftLog(true)));
-        assert_eq!(parse_command(" driftlog off"), Ok(Command::DriftLog(false)));
-        for bad in ["driftlog", "driftlog yes", "driftlog on /tmp/x", "drift on"] {
-            assert!(parse_command(bad).is_err(), "{bad}");
+        assert_eq!(parse_command("driftlog on\n"), Ok(Command::DriftLogOn(None)));
+        assert_eq!(parse_command(" driftlog off"), Ok(Command::DriftLogOff));
+        assert_eq!(
+            parse_command("driftlog on eyes_2026-10-12_14-03-09\n"),
+            Ok(Command::DriftLogOn(Some("eyes_2026-10-12_14-03-09".into())))
+        );
+        for bad in ["driftlog", "driftlog yes", "drift on", "driftlog off eyes_2026-10-12_14-03-09"] {
+            assert_eq!(parse_command(bad), Err("知らないコマンド".into()), "{bad}");
         }
+        // A name that isn't an eye log's (a path, another pattern, a suffix) is refused with why
+        for bad in [
+            "driftlog on /tmp/x",
+            "driftlog on ../eyes_2026-10-12_14-03-09",
+            "driftlog on eyes_2026-10-12_14-03-09.csv",
+            "driftlog on eyes_2026-10-12_14-03-09_2",
+            "driftlog on drift_2026-10-12_14-03-09",
+            "driftlog on eyes_2026-10-12",
+        ] {
+            assert_eq!(parse_command(bad), Err(DRIFTLOG_BAD_NAME.into()), "{bad}");
+        }
+        assert!(parse_command("driftlog on eyes_2026-10-12_14-03-09 x").is_err());
         assert_eq!(parse_command("set widen_sensitivity 0.25"), Ok(Command::SetWidenSensitivity(0.25)));
         for bad in ["set widen_sensitivity", "set widen_sensitivity 1.5", "set widen_sensitivity x", "set widen_sensitivity 0.5 1", "set foo 1"] {
             assert!(parse_command(bad).is_err(), "{bad}");

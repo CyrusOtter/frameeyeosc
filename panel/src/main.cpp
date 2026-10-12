@@ -1440,6 +1440,8 @@ eyecam::View fakeEyecam(const std::string& text) {
     // An eyecam-rec that makes the eye preview's pictures (not making them now)
     s.hasPreview = !fake.noPreview;
     s.preview = false;
+    // ...and that keeps a drift log alongside the eye log (off)
+    s.hasDriftlog = true;
     s.hasSetupDone = fake.setup >= 0;
     s.setupDone = fake.setup == 1;
     s.lastCalibWiden = fake.result == "fail" ? "default" : (fake.result == "done" ? "measured" : fake.widen);
@@ -1485,6 +1487,52 @@ void syncEyecamControl(eyecam::View& view, const eyecam::Control& control) {
     view.busyCommand = control.busy() ? control.command() : std::string();
     view.hasReply = control.hasReply();
     if (control.hasReply()) view.reply = control.reply();
+}
+
+/**
+ * What the eye log's drift link looks at now.
+ * @param recording the eye log
+ * @param model the panel's model (eyecam-rec as last read, and the settings)
+ * @return the inputs
+ */
+recorder::DriftInputs driftInputs(const recorder::View& recording, const PanelModel& model) {
+    recorder::DriftInputs in;
+    in.recording = recording.recording;
+    in.stem = recorder::driftStem(recording.path);
+    in.eyecamRunning = model.eyecam.visible;
+    in.camerasInUse = eyecam::inUse(model.eyecam, SettingsView(model).flag(key::kCameraLids));
+    in.hasDriftlog = model.eyecam.status.hasDriftlog;
+    in.driftlogOn = model.eyecam.status.driftlogOn;
+    in.driftlogPath = model.eyecam.status.driftlogPath;
+    return in;
+}
+
+/**
+ * eyecam-rec's answer to one of the drift link's commands: in the journal, and for "driftlog on" in the recording's
+ * .log too (its file, so the two can be paired, or why there is none), if it was for that recording.
+ * @param reply the answer
+ * @param eyeLog the eye log
+ */
+void driftReplied(const eyecam::Reply& reply, recorder::Recorder& eyeLog) {
+    std::fprintf(stderr, "[record] %s -> %s%s\n", reply.command.c_str(), reply.ok ? "ok " : "err ",
+                 reply.ok ? reply.detail.c_str() : reply.error.c_str());
+    if (reply.command != "driftlog on " + recorder::driftStem(eyeLog.view(nowSeconds()).path)) return;
+    eyeLog.note(reply.ok ? "eyecam drift log: " + reply.detail : "eyecam drift log not started: " + reply.error);
+}
+
+/**
+ * Send one of the drift link's commands to eyecam-rec's control socket (its reply comes to driftReplied; at once if it
+ * can't be reached).
+ * @param control the drift log's own connection
+ * @param eyecamDir eyecam-rec's run folder
+ * @param command the command
+ * @param eyeLog the eye log
+ */
+void sendDrift(eyecam::Control& control, const std::string& eyecamDir, const std::string& command,
+               recorder::Recorder& eyeLog) {
+    const std::string socket = eyecamDir + "/ctl.sock";
+    std::fprintf(stderr, "[record] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
+    if (!control.send(socket, command, nowSeconds()) && !control.busy()) driftReplied(control.reply(), eyeLog);
 }
 
 /**
@@ -3359,6 +3407,9 @@ int runOverlay(const Options& options) {
     // The eye log (frameeyeosc --record as a child), and what the panel last drew of it
     recorder::Recorder eyeLog;
     std::string drawnRecording;
+    // ...and eyecam's drift log alongside it, on a control socket connection of its own
+    recorder::DriftLink driftLink;
+    eyecam::Control driftControl;
     // Re-centering by itself when the headset is put on (auto_recenter); armed now for the first wearing
     auto_recenter::Watcher recenter;
     long long lastCaptureId = 0;
@@ -3595,6 +3646,12 @@ int runOverlay(const Options& options) {
             model.recording = eyeLog.view(nowSeconds());
             const recorder::View& r = model.recording;
             const std::string shown = (r.recording ? recorder::elapsedText(r.elapsedSec) : std::string("-")) + r.error;
+            // eyecam's drift log alongside it while the eye cameras are in use (see recorder::DriftLink)
+            std::string command;
+            if (driftLink.next(driftInputs(r, model), driftControl.busy(), command)) {
+                sendDrift(driftControl, model.eyecamDir, command, eyeLog);
+            }
+            if (driftControl.poll(nowSeconds())) driftReplied(driftControl.reply(), eyeLog);
             if (shown != drawnRecording) {
                 drawnRecording = shown;
                 dirty = true;
@@ -4189,6 +4246,25 @@ int runOverlay(const Options& options) {
     if (vr.fillShown()) std::fprintf(stderr, "[eyecam] light off (quitting)\n");
     vr.hideFill();
     eyeLog.shutdown();
+    // ...and eyecam's drift log with it (a command still out answered first; each waited for at most a second)
+    {
+        const auto settle = [&]() {
+            const double end = nowSeconds() + 1.0;
+            while (driftControl.busy() && nowSeconds() < end) {
+                if (driftControl.poll(nowSeconds())) {
+                    driftReplied(driftControl.reply(), eyeLog);
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+            }
+        };
+        settle();
+        std::string command;
+        if (driftLink.next(driftInputs(eyeLog.view(nowSeconds()), model), driftControl.busy(), command)) {
+            sendDrift(driftControl, model.eyecamDir, command, eyeLog);
+            settle();
+        }
+    }
     vr.shutdown();
     autostart.stop();
     // A fit or a calibration still going: its record, stopped by the panel closing, written before the panel exits

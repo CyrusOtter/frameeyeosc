@@ -304,6 +304,7 @@ UiText makeJapanese() {
     t.eyeLogStopFormat = "止める %s";
     t.eyeLogWhereFormat = "保存先 %s";
     t.eyeLogLimit = "60 分たつと自動で止まります";
+    t.eyeLogDrift = "目のカメラの数字（映像なし）も ~/eyecam/drift/ に残します";
     t.eyeLogFailedFormat = "記録できませんでした: %s";
     t.eyeLogAutoStopped = "60 分たったので止めました";
     t.recordingFormat = "記録中 %s";
@@ -1207,6 +1208,7 @@ UiText makeEnglish() {
     t.eyeLogStopFormat = "Stop %s";
     t.eyeLogWhereFormat = "Saved to %s";
     t.eyeLogLimit = "Stops by itself after 60 minutes";
+    t.eyeLogDrift = "Also keeps the eye cameras' numbers (no pictures) in ~/eyecam/drift/";
     t.eyeLogFailedFormat = "Couldn't record: %s";
     t.eyeLogAutoStopped = "Stopped after 60 minutes";
     t.recordingFormat = "Recording %s";

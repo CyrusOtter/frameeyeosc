@@ -40,6 +40,7 @@ const EXACT: &[(&str, &str)] = &[
     ("視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度", "Couldn't get the gaze direction from Valve. Check that frameeyeosc is running and try again"),
     ("視線と目の開きの関係が求められなかった（もう一度）", "Couldn't work out how gaze changes the eye opening (try again)"),
     ("目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ", "The eye preview is only written to a folder in memory (tmpfs)"),
+    ("ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で", "The drift log's name must be eyes_YYYY-MM-DD_HH-MM-SS"),
 ];
 
 /// Per-eye calibration failures, after "左目" / "右目" / "両目" (the details in [...] follow).
@@ -291,6 +292,7 @@ mod tests {
             "protocol_x.txt の書き方がおかしい: line 3",
             "プロトコルが見つからない: protocol_x.txt",
             "ドリフトの記録を始められなかった: /home/steamos/eyecam/drift: Permission denied (os error 13)",
+            "ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で",
         ];
         for ja in all {
             let en = message_en(ja);

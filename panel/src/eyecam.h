@@ -253,6 +253,9 @@ struct Status {
     std::string lastError;         ///< "last_error": the last error's message, kept after it ("" = none)
     std::string lastErrorEn;       ///< ...in English
     double lastErrorUnix = 0.0;    ///< ...when (Unix seconds; 0 = none)
+    bool hasDriftlog = false;      ///< "driftlog" is there (a newer eyecam-rec that keeps a drift log on request)
+    bool driftlogOn = false;       ///< ...it is on
+    std::string driftlogPath;      ///< ...its file, or the last one ("" before the first)
 };
 
 /**
@@ -337,6 +340,7 @@ struct Reply {
     bool ok = false;
     std::string command;  ///< "start" / "stop" / "calib wear" / ...
     std::string error;    ///< "err <reason>"'s reason, or what went wrong talking to it (English); "" when ok
+    std::string detail;   ///< what follows "ok " ("driftlog on" says its file); "" for a bare "ok"
 };
 
 /** What the panel draws of the recorder. */
@@ -820,7 +824,7 @@ private:
 std::string instruction(const UiText& t, const std::string& label);
 
 /**
- * Read the recorder's one-line reply: "ok", or "err <reason>".
+ * Read the recorder's one-line reply: "ok" (or "ok <detail>"), or "err <reason>".
  * @param line the line (a trailing newline is ignored)
  * @param command the command it answers
  * @return the reply (an empty or other line is an error that says so)

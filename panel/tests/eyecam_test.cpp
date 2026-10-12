@@ -1664,6 +1664,34 @@ void testReply() {
     CHECK(!r.ok);
     SAME(r.error, "unexpected reply: okay");
     CHECK(!eyecam::parseReply("error x", "start").ok);
+    // "ok <what>": "driftlog on" says its file
+    r = eyecam::parseReply("ok /home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv\n", "driftlog on x");
+    CHECK(r.ok && r.error.empty());
+    SAME(r.detail, "/home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv");
+    CHECK(eyecam::parseReply("ok", "stop").detail.empty());
+}
+
+void testDriftlogParse() {
+    // As eyecam-rec writes it
+    {
+        const Status s = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"driftlog\": {\"on\": true, \"path\": "
+            "\"/home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv\", \"rows\": 12, \"bytes\": 3400, "
+            "\"full\": false, \"error\": \"\"}}",
+            kNow);
+        CHECK(s.hasDriftlog && s.driftlogOn);
+        SAME(s.driftlogPath, "/home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv");
+    }
+    {
+        const Status s = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"driftlog\": {\"on\": false, \"path\": \"\", \"rows\": 0, \"bytes\": 0, "
+            "\"full\": false, \"error\": \"\"}}",
+            kNow);
+        CHECK(s.hasDriftlog && !s.driftlogOn && s.driftlogPath.empty());
+    }
+    // An older eyecam-rec without it, or something odd in its place
+    CHECK(!eyecam::parseStatus("{\"state\": \"idle\"}", kNow).hasDriftlog);
+    CHECK(!eyecam::parseStatus("{\"state\": \"idle\", \"driftlog\": true}", kNow).hasDriftlog);
 }
 
 /**
@@ -2383,6 +2411,7 @@ int main() {
     testPageCalib();
     testSetupTools();
     testReply();
+    testDriftlogParse();
     testUtf8();
     testReadFile();
     testProtocolFile();

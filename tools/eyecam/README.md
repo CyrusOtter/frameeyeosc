@@ -210,7 +210,7 @@ unix stream ソケット（0600）。接続して 1 行（`\n` 終わり）送�
 | `live on` / `live off` | `ok`。ライブ処理（共有メモリ `live` の更新）のオン/オフ。既定はオン |
 | `preview on` / `preview off` | `ok`。パネルの目のプレビューの映像（下の「目のプレビュー」）。**どの state でもすぐ受け付けてすぐ返る**。`on` は 3 秒だけ効くので、映像を見ているあいだは 1 秒ごとに送り直す（送り直しが止まれば、フレームが来ていなくても 3 秒で止まる）。`off` ですぐ止まる。run フォルダが tmpfs でなければ `on` は `err 目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ` |
 | `set widen_sensitivity <0〜1>` | `ok` または `err widen_sensitivity は 0 から 1 の数で`。見開きの感度（下の「見開きの感度」）。**どの state でもすぐ受け付けてすぐ返る**（スライダーを動かしながら送ってよい）。すぐにライブの値に効き、`~/.config/eyecam/settings.json` に保存される（新しいファイルに書いて rename）。次に起動したときもその値。保存できなければ `err 保存できなかった: …` |
-| `driftlog on` / `driftlog off` | `on` は `ok <ファイルのパス>`（例 `ok /home/steamos/eyecam/drift/drift_2026-10-12_13-00-00.csv`）。ファイルが作れなければ `err ドリフトの記録を始められなかった: …`。`off` は `ok`（記録していなくても）。調査用のドリフトの記録（下の「ドリフトの記録」）。**どの state でもすぐ受け付けてすぐ返る**。`on` は毎回新しいファイルを作る（書いている途中のファイルは閉じる） |
+| `driftlog on` / `driftlog on <stem>` / `driftlog off` | `on` は `ok <ファイルのパス>`（例 `ok /home/steamos/eyecam/drift/drift_2026-10-12_13-00-00.csv`）。`<stem>` はパネルの目のログの名前 `eyes_YYYY-MM-DD_HH-MM-SS` だけで、ファイルは `<stem>.eyecam.csv`（例 `ok /home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv`）。その形でない名前は `err ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で`。ファイルが作れなければ `err ドリフトの記録を始められなかった: …`。`off` は `ok`（記録していなくても）。調査用のドリフトの記録（下の「ドリフトの記録」）。**どの state でもすぐ受け付けてすぐ返る**。`on` は毎回新しいファイルを作る（書いている途中のファイルは閉じる） |
 
 `<名前>` は `~/eyecam-src/protocol_<名前>.txt` のこと。英数字・`_`・`-` だけで 1〜32 文字（それ以外は `err プロトコル名に使えない文字がある`）。
 
@@ -450,6 +450,12 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
 ```
 
 - 場所: `~/eyecam/drift/drift_YYYY-MM-DD_HH-MM-SS.csv`（`--out` の下の `drift/`。なければ作る。`on` のたびに新しいファイル。同じ秒に 2 回なら `_2`）
+- パネル: 目のカメラを使っているとき、パネルの「目のログ」（`frameeyeosc --record`）を記録している間は、パネルが
+  `driftlog on eyes_YYYY-MM-DD_HH-MM-SS`（目のログと同じ名前）を送り、`~/eyecam/drift/eyes_YYYY-MM-DD_HH-MM-SS.eyecam.csv`
+  に書く（その名前がもうあれば `eyes_…_2.eyecam.csv`）。どのファイルかは目のログの `.log` に `[panel] eyecam drift log: …` と残る。
+  記録が終わると（止めた・失敗した・60 分たった・パネルが終わった）`driftlog off`。パネルが落ちて `eyes_*.eyecam.csv` が
+  書かれたままなら、次にパネルが起きたとき、目のログを記録していなければ `driftlog off` を送る。手で始めた
+  `drift_*.csv` には、パネルは `on` も `off` も送らない。`driftlog` のない古い eyecam-rec には何も送らない
 - 書くのはライブ処理のスレッドで、フレームが来ている間だけ（かぶっていない間、`live off` の間は行が増えない）。バッファを通して書き、
   `driftlog off` か eyecam-rec の終了（`systemctl --user stop eyecam` など）で残りを書いてファイルを閉じる。kill -9 では最後の 20 秒ほどが残らない
 - 大きさ: 両目で 1 秒に約 350 バイト（1 時間で約 1.3 MB）。1 ファイル 50 MB で書くのをやめる（status.json の `driftlog.full`）

@@ -4208,17 +4208,12 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
     }
     // The eye log: record the raw eye data to a file, from now until "Stop" (or 60 minutes)
     {
-        const double h = 60;
         const recorder::View& r = m.recording;
-        drawRowLabel(pen, t, y, h, t.rowEyeLog, "", false);
-        const std::string label =
-            r.recording ? formatText(t.eyeLogStopFormat, recorder::elapsedText(r.elapsedSec)) : std::string(t.eyeLogRecord);
         const double buttonW = 160;
-        drawButton(pen, kControlX, y + (h - 46) / 2, buttonW, 46, label, {PanelAction::RecordToggle, nullptr, 0}, true,
-                   false);
         const double textX = kControlX + buttonW + 14;
         const double textW = right - textX;
-        // Next to the button: where the files go (wrapped) and the limit, or why it could not record (up to three lines)
+        // Next to the button: where the files go (wrapped), with the eye cameras in use that eyecam's numbers go beside
+        // them (an eyecam-rec that keeps them), and the limit; or why it could not record (up to three lines)
         std::vector<std::string> lines;
         Color color = kTextMuted;
         bool bold = false;
@@ -4228,11 +4223,21 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
             bold = true;
         } else {
             const std::string where = formatText(t.eyeLogWhereFormat, recorder::shortPath(recorder::defaultDir()));
-            // After the 60-minute limit stopped it: say so instead of the limit
             lines = wrapText(pen, where, 14, false, textW, 2);
+            if (eyecam::inUse(m.eyecam, v.flag(key::kCameraLids)) && m.eyecam.status.hasDriftlog) {
+                for (const std::string& line : wrapText(pen, t.eyeLogDrift, 14, false, textW, 2)) lines.push_back(line);
+            }
+            // After the 60-minute limit stopped it: say so instead of the limit
             lines.push_back(r.autoStopped ? t.eyeLogAutoStopped : t.eyeLogLimit);
             if (r.autoStopped) color = kText;
         }
+        // (taller for more than three lines)
+        const double h = std::max(60.0, lines.size() * 18.0 + 6);
+        drawRowLabel(pen, t, y, h, t.rowEyeLog, "", false);
+        const std::string label =
+            r.recording ? formatText(t.eyeLogStopFormat, recorder::elapsedText(r.elapsedSec)) : std::string(t.eyeLogRecord);
+        drawButton(pen, kControlX, y + (h - 46) / 2, buttonW, 46, label, {PanelAction::RecordToggle, nullptr, 0}, true,
+                   false);
         double baseline = y + h / 2 - (lines.size() - 1) * 9 + 5;
         for (const std::string& line : lines) {
             pen.text(textX, baseline, line, 14, color, bold);
