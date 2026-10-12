@@ -74,7 +74,7 @@ const EDGE_OPEN_AP: f64 = 1.2;
 /// hold, and a box with shading in it no longer brightens enough over a closed lid. So x_min stays, and only the
 /// pupil search reaches further, and only when the search inside x_min finds nothing. Replays (2026-10-12): the right
 /// eye's pupil in 0.73 / 0.70 / 0.65 of the open steps sitting / on the back / on the side, the side's close steps
-/// read closed 0.99 (0 before) and its 6 s false close gone; the 7 free recordings (3 min sitting each) caught 320 of
+/// all read closed (none before) and its 6 s false close gone; the 7 free recordings (3 min sitting each) caught 320 of
 /// Valve's 341 closes (321 before) with 504 short closes where Valve closed too (506), false closes 21.3 s (23.7, none
 /// new); the 10 wear calibrations found the pupil in as many normal-step frames or more (one eye 276 -> 465 of 486)
 /// with the same fitted levels (within 0.008). The pupils it found had their temporal edge up to 16 px past x_min
@@ -831,7 +831,11 @@ impl EyeEngine {
                 }
             }
         }
-        if f.ok_pupil && f.iris_r.is_finite() && f.iris_n >= 4 && sampled {
+        // Not from the extended search: early in a wear the iris radius's median still jumps between modes (56 and 83 px
+        // on the 2026-10-09 18:16 user calibration's left eye), the box is sized by it, and two edge pupils found at
+        // 0.9 s flipped it half a second early, so the open eye's box level was learnt 12% brighter and the blink at
+        // 3.6 s (Valve's openness 0 for 0.2 s) never read 1.3 x. Their own box and lids still use the radius in use.
+        if f.ok_pupil && !f.diag.extended && f.iris_r.is_finite() && f.iris_n >= 4 && sampled {
             self.r_est.push(f.iris_r, long_hz);
         }
         if !self.t_first.is_finite() {
@@ -2848,9 +2852,12 @@ mod tests {
             // Out toward the ear: the window still finds it cut by its edge (175..225), and the extended edge moves out
             feed(&mut e, Some((200.0, 200.0)), 1.0, 10, &mut out);
             let near = *out.last().unwrap();
-            // Further out (135..185, left of the window): only the extended search can find it
+            // Further out (135..185, left of the window): only the extended search can find it (and its iris fit
+            // does not go into the iris radius)
+            let r_n = e.r_est.len();
             feed(&mut e, Some((160.0, 200.0)), 1.0, 10, &mut out);
             let past = *out.last().unwrap();
+            assert_eq!(e.r_est.len(), r_n);
             // ... not while Valve says the eye is closing
             feed(&mut e, Some((160.0, 200.0)), 0.2, 1, &mut out);
             let closing = *out.last().unwrap();
