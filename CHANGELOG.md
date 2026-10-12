@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.7 (2026-10-10)
+## 0.7.7 (2026-10-13)
 
 New gaze scale: set how far the avatar's eyes go left, right, up and down (Gaze › Reach; requested in #27). The eye fit now sets only straight ahead, the eyelids and the up range, and re-centers on one dot each time you put the headset on; the tilt and the sideways and down ranges, which made the gaze worse, are reset once. The eye fit also works when Valve's tracking keeps reading an open eye as shut, as long as the eye cameras see it open. With independent eyes, wears where Valve reads the eyes as turned in no longer let unintended cross-eye through. With the eye cameras, an eye looking far to the side or seen while lying down is no longer sent closed, and the eyelids no longer tremble or stay narrowed or wide for a whole wear. New eye preview: a button at the bottom of the left column draws both eyes as they move and, when you turn it on, each eye camera's live picture (only shown, never saved). The panel shows the eye-camera settings only while the cameras are in use, the Basic tab has their on / off switch, and Advanced › Version now lists my other Frame apps, ready to install.
 
