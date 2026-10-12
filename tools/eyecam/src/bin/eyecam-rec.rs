@@ -3223,8 +3223,15 @@ mod tests {
         assert_eq!(t_first, 1.0);
         assert!(matches!(slots.poll(&arena, &ring, 1, 1.005, &mut buf), SlotEvent::None));
 
+        // (its mode set outright: another test may be binding a socket under umask 0177 meanwhile, see bind_private;
+        // removed again even if the test fails)
         let dir = std::env::temp_dir().join(format!("eyecam-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let _gone = RemoveDir(dir.clone());
+        let make_dir = || {
+            fs::create_dir_all(&dir).unwrap();
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        make_dir();
         let mut session = Session::create(&dir, false, true).unwrap();
         session.write_frame(1, 1, t_first, 1.0025, Some(42), &buf).unwrap();
         session.flush().unwrap();
@@ -3240,7 +3247,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
 
         // A calibration without dev: the same frames.csv row, but no file with image pixels.
-        fs::create_dir_all(&dir).unwrap();
+        make_dir();
         let mut session = Session::create(&dir, false, false).unwrap();
         session.write_frame(1, 1, t_first, 1.0025, Some(42), &buf).unwrap();
         session.flush().unwrap();

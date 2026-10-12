@@ -305,6 +305,9 @@ const CAMERA_SIDE_BLINK_MAX: f64 = 0.3;
 // server has read it at CAMERA_CLOSED_DOUBT_OPEN or more and its variance for that eye is below
 // CAMERA_CLOSED_DOUBT_VARIANCE; not within CAMERA_SIDE_SHUT_RECENT of the eye server reading the eye shut, nor with the
 // other eye's blink (blink_with_other), as for the side. See SideCheck.
+// - A gap in the camera's values up to CAMERA_GAP_HOLD after its last "closed" doesn't end the stretch: its doubt goes
+//   on through the gap and after it (started over, each hiccup of a few frames closed a doubted eye again for
+//   CAMERA_CLOSED_DOUBT_S). A longer gap starts a new one.
 // - The eye server may read the eye below CAMERA_CLOSED_DOUBT_OPEN in the first CAMERA_CLOSED_DOUBT_BLINK_S of the
 //   stretch (the blink it began with: lying down, the camera often loses the pupil as the eye closes and does not find
 //   it again once it opens), and CAMERA_CLOSED_DOUBT_S counts from its last such reading there. Any such reading after
@@ -1333,12 +1336,14 @@ struct SideCheck {
     // Per eye: since when the camera has read it closed; from when CAMERA_CLOSED_DOUBT_S counts in that stretch (its
     // start, or the eye server's last reading below CAMERA_CLOSED_DOUBT_OPEN in its first CAMERA_CLOSED_DOUBT_BLINK_S);
     // whether the eye server has read it below that after those; whether the camera's "closed" is taken as open for it
-    // (CAMERA_CLOSED_DOUBT_S); and since when the eye server's variance has been at or above the line in a row.
+    // (CAMERA_CLOSED_DOUBT_S); since when the eye server's variance has been at or above the line in a row; and when
+    // the camera last read it closed (a gap in its values up to CAMERA_GAP_HOLD after that doesn't end the stretch).
     closed_since: [Option<f64>; 2],
     doubt_from: [f64; 2],
     dipped: [bool; 2],
     doubting: [bool; 2],
     unsure_since: [Option<f64>; 2],
+    closed_at: [Option<f64>; 2],
     // Each eye's last camera eyelid that was not closed.
     open_lid: [Option<f32>; 2],
     // Per eye: whether its camera "closed" was taken as open at the last sample because the eye server read the eye
@@ -1372,9 +1377,19 @@ impl SideCheck {
             }
             self.shut[eye] = shut;
             match camera[eye] {
-                Some(lid) if lid.closed => self.doubt_closed(eye, time, openness[eye], variance[eye]),
+                Some(lid) if lid.closed => {
+                    self.doubt_closed(eye, time, openness[eye], variance[eye]);
+                    self.closed_at[eye] = Some(time);
+                }
+                // A gap in the camera's values (stale for a few frames) no longer than CAMERA_GAP_HOLD: the stretch, its
+                // doubt and what the eye server reads in it go on (started over, a hiccup closed a doubted eye again
+                // for CAMERA_CLOSED_DOUBT_S)
+                None if self.closed_at[eye].is_some_and(|at| time - at <= CAMERA_GAP_HOLD) => {
+                    self.doubt_closed(eye, time, openness[eye], variance[eye]);
+                }
                 _ => {
                     self.closed_since[eye] = None;
+                    self.closed_at[eye] = None;
                     self.doubting[eye] = false;
                 }
             }
@@ -8108,20 +8123,26 @@ mod tests {
     }
 
     #[test]
-    fn a_gap_in_the_cameras_values_starts_the_doubt_over() {
+    fn a_short_gap_in_the_cameras_values_keeps_the_doubt_and_a_long_one_starts_it_over() {
         let settings = camera_settings();
         let sure = |_| 0.001;
         // The camera's left eye values stale for 33 ms (3 samples) 1.2 s into its 3.3 s closed, after it was taken as
-        // open. Through the gap the eye server's open eyelid; after it the camera's "closed" is a new stretch, closed
-        // for CAMERA_CLOSED_DOUBT_S again before it is doubted again. (Kept so: the gap is a moment the camera's word
-        // can't be checked, and its "closed" afterwards is taken as a new one, like any other.)
+        // open: open through the gap (the eye server's eyelid) and after it (still doubted), to the closed's end
         let sent = doubt_samples_with_gaps(&settings, |_| [0.9; 2], sure, 90..390, 198..201);
-        assert!(sent[170..198].iter().all(|sample| sample.lids[0] > 0.7 && sample.closed_overruled[0]), "{:?}", sent[190].lids);
-        assert!(sent[198..201].iter().all(|sample| sample.lids[0] > 0.7 && !sample.closed_overruled[0]), "{:?}", sent[199].lids);
-        assert!(sent[201..246].iter().all(|sample| sample.lids[0] == 0.0 && !sample.closed_overruled[0]), "{:?}", sent[240].lids);
-        assert_eq!(sent[201].lid_from[0], LidFrom::CameraClosed);
-        assert!(sent[248..390].iter().all(|sample| sample.closed_overruled[0]), "{:?}", sent[248].closed_overruled);
-        assert!(sent[280..390].iter().all(|sample| sample.lids[0] > 0.7), "{:?}", sent[280].lids);
+        assert!(sent[170..390].iter().all(|sample| sample.lids[0] > 0.7), "{:?}", sent[205].lids);
+        assert!(sent[170..198].iter().chain(&sent[201..390]).all(|sample| sample.closed_overruled[0]), "{:?}", sent[201].closed_overruled);
+        assert!(sent[198..201].iter().all(|sample| !sample.closed_overruled[0] && sample.lid_from[0] != LidFrom::CameraClosed));
+        // ...also one of nearly CAMERA_GAP_HOLD (16 samples, 0.19 s since its last "closed")
+        let sent = doubt_samples_with_gaps(&settings, |_| [0.9; 2], sure, 90..390, 198..214);
+        assert!(sent[170..390].iter().all(|sample| sample.lids[0] > 0.7), "{:?}", sent[216].lids);
+        // A gap of 0.3 s: its "closed" after the gap is a new stretch (from 225, where the values came back), closed once
+        // the values are taken again (CAMERA_GAP_HOLD after they came back: 243) until CAMERA_CLOSED_DOUBT_S into it
+        let sent = doubt_samples_with_gaps(&settings, |_| [0.9; 2], sure, 90..390, 198..225);
+        assert!(sent[198..243].iter().all(|sample| sample.lids[0] > 0.7 && !sample.closed_overruled[0]), "{:?}", sent[230].lids);
+        assert!(sent[243..271].iter().all(|sample| sample.lids[0] == 0.0 && !sample.closed_overruled[0]), "{:?}", sent[260].lids);
+        assert_eq!(sent[243].lid_from[0], LidFrom::CameraClosed);
+        assert!(sent[271..390].iter().all(|sample| sample.closed_overruled[0]), "{:?}", sent[271].closed_overruled);
+        assert!(sent[274..390].iter().all(|sample| sample.lids[0] > 0.7), "{:?}", sent[274].lids);
     }
 
     #[test]

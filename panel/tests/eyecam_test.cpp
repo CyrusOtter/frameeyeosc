@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -1704,6 +1705,16 @@ std::string tempDir() {
     return dir != nullptr ? dir : "/tmp";
 }
 
+/** A folder from tempDir, removed with what is in it when this goes (also when a check fails on the way). */
+struct RemoveDir {
+    std::string path;  ///< the folder
+
+    ~RemoveDir() {
+        std::error_code ignored;
+        if (path != "/tmp") std::filesystem::remove_all(path, ignored);
+    }
+};
+
 void testReadFile() {
     const std::string dir = tempDir();
     CHECK(!eyecam::readStatus(dir).present);
@@ -2137,6 +2148,7 @@ void testUtf8() {
     SAME(eyecam::parseReply(std::string("err \xE6\xA0\xA1\xE6"), "start").error, "\xE6\xA0\xA1" + bad);
     // A status file too large isn't read
     const std::string dir = tempDir();
+    const RemoveDir gone {dir};
     {
         std::ofstream big(dir + "/status.json", std::ios::binary);
         big << "{\"state\": \"idle\", \"message\": \"" << std::string(eyecam::kMaxStatusBytes, 'a') << "\"}";
