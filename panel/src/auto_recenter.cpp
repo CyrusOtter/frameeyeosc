@@ -44,6 +44,8 @@ Step Watcher::update(double now, const Inputs& in) {
                 // Back after a real break (not one of the tracker's hiccups): the headset was put on
                 if (offFor_ >= kOffSec && in.enabled && in.fitted && !in.locked) {
                     armed_ = true;
+                    holdSince_ = NAN;
+                    clearSince_ = NAN;
                     char text[96];
                     std::snprintf(text, sizeof(text), "put on (tracking was off %.1f s): re-centering once the eyes settle",
                                   offFor_);
@@ -59,7 +61,23 @@ Step Watcher::update(double now, const Inputs& in) {
         }
     }
     wasRunning_ = in.running;
+    // How long an eye has read shut on Valve's eye server while tracked (a blink is not long enough)
+    if (!(in.running && tracking_ && (in.valveShut[0] || in.valveShut[1]))) {
+        shutSince_ = NAN;
+    } else if (std::isnan(shutSince_)) {
+        shutSince_ = now;
+    }
     if (!armed_) return step;
+    // Such an eye counts in the fit only once the eye camera's eyelid takes over for it, which it doesn't while the
+    // eye cameras warm up: then no sample would count. Once held back for that, whether it still holds
+    const bool hold = !std::isnan(shutSince_) && now - shutSince_ >= kShutSec && in.camerasWarming;
+    if (!std::isnan(holdSince_)) {
+        if (hold) {
+            clearSince_ = NAN;
+        } else if (std::isnan(clearSince_)) {
+            clearSince_ = now;
+        }
+    }
     // Nothing to re-center, or it can't run: this wearing is left alone
     if (!in.enabled) {
         step.log = disarm("switched off");
@@ -70,10 +88,28 @@ Step Watcher::update(double now, const Inputs& in) {
     } else if (in.fitActive) {
         step.log = disarm("an eye fit was started");
     } else if (in.running && tracking_ && onFor_ >= kSettleSec && !in.dashboardOpen && now - closedAt_ >= kClosedSec) {
+        // Held back until the warm-up is over (and kCameraMarginSec more, for frameeyeosc to take the camera's
+        // eyelid), kCameraWaitSec at most
+        if (hold && std::isnan(holdSince_)) {
+            holdSince_ = now;
+            const char* eyes = in.valveShut[0] && in.valveShut[1] ? "both eyes" : in.valveShut[0] ? "L" : "R";
+            step.log = std::string("auto re-center: waiting for the eye cameras' warm-up (Valve reads ") + eyes +
+                       " shut)";
+        }
+        const bool held = !std::isnan(holdSince_);
+        if (held && now - holdSince_ < kCameraWaitSec && (hold || now - clearSince_ < kCameraMarginSec)) return step;
         // One try per wearing: no retry if it fails or is stopped
         armed_ = false;
         step.start = true;
         step.log = "auto re-center: starting";
+        if (held) {
+            // (the record's logs start shortly before it: the wait is said here too)
+            char text[96];
+            std::snprintf(text, sizeof(text), hold ? " (the eye cameras still warming up after %.1f s)"
+                                                   : " (after %.1f s waiting for the eye cameras' warm-up)",
+                          now - holdSince_);
+            step.log += text;
+        }
     }
     return step;
 }

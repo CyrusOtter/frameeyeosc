@@ -37,10 +37,14 @@ public:
     /** @return the bold-weight font */
     cairo_font_face_t* bold() const { return bold_; }
 
+    /** @return the monospaced font (Noto Sans Mono CJK JP, face 5 of the regular .ttc; for commands) */
+    cairo_font_face_t* mono() const { return mono_; }
+
 private:
     void* ftLibrary_ = nullptr;  ///< FT_Library
     cairo_font_face_t* regular_ = nullptr;
     cairo_font_face_t* bold_ = nullptr;
+    cairo_font_face_t* mono_ = nullptr;
     std::string regularPath_;
     std::string boldPath_;
 
@@ -48,9 +52,12 @@ private:
      * Build a cairo font from a font file.
      * @param path the font file
      * @param bold whether to bold the fallback font
+     * @param index the face in the file (a .ttc holds several)
+     * @param fallback fontconfig's family to use if the file can't be read
      * @return the created font
      */
-    cairo_font_face_t* createFace(const std::string& path, bool bold);
+    cairo_font_face_t* createFace(const std::string& path, bool bold, long index = 0,
+                                  const char* fallback = "Noto Sans CJK JP");
 
     /** Release the loaded fonts. */
     void release();
@@ -93,6 +100,24 @@ struct Pen {
      */
     double text(double x, double y, const std::string& text, double size, Color c, bool isBold = false,
                 bool alignRight = false) const;
+
+    /**
+     * Measure the width of a string in the monospaced font (no icon markers).
+     * @param text UTF-8 string
+     * @param size font size (px)
+     * @return width (px)
+     */
+    double measureMono(const std::string& text, double size) const;
+
+    /**
+     * Draw a string in the monospaced font (a command, as it is typed).
+     * @param x left edge
+     * @param y baseline
+     * @param text UTF-8 string
+     * @param size font size (px)
+     * @param c color
+     */
+    void textMono(double x, double y, const std::string& text, double size, Color c) const;
 
     /**
      * Build the path for a rounded rectangle.

@@ -13,6 +13,8 @@ name="frameeyeosc-$version-steamframe-aarch64"
 
 # The updater copy must be exactly what frame-updater's sync.sh put there
 sh vendor/frame-updater/verify.sh
+# ...and the other Frame apps' list (built into the panel) what frame-apps' sync.sh put there
+sh vendor/frame-apps/verify.sh
 
 "$cargo" test --release
 "$cargo" build --release
@@ -20,6 +22,7 @@ cmake -G Ninja -S panel -B panel/build -DCMAKE_BUILD_TYPE=Release
 ninja -C panel/build
 panel/build/gaze-fit-test
 panel/build/gaze-dots-test
+panel/build/eye-preview-test
 panel/build/sounds-test
 panel/build/text-test
 panel/build/auto-recenter-test

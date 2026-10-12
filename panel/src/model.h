@@ -7,6 +7,8 @@
 #include "config.h"
 #include "diag.h"
 #include "eyecam.h"
+#include "eye_preview.h"
+#include "frame_apps.h"
 #include "gaze_fit.h"
 #include "i18n.h"
 #include "recorder.h"
@@ -28,6 +30,12 @@ struct RecordsView {
     std::string lastCalib;                ///< the last calibration's
 };
 
+/** The other Frame apps as the panel shows them (frame_apps::AppsManager, vendor/frame-apps). */
+struct AppsView {
+    std::vector<frame_apps::Entry> entries;  ///< the list (frameeyeosc itself left out), as AppsManager has it
+    bool menuBusy = false;                   ///< the Konsole opened for the installer's menu is still open
+};
+
 /** Everything one frame of the panel is drawn from. */
 struct PanelModel {
     ConfigFile config;           ///< config.json as last read
@@ -47,6 +55,8 @@ struct PanelModel {
     std::string eyecamDir;       ///< its folder (status.json and ctl.sock; eyecam::defaultDir or --eyecam-dir)
     diag::System system;         ///< SteamOS's version and the camera tool's checksum (the diagnostics page)
     RecordsView records;         ///< the records (the Advanced tab's "Having trouble", and the failure screens' bar)
+    AppsView apps;               ///< the other Frame apps (the row at the bottom of "Version" and the list it opens)
+    eye_preview::View preview;   ///< the eye preview's values and pictures (only while its sheet is open)
 };
 
 /**
@@ -114,7 +124,6 @@ private:
 /** The eye fit as config.json holds it (shown on the Eye fit tab even when frameeyeosc is not running). */
 struct FitInConfig {
     bool gazeFitted = false;              ///< the zero point, a gain or the tilt is not the default
-    bool eyeXFitted = false;              ///< each eye's own sideways zero point and gain are set
     bool lidsFitted[2] = {false, false};  ///< all four readings of that eye are set
     gaze_fit::Values values;              ///< hasLids when both eyes are fitted
 };
@@ -211,38 +220,41 @@ bool migrateLidOpenSnap(JsonValue& root, std::string& log);
 bool migrateEyeOffsets(JsonValue& root, std::string& log);
 
 /**
- * Whether a settings file still needs migrateLidScales, migrateGazePresets, migrateEyeOffsets or migrateLidOpenSnap
- * (no lid_widen, a version below 3, or a lid_open_snap above 0.75).
+ * Bring an eye fit from before version 4 over to what the fit keeps now, once: only the zero point (gaze_offset_x / _y)
+ * and the up gain carry over from one wear to the next, so the tilt goes to 0, the sideways and down gains to 1, and
+ * each eye's own sideways zero point and gain are taken out (null); auto_recenter "tilt" becomes "center". The same for
+ * either eye_behavior (the fit is shared). version is then written as 4, which marks the file as done. Run after
+ * migrateEyeOffsets, which only looks at files below version 3.
+ * @param root the config's root object (changed in place)
+ * @param log what was changed, for the log (empty if nothing but the version)
+ * @return true if root changed (the version was older)
+ */
+bool migrateFitPolicy(JsonValue& root, std::string& log);
+
+/**
+ * Whether a settings file still needs migrateLidScales, migrateGazePresets, migrateEyeOffsets, migrateFitPolicy or
+ * migrateLidOpenSnap (no lid_widen, a version below 4, or a lid_open_snap above 0.75).
  * @param root the config's root object
  * @return true if one of them would change it
  */
 bool configNeedsMigration(const JsonValue& root);
 
-/** The fit run by itself when the headset is put on (auto_recenter). */
-enum class AutoRecenter { Off, Center, Tilt };
+/** The fit run by itself when the headset is put on (auto_recenter): nothing, or re-centering (one dot). */
+enum class AutoRecenter { Off, Center };
 
 /**
- * auto_recenter as written: "off", "center" or "tilt". A true / false from before it had three values reads as
- * the default / "off", and anything else as the default, "center" (the tilt from one wearing's re-wear fits
- * scattered by about ±5°, as much as it corrects).
+ * auto_recenter as written: "off" or "center". A true / false from before it had a choice reads as the default /
+ * "off", and anything else ("tilt" from before 0.7.7 too) as the default, "center".
  * @param config the config
  * @return the kind
  */
 AutoRecenter autoRecenter(const ConfigFile& config);
 
 /**
- * The re-wear fit for an auto_recenter kind: the one it runs by itself, and the one the button next to "Fit again"
- * runs (re-centering only when auto_recenter is off).
- * @param kind the kind
- * @return gaze_fit::Mode::Center or gaze_fit::Mode::Tilt
- */
-gaze_fit::Mode rewearMode(AutoRecenter kind);
-
-/**
- * Write an eye fit's result into config.json: the gaze zero point; with the side dots (the whole fit, and the
- * re-wear fit with the tilt) also the tilt; each eye's sideways values when measured; for the whole fit also the
- * gains, each eye's lid readings, and lid_scale_left/right back to null when it measured the eyelids (an old
- * tweak must not sit on a new fit).
+ * Write an eye fit's result into config.json: the gaze zero point; for the whole fit also the gains (sideways and
+ * down 1), the tilt (0), each eye's own sideways values taken out (null), each eye's lid readings, and
+ * lid_scale_left/right back to null when it measured the eyelids (an old tweak must not sit on a new fit); an eye in
+ * lidsKept keeps both its lid readings and its scale.
  * @param root the config's root object
  * @param values the result
  * @param mode the mode
@@ -344,6 +356,62 @@ void lidMarkBounds(const std::string& name, const SettingsView& view, double& lo
 std::string formatSetting(const std::string& name, double value);
 
 /**
+ * A multiplier as a percentage, to the nearest whole one (1.0 -> "100%", 0.25 -> "25%").
+ * @param value the multiplier
+ * @return the text ("—" for NaN)
+ */
+std::string formatPercent(double value);
+
+/** The gaze scale keys in their linked pairs: [0] left and right, [1] up and down (the first of each leads). */
+extern const char* const kGazeScaleKeys[2][2];
+
+/**
+ * Which linked pair a gaze scale key is in.
+ * @param name a key
+ * @return 0 (left / right), 1 (up / down), or -1 for any other key
+ */
+int gazeScalePair(const std::string& name);
+
+/**
+ * Whether a pair's lock shows closed (linked) when the panel starts: as it was left, but open when the two values
+ * differ (a closed lock means they are the same).
+ * @param saved the lock as remembered (panel.json)
+ * @param first the pair's first value (left / up)
+ * @param second its second value (right / down)
+ * @return true to show it linked
+ */
+bool gazeScaleLinkShown(bool saved, double first, double second);
+
+/**
+ * Whether a pair's lock can be used: neither of its values is locked by the command line. Otherwise it shows open and
+ * can't be pressed, and − / ＋ move each value on its own (the one locked there doesn't move, so the two can differ).
+ * @param view the settings
+ * @param pair 0 (left / right) or 1 (up / down)
+ * @return true if usable
+ */
+bool gazeScaleLinkUsable(const SettingsView& view, int pair);
+
+/**
+ * What − / ＋ on a gaze scale writes: the key one step on, and while its pair is linked (and the lock usable, see
+ * gazeScaleLinkUsable) the other key to the same value.
+ * @param view the settings
+ * @param name the key pressed
+ * @param direction -1 or +1
+ * @param linked its pair's lock is closed
+ * @return the changes (empty if nothing moves)
+ */
+std::vector<SettingChange> gazeScaleStep(const SettingsView& view, const std::string& name, int direction, bool linked);
+
+/**
+ * What closing a pair's lock writes: the second value set to the first (right := left, down := up), unless they are
+ * the same already or the second is locked by the command line.
+ * @param view the settings
+ * @param pair 0 (left / right) or 1 (up / down)
+ * @return the changes (empty if nothing changes)
+ */
+std::vector<SettingChange> gazeScaleRelink(const SettingsView& view, int pair);
+
+/**
  * The IP part of an "IP:PORT" target ("[v6]:port" loses its brackets).
  * @param target the target
  * @return the host, or "" if there is none
@@ -408,33 +476,60 @@ int helpRows(double top, double bottom);
 /** The "When..." box's height for this many rows (helpRows). */
 double helpBoxHeight(int rows);
 
+/** The short state after the Basic tab's eye camera switch. */
+enum class CameraBrief {
+    Both,     ///< both eyes on the cameras
+    Left,     ///< only the left
+    Right,    ///< only the right
+    Off,      ///< camera_lids off
+    Warming,  ///< learning the relaxed eyes for this wear
+    Waiting,  ///< anything else: neither eye on the cameras yet (the headset off, frameeyeosc not running, ...)
+};
+
+/**
+ * The short state after the Basic tab's eye camera switch, from the same things as the eye cameras page's "Now" row.
+ * @param status frameeyeosc's status
+ * @param cameraLids the camera_lids setting
+ * @param warming eyecam-rec is learning the relaxed eyes (eyecam::baselineWarming)
+ * @return the state
+ */
+CameraBrief cameraBrief(const EyeStatus& status, bool cameraLids, bool warming);
+
 /**
  * Whether the Output tab shows "Send pupils straight to VRChat": only for LiveLink (whose module has no pupils), and
- * only with the eye cameras (their tab shows: eyecam-rec runs), which are where the pupils come from.
+ * only while the eye cameras are in use (eyecam::inUse), which are where the pupils come from.
  * @param output the "output" setting
- * @param eyeCameras the eye cameras tab shows (eyecam::View::visible)
+ * @param camera the eye cameras are in use
  * @return true to show it
  */
-bool pupilsRowShown(const std::string& output, bool eyeCameras);
+bool pupilsRowShown(const std::string& output, bool camera);
+
+/**
+ * Whether the Output tab shows the dashed line "with the eye cameras, pupil size goes out too" in place of its pupil
+ * rows: where those would be (VRChat directly, LiveLink) while the eye cameras aren't in use.
+ * @param output the "output" setting
+ * @param camera the eye cameras are in use
+ * @return true to show it
+ */
+bool pupilsLineShown(const std::string& output, bool camera);
 
 /** How the Output tab shows "How the avatar takes pupils" (pupil_bits). */
 enum class PupilBitsRow {
-    Hidden,  ///< not there: no eye cameras, or ETVR (no pupils go to VRChat)
-    Greyed,  ///< there, but the pupils don't go straight to VRChat now (pupils_to_vrchat or camera_lids off)
+    Hidden,  ///< not there: the eye cameras not in use, or ETVR (no pupils go to VRChat)
+    Greyed,  ///< there, but the pupils don't go straight to VRChat now (LiveLink with pupils_to_vrchat off)
     Usable,  ///< there and in effect
 };
 
 /**
  * How the Output tab shows "How the avatar takes pupils" (pupil_bits): wherever the pupils go to VRChat straight from
- * frameeyeosc, so with the eye cameras, for VRChat directly and for LiveLink (under "Send pupils straight to VRChat").
- * Greyed while they don't go there: camera_lids off (no camera values at all), or LiveLink with pupils_to_vrchat off.
+ * frameeyeosc, so while the eye cameras are in use, for VRChat directly and for LiveLink (under "Send pupils straight
+ * to VRChat"). Greyed while they don't go there: LiveLink with pupils_to_vrchat off.
  * @param output the "output" setting
- * @param eyeCameras the eye cameras tab shows (eyecam::View::visible)
- * @param cameraLids camera_lids
+ * @param camera the eye cameras are in use (eyecam::inUse)
  * @param pupilsToVrchat pupils_to_vrchat
  * @return how it shows
  */
-PupilBitsRow pupilBitsRow(const std::string& output, bool eyeCameras, bool cameraLids, bool pupilsToVrchat);
+PupilBitsRow pupilBitsRow(const std::string& output, bool camera, bool pupilsToVrchat);
 
 /** The sentence at the bottom of the eye cameras' page (eyecam-rec idle, set up). */
 enum class CameraLine {

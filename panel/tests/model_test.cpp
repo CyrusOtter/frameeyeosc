@@ -62,7 +62,7 @@ gaze_fit::Values measured(bool lids) {
     gaze_fit::Values values;
     values.offsetX = 0.01;
     values.offsetY = -0.02;
-    values.rollDeg = 2.0;
+    values.gainUp = 0.88;
     values.hasLids = lids;
     for (int eye = 0; eye < 2; ++eye) {
         values.lidClosed[eye] = 0.2;
@@ -87,16 +87,73 @@ void testFitResetsScales() {
     CHECK(std::fabs(numberIn(gazeOnly, key::kLidScaleRight) - 0.69) < 1e-9);
     CHECK(std::fabs(numberIn(gazeOnly, key::kLidFitOpenLeft) - 0.5) < 1e-9);
 
-    for (gaze_fit::Mode mode : {gaze_fit::Mode::Center, gaze_fit::Mode::Tilt}) {
-        JsonValue rewear = tweakedRoot();
-        applyFitValues(rewear, measured(true), mode);
-        CHECK(std::fabs(numberIn(rewear, key::kLidScaleLeft) - 1.1) < 1e-9);
-        CHECK(std::fabs(numberIn(rewear, key::kLidScaleRight) - 0.69) < 1e-9);
-        CHECK(std::fabs(numberIn(rewear, key::kLidFitOpenLeft) - 0.5) < 1e-9);
-        CHECK(std::fabs(numberIn(rewear, key::kGazeOffsetX) - 0.01) < 1e-9);
-        // Only the re-wear fit with the side dots sets the tilt
-        CHECK(std::isnan(numberIn(rewear, key::kGazeRollDeg)) == (mode == gaze_fit::Mode::Center));
+    JsonValue rewear = tweakedRoot();
+    applyFitValues(rewear, measured(true), gaze_fit::Mode::Center);
+    CHECK(std::fabs(numberIn(rewear, key::kLidScaleLeft) - 1.1) < 1e-9);
+    CHECK(std::fabs(numberIn(rewear, key::kLidScaleRight) - 0.69) < 1e-9);
+    CHECK(std::fabs(numberIn(rewear, key::kLidFitOpenLeft) - 0.5) < 1e-9);
+    CHECK(std::fabs(numberIn(rewear, key::kGazeOffsetX) - 0.01) < 1e-9);
+    // Re-centering writes the zero point only: no tilt, no gains
+    CHECK(std::isnan(numberIn(rewear, key::kGazeRollDeg)) && std::isnan(numberIn(rewear, key::kGazeGainUp)));
+
+    // An eye the fit didn't measure (Valve's openness stuck shut, the eye camera stood in) keeps its lid fit and
+    // scale; the other eye is written as usual
+    JsonValue kept = tweakedRoot();
+    gaze_fit::Values rightKept = measured(true);
+    rightKept.lidsKept[1] = true;
+    rightKept.lidOpen[1] = 0.0;
+    applyFitValues(kept, rightKept, gaze_fit::Mode::Full);
+    CHECK(kept.get(key::kLidScaleLeft) != nullptr && kept.get(key::kLidScaleLeft)->isNull());
+    CHECK(std::fabs(numberIn(kept, key::kLidScaleRight) - 0.69) < 1e-9);
+    CHECK(std::fabs(numberIn(kept, key::kLidFitOpenLeft) - 0.85) < 1e-9);
+    for (const char* name : kLidFitKeys[1]) CHECK(std::fabs(numberIn(kept, name) - 0.5) < 1e-9);
+    // ...and an eye without a lid fit stays without one
+    JsonValue none;
+    none.type = JsonValue::Type::Object;
+    applyFitValues(none, rightKept, gaze_fit::Mode::Full);
+    for (const char* name : kLidFitKeys[1]) CHECK(none.get(name) == nullptr);
+    CHECK(none.get(key::kLidScaleRight) == nullptr && std::fabs(numberIn(none, key::kLidFitClosedLeft) - 0.2) < 1e-9);
+    // So the Eye fit tab has the left eye's lid fit only (its line, "not fitted" for the right; see lidFitLines), and
+    // the left eye alone takes lid_widen
+    PanelModel oneEye;
+    oneEye.config.exists = true;
+    oneEye.config.root = none;
+    const FitInConfig fitted = fitInConfig(SettingsView(oneEye));
+    CHECK(fitted.lidsFitted[0] && !fitted.lidsFitted[1] && !fitted.values.hasLids);
+    CHECK(std::fabs(fitted.values.lidOpen[0] - 0.85) < 1e-9 && std::fabs(fitted.values.lidDown[0] - 0.7) < 1e-9);
+    const WidenState widen = widenState(SettingsView(oneEye));
+    CHECK(widen.fitted[0] && !widen.fitted[1] && !widen.room[1]);
+}
+
+/** The whole fit writes the zero point, the up gain, 1 sideways and down, no tilt, and takes each eye's own x out. */
+void testFitWritesPolicy() {
+    JsonValue root;
+    root.type = JsonValue::Type::Object;
+    root.set(key::kGazeRollDeg, JsonValue::makeNumber(6.7));
+    root.set(key::kGazeGainX, JsonValue::makeNumber(0.93));
+    root.set(key::kGazeGainDown, JsonValue::makeNumber(0.88));
+    root.set(key::kGazeOffsetXLeft, JsonValue::makeNumber(0.031));
+    root.set(key::kGazeOffsetXRight, JsonValue::makeNumber(-0.006));
+    root.set(key::kGazeGainXLeft, JsonValue::makeNumber(0.95));
+    root.set(key::kGazeGainXRight, JsonValue::makeNumber(0.9));
+    JsonValue rewear = root;
+    applyFitValues(root, measured(true), gaze_fit::Mode::Full);
+    CHECK(numberIn(root, key::kGazeRollDeg) == 0.0 && numberIn(root, key::kGazeGainX) == 1.0);
+    CHECK(numberIn(root, key::kGazeGainDown) == 1.0 && std::fabs(numberIn(root, key::kGazeGainUp) - 0.88) < 1e-9);
+    CHECK(std::fabs(numberIn(root, key::kGazeOffsetY) + 0.02) < 1e-9);
+    for (const char* name : {key::kGazeOffsetXLeft, key::kGazeOffsetXRight, key::kGazeGainXLeft, key::kGazeGainXRight}) {
+        CHECK(root.get(name) != nullptr && root.get(name)->isNull());
     }
+    // Re-centering leaves whatever else is there (set by hand) alone
+    applyFitValues(rewear, measured(true), gaze_fit::Mode::Center);
+    CHECK(numberIn(rewear, key::kGazeRollDeg) == 6.7 && numberIn(rewear, key::kGazeGainXLeft) == 0.95);
+    // What the Eye fit tab shows of it
+    PanelModel model;
+    model.config.exists = true;
+    model.config.root = root;
+    const FitInConfig fit = fitInConfig(SettingsView(model));
+    CHECK(fit.gazeFitted && fit.values.hasLids && std::fabs(fit.values.gainUp - 0.88) < 1e-9);
+    CHECK(fit.values.gainX == 1.0 && fit.values.gainDown == 1.0 && fit.values.rollDeg == 0.0);
 }
 
 /** "Reset" clears the scales along with the fit. */
@@ -123,18 +180,16 @@ AutoRecenter recenterOf(const JsonValue& value) {
     return autoRecenter(config);
 }
 
-/** Re-centering only is the default; the tilt only when chosen; the button re-centers when it is off. */
+/** Re-centering (the middle dot) is the default; "tilt" from before 0.7.7 reads as it. */
 void testRecenterDefault() {
     CHECK(recenterOf(JsonValue::makeNull()) == AutoRecenter::Center);
     CHECK(recenterOf(JsonValue::makeString("center")) == AutoRecenter::Center);
-    CHECK(recenterOf(JsonValue::makeString("tilt")) == AutoRecenter::Tilt);
+    CHECK(recenterOf(JsonValue::makeString("tilt")) == AutoRecenter::Center);
     CHECK(recenterOf(JsonValue::makeString("off")) == AutoRecenter::Off);
     CHECK(recenterOf(JsonValue::makeString("sideways")) == AutoRecenter::Center);
     CHECK(recenterOf(JsonValue::makeBool(true)) == AutoRecenter::Center);
     CHECK(recenterOf(JsonValue::makeBool(false)) == AutoRecenter::Off);
-    CHECK(rewearMode(AutoRecenter::Off) == gaze_fit::Mode::Center);
-    CHECK(rewearMode(AutoRecenter::Center) == gaze_fit::Mode::Center);
-    CHECK(rewearMode(AutoRecenter::Tilt) == gaze_fit::Mode::Tilt);
+    CHECK(std::string(kAutoRecenterModes[0]) == "off" && std::string(kAutoRecenterModes[1]) == "center");
     const SettingSpec* spec = findSetting(key::kAutoRecenter);
     CHECK(spec != nullptr && std::string(spec->defaultText) == "center");
 }
@@ -402,7 +457,8 @@ void testMigrateGazePresets() {
         CHECK(numberIn(root, key::kVersion) == kGazePresetsVersion && root.get(key::kVersion)->integer);
         CHECK(log.find(" -> ") != std::string::npos && log.find("gaze_deadzone 0.02 -> 0.005") != std::string::npos);
         std::string eyeLog;
-        CHECK(configNeedsMigration(root) && migrateEyeOffsets(root, eyeLog) && !configNeedsMigration(root));
+        CHECK(configNeedsMigration(root) && migrateEyeOffsets(root, eyeLog) && configNeedsMigration(root));
+        CHECK(migrateFitPolicy(root, eyeLog) && !configNeedsMigration(root));
         // Once only: the old values written again afterwards (by hand) stay
         root = gazeRoot(old[i][0], old[i][1], old[i][2], 0.02, kConfigVersion);
         CHECK(!migrateGazePresets(root, log) && numberIn(root, key::kGazeBeta) == old[i][1]);
@@ -453,14 +509,15 @@ void testMigrateEyeOffsets() {
     CHECK(std::fabs(numberIn(root, key::kGazeOffsetXRight) - 0.08) < 1e-9);
     CHECK(numberIn(root, key::kGazeGainXLeft) == 1.03 && numberIn(root, key::kGazeGainXRight) == 0.93);
     CHECK(numberIn(root, key::kGazeOffsetX) == 0.077);
-    CHECK(numberIn(root, key::kVersion) == kConfigVersion && root.get(key::kVersion)->integer);
+    CHECK(numberIn(root, key::kVersion) == kEyeOffsetsVersion && root.get(key::kVersion)->integer);
     CHECK(log.find("+0.078 / +0.082 -> +0.080") != std::string::npos);
-    CHECK(!configNeedsMigration(root));
+    // ...and then the fit policy (version 4)
+    CHECK(configNeedsMigration(root) && !migrateEyeOffsets(root, log));
     JsonValue apart = withEyes(2, 0.061, -0.223);
     CHECK(migrateEyeOffsets(apart, log) && std::fabs(numberIn(apart, key::kGazeOffsetXLeft) + 0.081) < 1e-9);
     // Once only: zero points set apart by hand afterwards stay
-    JsonValue later = withEyes(kConfigVersion, 0.01, 0.03);
-    CHECK(!configNeedsMigration(later) && !migrateEyeOffsets(later, log));
+    JsonValue later = withEyes(kEyeOffsetsVersion, 0.01, 0.03);
+    CHECK(!migrateEyeOffsets(later, log));
     CHECK(numberIn(later, key::kGazeOffsetXLeft) == 0.01 && numberIn(later, key::kGazeOffsetXRight) == 0.03);
     // Already the same, or never fitted per eye: only the version is written
     JsonValue same = withEyes(2, 0.05, 0.05);
@@ -469,12 +526,77 @@ void testMigrateEyeOffsets() {
     plain.type = JsonValue::Type::Object;
     plain.set(key::kVersion, JsonValue::makeNumber(2, true));
     CHECK(migrateEyeOffsets(plain, log) && log.empty() && plain.get(key::kGazeOffsetXLeft) == nullptr);
-    CHECK(numberIn(plain, key::kVersion) == kConfigVersion);
+    CHECK(numberIn(plain, key::kVersion) == kEyeOffsetsVersion);
     // A version 1 file goes through the gaze presets first, then this
     JsonValue old = withEyes(1, 0.0, 0.02);
     std::string gazeLog;
     CHECK(migrateGazePresets(old, gazeLog) && numberIn(old, key::kVersion) == kGazePresetsVersion);
     CHECK(migrateEyeOffsets(old, log) && std::fabs(numberIn(old, key::kGazeOffsetXRight) - 0.01) < 1e-9);
+}
+
+/** An eye fit from before version 4 keeps only the zero point and the up gain, once, whatever eye_behavior is. */
+void testMigrateFitPolicy() {
+    const auto fitted = [](double version, int behavior) {
+        JsonValue root;
+        root.type = JsonValue::Type::Object;
+        root.set(key::kLidWiden, JsonValue::makeString("normal"));
+        root.set(key::kVersion, JsonValue::makeNumber(version, true));
+        if (behavior > 0) root.set(key::kEyeBehavior, JsonValue::makeNumber(behavior, true));
+        root.set(key::kGazeOffsetX, JsonValue::makeNumber(0.012));
+        root.set(key::kGazeOffsetY, JsonValue::makeNumber(-0.02));
+        root.set(key::kGazeGainX, JsonValue::makeNumber(0.93));
+        root.set(key::kGazeGainUp, JsonValue::makeNumber(0.9));
+        root.set(key::kGazeGainDown, JsonValue::makeNumber(0.88));
+        root.set(key::kGazeRollDeg, JsonValue::makeNumber(6.7));
+        root.set(key::kGazeOffsetXLeft, JsonValue::makeNumber(0.012));
+        root.set(key::kGazeOffsetXRight, JsonValue::makeNumber(0.012));
+        root.set(key::kGazeGainXLeft, JsonValue::makeNumber(0.95));
+        root.set(key::kGazeGainXRight, JsonValue::makeNumber(0.9));
+        root.set(key::kAutoRecenter, JsonValue::makeString("tilt"));
+        root.set(key::kGazeScaleUp, JsonValue::makeNumber(1.2));
+        return root;
+    };
+    for (const int behavior : {0, 1, 2}) {
+        JsonValue root = fitted(kEyeOffsetsVersion, behavior);
+        std::string log;
+        CHECK(configNeedsMigration(root) && migrateFitPolicy(root, log));
+        CHECK(numberIn(root, key::kGazeRollDeg) == 0.0 && numberIn(root, key::kGazeGainX) == 1.0);
+        CHECK(numberIn(root, key::kGazeGainDown) == 1.0);
+        // Kept: the zero point, the up gain, and anything not the fit's (the gaze scale, eye_behavior)
+        CHECK(numberIn(root, key::kGazeOffsetX) == 0.012 && numberIn(root, key::kGazeOffsetY) == -0.02);
+        CHECK(numberIn(root, key::kGazeGainUp) == 0.9 && numberIn(root, key::kGazeScaleUp) == 1.2);
+        CHECK(behavior == 0 || numberIn(root, key::kEyeBehavior) == behavior);
+        for (const char* name :
+             {key::kGazeOffsetXLeft, key::kGazeOffsetXRight, key::kGazeGainXLeft, key::kGazeGainXRight}) {
+            CHECK(root.get(name) != nullptr && root.get(name)->isNull());
+        }
+        CHECK(root.get(key::kAutoRecenter)->text == "center");
+        CHECK(numberIn(root, key::kVersion) == kConfigVersion && root.get(key::kVersion)->integer);
+        CHECK(log == "gaze_roll_deg 6.7 -> 0, gaze_gain_x 0.93 -> 1, gaze_gain_down 0.88 -> 1, "
+                     "gaze_offset_x_left 0.012 -> null, gaze_offset_x_right 0.012 -> null, "
+                     "gaze_gain_x_left 0.95 -> null, gaze_gain_x_right 0.9 -> null, "
+                     "auto_recenter \"tilt\" -> \"center\"");
+        // Once only: a tilt or gains set by hand afterwards stay
+        CHECK(!configNeedsMigration(root));
+        root.set(key::kGazeRollDeg, JsonValue::makeNumber(2.0));
+        CHECK(!migrateFitPolicy(root, log) && numberIn(root, key::kGazeRollDeg) == 2.0);
+    }
+    // Nothing of the old fit set: only the version
+    JsonValue plain;
+    plain.type = JsonValue::Type::Object;
+    plain.set(key::kVersion, JsonValue::makeNumber(kEyeOffsetsVersion, true));
+    plain.set(key::kAutoRecenter, JsonValue::makeString("off"));
+    std::string log;
+    CHECK(migrateFitPolicy(plain, log) && log.empty() && numberIn(plain, key::kVersion) == kConfigVersion);
+    CHECK(plain.get(key::kGazeRollDeg) == nullptr && plain.get(key::kAutoRecenter)->text == "off");
+    // A file of the current version is left alone
+    JsonValue current = fitted(kConfigVersion, 2);
+    CHECK(!migrateFitPolicy(current, log) && numberIn(current, key::kGazeRollDeg) == 6.7);
+    // A version 2 file goes through each step in turn
+    JsonValue old = fitted(2, 1);
+    old.set(key::kGazeOffsetXRight, JsonValue::makeNumber(0.02));
+    CHECK(migrateEyeOffsets(old, log) && migrateFitPolicy(old, log) && !configNeedsMigration(old));
+    CHECK(old.get(key::kGazeOffsetXRight)->isNull() && numberIn(old, key::kGazeGainUp) == 0.9);
 }
 
 /** The destination cards' button arguments stand for the output types both ways. */
@@ -649,12 +771,45 @@ void testPupilsToVrchat() {
     // Where they go, from status.json
     CHECK(parseStatus("{\"pid\": 1, \"pupil_target\": \"192.168.0.60:9000\"}", 0, false).pupilTarget ==
           "192.168.0.60:9000");
-    // Shown only for LiveLink with the eye cameras
+    // Shown only for LiveLink while the eye cameras are in use
     CHECK(pupilsRowShown(kOutputLivelink, true));
     CHECK(!pupilsRowShown(kOutputLivelink, false));
     CHECK(!pupilsRowShown(kOutputVrchat, true));
     CHECK(!pupilsRowShown(kOutputEtvr, true));
     CHECK(!pupilsRowShown("", true));
+    // ...and in their place, without them, the one dashed line (where pupils could go: VRChat directly and LiveLink)
+    CHECK(pupilsLineShown(kOutputLivelink, false) && pupilsLineShown(kOutputVrchat, false));
+    CHECK(!pupilsLineShown(kOutputEtvr, false) && !pupilsLineShown("", false));
+    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr}) CHECK(!pupilsLineShown(output, true));
+}
+
+/** The short state after the Basic tab's eye camera switch follows the eye cameras page's "Now" row. */
+void testCameraBrief() {
+    EyeStatus s;
+    s.present = s.running = true;
+    s.camera.known = s.camera.present = true;
+    s.camera.calibState = 5;
+    s.camera.used[0] = s.camera.used[1] = true;
+    CHECK(cameraBrief(s, true, false) == CameraBrief::Both);
+    // (camera values still in use just after switching off: frameeyeosc hasn't caught up yet)
+    CHECK(cameraBrief(s, false, false) == CameraBrief::Both);
+    s.camera.used[1] = false;
+    CHECK(cameraBrief(s, true, false) == CameraBrief::Left);
+    s.camera.used[0] = false;
+    s.camera.used[1] = true;
+    CHECK(cameraBrief(s, true, false) == CameraBrief::Right);
+    s.camera.used[1] = false;
+    CHECK(cameraBrief(s, false, false) == CameraBrief::Off);
+    // Learning the relaxed eyes, no baseline yet
+    s.camera.calibState = 0;
+    CHECK(cameraBrief(s, true, true) == CameraBrief::Warming);
+    // Anything else: waiting (no camera values, not calibrated, frameeyeosc not running); off stays off
+    CHECK(cameraBrief(s, true, false) == CameraBrief::Waiting);
+    s.camera.present = false;
+    CHECK(cameraBrief(s, true, false) == CameraBrief::Waiting);
+    EyeStatus stopped;
+    CHECK(cameraBrief(stopped, true, false) == CameraBrief::Waiting);
+    CHECK(cameraBrief(stopped, false, false) == CameraBrief::Off);
 }
 
 /** pupil_bits (the Output tab's "How the avatar takes pupils"): an integer 0..4, 0 by default, and where its row
@@ -672,17 +827,16 @@ void testPupilBits() {
     // Locked by --pupil-bits: frameeyeosc's value
     m.status = parseStatus("{\"pid\": 1, \"locked\": [\"pupil_bits\"], \"effective\": {\"pupil_bits\": 2}}", 0, false);
     CHECK(SettingsView(m).locked(key::kPupilBits) && SettingsView(m).number(key::kPupilBits) == 2);
-    // The row: only with the eye cameras, for VRChat directly and LiveLink; greyed while the pupils don't go there
-    CHECK(pupilBitsRow(kOutputVrchat, true, true, true) == PupilBitsRow::Usable);
-    CHECK(pupilBitsRow(kOutputVrchat, true, true, false) == PupilBitsRow::Usable);  // pupils_to_vrchat is LiveLink's
-    CHECK(pupilBitsRow(kOutputVrchat, true, false, true) == PupilBitsRow::Greyed);  // camera_lids off
-    CHECK(pupilBitsRow(kOutputLivelink, true, true, true) == PupilBitsRow::Usable);
-    CHECK(pupilBitsRow(kOutputLivelink, true, true, false) == PupilBitsRow::Greyed);
-    CHECK(pupilBitsRow(kOutputLivelink, true, false, true) == PupilBitsRow::Greyed);
+    // The row: only while the eye cameras are in use (set up and switched on), for VRChat directly and LiveLink;
+    // greyed while the pupils don't go there (LiveLink without pupils_to_vrchat)
+    CHECK(pupilBitsRow(kOutputVrchat, true, true) == PupilBitsRow::Usable);
+    CHECK(pupilBitsRow(kOutputVrchat, true, false) == PupilBitsRow::Usable);  // pupils_to_vrchat is LiveLink's
+    CHECK(pupilBitsRow(kOutputLivelink, true, true) == PupilBitsRow::Usable);
+    CHECK(pupilBitsRow(kOutputLivelink, true, false) == PupilBitsRow::Greyed);
     for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr, ""}) {
-        CHECK(pupilBitsRow(output, false, true, true) == PupilBitsRow::Hidden);
+        CHECK(pupilBitsRow(output, false, true) == PupilBitsRow::Hidden);  // not in use (camera_lids off too)
     }
-    CHECK(pupilBitsRow(kOutputEtvr, true, true, true) == PupilBitsRow::Hidden);
+    CHECK(pupilBitsRow(kOutputEtvr, true, true) == PupilBitsRow::Hidden);
 }
 
 /** The bottom sentence of the eye cameras' page, for every case, in its order. */
@@ -885,8 +1039,115 @@ void testUpdateNotes() {
  * Run the tests.
  * @return 0 if all passed
  */
+/**
+ * A model with the gaze scale at these values (and these keys locked by the command line).
+ * @param values left, right, up, down
+ * @param locked keys locked
+ * @return the model
+ */
+PanelModel scaleModel(const double (&values)[4], const std::vector<std::string>& locked = {}) {
+    PanelModel m;
+    m.config.exists = true;
+    m.config.root.type = JsonValue::Type::Object;
+    for (int i = 0; i < 4; ++i) m.config.root.set(kGazeScaleKeys[i / 2][i % 2], JsonValue::makeNumber(values[i]));
+    m.status.present = m.status.running = true;  // (keys are locked only while frameeyeosc runs)
+    m.status.locked = locked;
+    return m;
+}
+
+/**
+ * The value a change list writes for a key.
+ * @param changes the changes
+ * @param name the key
+ * @return it, or NaN if the key isn't written
+ */
+double written(const std::vector<SettingChange>& changes, const char* name) {
+    for (const SettingChange& change : changes) {
+        if (std::string(change.key) == name && change.value.isNumber()) return change.value.number;
+    }
+    return NAN;
+}
+
+/** The gaze scale: shown as percent, its pairs, the locks at start, − / ＋ with the lock closed or open, re-linking. */
+void testGazeScale() {
+    CHECK(formatPercent(1.0) == "100%" && formatPercent(0.25) == "25%" && formatPercent(1.5) == "150%");
+    CHECK(formatPercent(0.95) == "95%" && formatPercent(1.05) == "105%" && formatPercent(0.55) == "55%");
+    CHECK(formatPercent(NAN) == "—");
+    // Its range and step, and the default where the file has none
+    for (const auto& pair : kGazeScaleKeys) {
+        for (const char* name : pair) {
+            const SettingSpec* spec = findSetting(name);
+            CHECK(spec != nullptr && spec->min == 0.25 && spec->max == 1.5 && spec->step == 0.05);
+            CHECK(spec != nullptr && spec->defaultNumber == 1.0);
+        }
+    }
+    PanelModel plain;
+    plain.config.exists = true;
+    plain.config.root.type = JsonValue::Type::Object;
+    CHECK(SettingsView(plain).number(key::kGazeScaleDown) == 1.0);
+    // ...so a file from before it needs nothing done
+    plain.config.root.set(key::kVersion, JsonValue::makeNumber(kConfigVersion, true));
+    plain.config.root.set(key::kLidWiden, JsonValue::makeString("normal"));
+    CHECK(!configNeedsMigration(plain.config.root));
+    // The pairs
+    CHECK(gazeScalePair(key::kGazeScaleLeft) == 0 && gazeScalePair(key::kGazeScaleRight) == 0);
+    CHECK(gazeScalePair(key::kGazeScaleUp) == 1 && gazeScalePair(key::kGazeScaleDown) == 1);
+    CHECK(gazeScalePair(key::kGazeGainUp) == -1);
+    // At start: closed as left, but open while the two differ
+    CHECK(gazeScaleLinkShown(true, 1.0, 1.0) && gazeScaleLinkShown(true, 0.8, 0.8));
+    CHECK(!gazeScaleLinkShown(true, 1.2, 0.9) && !gazeScaleLinkShown(false, 1.0, 1.0));
+    // ＋ on the left, linked: both go to 105%; open: the left alone
+    const PanelModel ones = scaleModel({1.0, 1.0, 1.0, 1.0});
+    const SettingsView view(ones);
+    std::vector<SettingChange> changes = gazeScaleStep(view, key::kGazeScaleLeft, 1, true);
+    CHECK(changes.size() == 2 && std::fabs(written(changes, key::kGazeScaleLeft) - 1.05) < 1e-9 &&
+          std::fabs(written(changes, key::kGazeScaleRight) - 1.05) < 1e-9);
+    changes = gazeScaleStep(view, key::kGazeScaleLeft, 1, false);
+    CHECK(changes.size() == 1 && std::fabs(written(changes, key::kGazeScaleLeft) - 1.05) < 1e-9);
+    // − on the second of a pair, linked, moves the first too
+    changes = gazeScaleStep(view, key::kGazeScaleDown, -1, true);
+    CHECK(changes.size() == 2 && std::fabs(written(changes, key::kGazeScaleUp) - 0.95) < 1e-9 &&
+          std::fabs(written(changes, key::kGazeScaleDown) - 0.95) < 1e-9 && std::isnan(written(changes, key::kGazeScaleLeft)));
+    // At the ends: nothing moves
+    const PanelModel ends = scaleModel({0.25, 0.25, 1.5, 1.5});
+    CHECK(gazeScaleStep(SettingsView(ends), key::kGazeScaleRight, -1, true).empty());
+    CHECK(gazeScaleStep(SettingsView(ends), key::kGazeScaleUp, 1, true).empty());
+    // Linked, with the other one locked by the command line: only the one pressed; the one pressed locked: nothing
+    const PanelModel locked = scaleModel({1.0, 1.0, 1.0, 1.0}, {key::kGazeScaleRight});
+    changes = gazeScaleStep(SettingsView(locked), key::kGazeScaleLeft, 1, true);
+    CHECK(changes.size() == 1 && std::string(changes[0].key) == key::kGazeScaleLeft);
+    CHECK(gazeScaleStep(SettingsView(locked), key::kGazeScaleRight, 1, true).empty());
+    // ...so that pair's lock is not usable (drawn open), the other pair's is
+    CHECK(!gazeScaleLinkUsable(SettingsView(locked), 0) && gazeScaleLinkUsable(SettingsView(locked), 1));
+    CHECK(gazeScaleLinkUsable(view, 0) && gazeScaleLinkUsable(view, 1) && !gazeScaleLinkUsable(view, 2));
+    // The first of a pair locked: the second moves on its own
+    const PanelModel firstLocked = scaleModel({1.0, 1.0, 1.0, 1.0}, {key::kGazeScaleUp});
+    CHECK(!gazeScaleLinkUsable(SettingsView(firstLocked), 1));
+    changes = gazeScaleStep(SettingsView(firstLocked), key::kGazeScaleDown, -1, true);
+    CHECK(changes.size() == 1 && std::fabs(written(changes, key::kGazeScaleDown) - 0.95) < 1e-9);
+    CHECK(gazeScaleStep(view, key::kGazeGainUp, 1, true).empty());
+    // Closing a lock again: the second takes the first (right := left, down := up); nothing when they are the same
+    const PanelModel apart = scaleModel({1.2, 0.9, 0.75, 1.1});
+    changes = gazeScaleRelink(SettingsView(apart), 0);
+    CHECK(changes.size() == 1 && std::fabs(written(changes, key::kGazeScaleRight) - 1.2) < 1e-9);
+    changes = gazeScaleRelink(SettingsView(apart), 1);
+    CHECK(changes.size() == 1 && std::fabs(written(changes, key::kGazeScaleDown) - 0.75) < 1e-9);
+    CHECK(gazeScaleRelink(view, 0).empty() && gazeScaleRelink(view, 1).empty() && gazeScaleRelink(view, 2).empty());
+    CHECK(gazeScaleRelink(SettingsView(scaleModel({1.2, 0.9, 1.0, 1.0}, {key::kGazeScaleRight})), 0).empty());
+    // The eye fit leaves it alone: neither "Reset" nor a fit's values touch it
+    const std::vector<std::string> keys = fitResetKeys();
+    for (const auto& pair : kGazeScaleKeys) {
+        for (const char* name : pair) CHECK(std::find(keys.begin(), keys.end(), name) == keys.end());
+    }
+    JsonValue root = scaleModel({1.2, 0.9, 0.75, 1.1}).config.root;
+    applyFitValues(root, measured(true), gaze_fit::Mode::Full);
+    CHECK(std::fabs(numberIn(root, key::kGazeScaleLeft) - 1.2) < 1e-9 && std::fabs(numberIn(root, key::kGazeScaleDown) - 1.1) < 1e-9);
+}
+
 int main() {
+    testGazeScale();
     testFitResetsScales();
+    testFitWritesPolicy();
     testResetClearsScales();
     testRecenterDefault();
     testOutputArgs();
@@ -900,6 +1161,7 @@ int main() {
     testTrackerRateCause();
     testGazePresets();
     testMigrateGazePresets();
+    testMigrateFitPolicy();
     testMigrateEyeOffsets();
     testSteamlinkParams();
     testNativeEyes();
@@ -909,6 +1171,7 @@ int main() {
     testWarmingShown();
     testCameraLine();
     testPupilsToVrchat();
+    testCameraBrief();
     testPupilBits();
     testLearnedAndHelpRows();
     testUpdateNotes();

@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -162,6 +163,19 @@ void testParse() {
             "{\"state\": \"idle\", \"baseline\": 1, \"warmup_remaining_s\": \"5\", \"calib_saved\": \"yes\"}",
             kNow);
         CHECK(!odd.hasBaseline && std::isnan(odd.warmupRemainingS) && !odd.hasCalibSaved && !odd.calibSaved);
+        // The eyelids wait for the warm-up only while read live, with no baseline for this wear, after the setup
+        const char* live = "{\"state\": \"idle\", \"live\": true, \"calib_state\": %d, \"baseline\": \"warming\", "
+                           "\"setup_done\": %s}";
+        const auto lids = [&](int calib, const char* setup) {
+            char text[160];
+            std::snprintf(text, sizeof(text), live, calib, setup);
+            return eyecam::lidsAwaitWarmup(eyecam::parseStatus(text, kNow));
+        };
+        CHECK(lids(0, "true") && lids(eyecam::kCalibUserBit, "true"));
+        CHECK(!lids(eyecam::kCalibWearBit, "true") && !lids(eyecam::kCalibAutoBit, "true") && !lids(0, "false"));
+        CHECK(!eyecam::lidsAwaitWarmup(warming) && !eyecam::lidsAwaitWarmup(ready));  // not live; ready
+        CHECK(eyecam::lidsAwaitWarmup(eyecam::parseStatus(
+            "{\"state\": \"idle\", \"live\": true, \"calib_state\": 0, \"baseline\": \"warming\"}", kNow)));
     }
 
     // Only a state: the rest missing (NaN numbers, no step)
@@ -652,7 +666,7 @@ void testCalibText() {
     for (const Language language : {Language::Ja, Language::En}) {
         const UiText& t = uiText(language);
         for (const char* text :
-             {t.rowCameraLids, t.cameraUseBoth, t.cameraUseLeft, t.cameraUseRight, t.cameraUseValve,
+             {t.cameraUseBoth, t.cameraUseLeft, t.cameraUseRight, t.cameraUseValve,
               t.cameraUseValveFormat, t.cameraWhyNotCalibrated, t.cameraWhyNoCamera, t.cameraPupilSuffix,
               t.cameraWhyWarming, t.eyecamWarmingFormat, t.eyecamLiveOff, t.eyecamCalibWearTitle,
               t.eyecamCalibUserTitle, t.eyecamCalibWaiting, t.eyecamCalibErrorTitle, t.eyecamCalibRetry,
@@ -679,7 +693,7 @@ void testCalibText() {
               t.setupDoneHelp2Do, t.setupDoneButton, t.setupDoneNote, t.nextTitle, t.nextPass, t.nextWait,
               t.nextLearnFormat, t.nextFail, t.nextError, t.readyTitle, t.readyNote, t.lidsFromValve,
               t.lidsFromCamera, t.lidsFromCameraLeft, t.lidsFromCameraRight, t.camRowState, t.camRowStateHint,
-              t.camLearned, t.camRowLidsHint, t.camRowCalib, t.camRowCalibHint,
+              t.camLearned, t.camRowCalib, t.camRowCalibHint,
               t.camCalibButton, t.camCalibSide1, t.camCalibSide2, t.camRowUser, t.camRowUserHint, t.camUserButton,
               t.camUserSide1, t.camUserSide2, t.camUserNeedsCalib, t.camHelpTitle, t.camHelp1, t.camHelp1Do,
               t.camHelp2, t.camHelp2Do, t.camHelp3, t.camHelp3Do, t.lidsCamButton, t.lidsCamMarks,
@@ -688,14 +702,19 @@ void testCalibText() {
               t.devRecord, t.devRecordHint, t.tabEyecam, t.setupChipSquint, t.setupChipLookUp,
               t.setupChipLookDown, t.calibDonePill, t.calibDoneTitle, t.calibDoneBody, t.calibUserDoneTitle,
               t.calibUserDoneBody, t.calibDoneButton, t.lidsNowLabel, t.lidsNowBoth, t.lidsNowLeft,
-              t.lidsNowRight, t.lidsNowValve, t.lidsNowSwitch, t.lidsNowNoCamera, t.rowWidenEase, t.widenHintCamera,
+              t.lidsNowRight, t.lidsNowValve, t.lidsNowSwitch, t.lidsNowWaiting, t.rowWidenEase, t.widenHintCamera,
               t.widenHintMixed, t.widenHintValve, t.widenHintSaturated, t.widenNoteCamera, t.widenNoteValve,
               t.widenNoteUnfitted, t.widenSaturated, t.blinkHint, t.blinkHoldCaption,
               t.rowBlinkBoth, t.blinkBothHint, t.blinkBothNote, t.rowLidFloor, t.lidFloorHint, t.lidFloorNote, t.lidFloorNoteIdle,
               t.lidSmoothHint, t.syncOff, t.syncStrong, t.syncHint,
               t.lidsLook, t.lidsBlinks, t.lidsFine, t.camPupilLine,
               t.camWidenNotice, t.camWidenButton, t.calibCardTitle, t.calibResultTitle, t.calibWearNote,
-              t.searchNotWornFormat, t.searchNotWorn, t.searchNoVideo, t.searchOneEye}) {
+              t.searchNotWornFormat, t.searchNotWorn, t.searchNoVideo, t.searchOneEye, t.outputCameraSuffix,
+              t.rowEyeCameras, t.hintEyeCamerasNew, t.eyeCamerasUnused, t.eyeCamerasStart, t.hintEyeCamerasOn,
+              t.eyeCamerasUse, t.eyeCamerasDontUse, t.camBriefBoth, t.camBriefLeft, t.camBriefRight, t.camBriefOff,
+              t.camBriefWarming, t.camBriefWaiting, t.cameraBadge, t.cameraLineWiden, t.cameraLineFloor,
+              t.cameraLinePupils, t.camIntroTitle, t.camIntro[0], t.camIntro[1], t.camIntro[2], t.camIntroBox,
+              t.camIntroButton, t.camIntroNote}) {
             CHECK(text != nullptr && text[0] != '\0');
         }
         CHECK(t.setupLeftBefore != nullptr);  // (empty in English: "7 s left")
@@ -1037,6 +1056,25 @@ void testSetupStep() {
         CHECK(eyecam::setupStep(st, PasswordState::Set) == SetupStep::Done);
         CHECK(eyecam::toolNotice(st, PasswordState::Set) == ToolNotice::None);
     }
+}
+
+void testRecenterWarmup() {
+    // Set up, read live and still learning the relaxed eyes: re-centering waits only with the cameras switched on
+    eyecam::View view;
+    view.visible = true;
+    view.password = eyecam::PasswordState::Set;
+    view.status = setupStatus("idle", ", \"auto_grab\": \"ok\", \"has_buffers\": true, \"setup_done\": true, "
+                                      "\"calib_state\": 0, \"baseline\": \"warming\"");
+    CHECK(eyecam::lidsAwaitWarmup(view.status) && eyecam::setUp(view));
+    CHECK(eyecam::recenterAwaitsWarmup(view, true));
+    CHECK(!eyecam::recenterAwaitsWarmup(view, false));
+    // Not running (tab gone), or the warm-up over: nothing to wait for
+    eyecam::View gone = view;
+    gone.visible = false;
+    CHECK(!eyecam::recenterAwaitsWarmup(gone, true));
+    eyecam::View ready = view;
+    ready.status.calibState = eyecam::kCalibAutoBit;
+    CHECK(!eyecam::recenterAwaitsWarmup(ready, true));
 }
 
 void testErrorBack() {
@@ -1627,6 +1665,34 @@ void testReply() {
     CHECK(!r.ok);
     SAME(r.error, "unexpected reply: okay");
     CHECK(!eyecam::parseReply("error x", "start").ok);
+    // "ok <what>": "driftlog on" says its file
+    r = eyecam::parseReply("ok /home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv\n", "driftlog on x");
+    CHECK(r.ok && r.error.empty());
+    SAME(r.detail, "/home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv");
+    CHECK(eyecam::parseReply("ok", "stop").detail.empty());
+}
+
+void testDriftlogParse() {
+    // As eyecam-rec writes it
+    {
+        const Status s = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"driftlog\": {\"on\": true, \"path\": "
+            "\"/home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv\", \"rows\": 12, \"bytes\": 3400, "
+            "\"full\": false, \"error\": \"\"}}",
+            kNow);
+        CHECK(s.hasDriftlog && s.driftlogOn);
+        SAME(s.driftlogPath, "/home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv");
+    }
+    {
+        const Status s = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"driftlog\": {\"on\": false, \"path\": \"\", \"rows\": 0, \"bytes\": 0, "
+            "\"full\": false, \"error\": \"\"}}",
+            kNow);
+        CHECK(s.hasDriftlog && !s.driftlogOn && s.driftlogPath.empty());
+    }
+    // An older eyecam-rec without it, or something odd in its place
+    CHECK(!eyecam::parseStatus("{\"state\": \"idle\"}", kNow).hasDriftlog);
+    CHECK(!eyecam::parseStatus("{\"state\": \"idle\", \"driftlog\": true}", kNow).hasDriftlog);
 }
 
 /**
@@ -1638,6 +1704,16 @@ std::string tempDir() {
     const char* dir = ::mkdtemp(pattern);
     return dir != nullptr ? dir : "/tmp";
 }
+
+/** A folder from tempDir, removed with what is in it when this goes (also when a check fails on the way). */
+struct RemoveDir {
+    std::string path;  ///< the folder
+
+    ~RemoveDir() {
+        std::error_code ignored;
+        if (path != "/tmp") std::filesystem::remove_all(path, ignored);
+    }
+};
 
 void testReadFile() {
     const std::string dir = tempDir();
@@ -2072,6 +2148,7 @@ void testUtf8() {
     SAME(eyecam::parseReply(std::string("err \xE6\xA0\xA1\xE6"), "start").error, "\xE6\xA0\xA1" + bad);
     // A status file too large isn't read
     const std::string dir = tempDir();
+    const RemoveDir gone {dir};
     {
         std::ofstream big(dir + "/status.json", std::ios::binary);
         big << "{\"state\": \"idle\", \"message\": \"" << std::string(eyecam::kMaxStatusBytes, 'a') << "\"}";
@@ -2339,12 +2416,14 @@ int main() {
     testMessageEn();
     testSetupParse();
     testSetupStep();
+    testRecenterWarmup();
     testSetupFlow();
     testErrorBack();
     testCalibChips();
     testPageCalib();
     testSetupTools();
     testReply();
+    testDriftlogParse();
     testUtf8();
     testReadFile();
     testProtocolFile();

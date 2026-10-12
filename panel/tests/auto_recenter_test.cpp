@@ -343,6 +343,99 @@ void testOneShotPerPutOn() {
     CHECK(run.logs.size() == 3);
 }
 
+void testCameraWarmupHolds() {
+    // Valve's eye server reads the right eye shut (stuck at 0) while the eye cameras warm up: no sample would count,
+    // so it waits for the warm-up, saying so once
+    Run run;
+    run.in.valveShut[1] = true;
+    run.in.camerasWarming = true;
+    run.wait(3.5);
+    CHECK(run.starts == 0 && run.watcher.armed());
+    CHECK(run.logged("auto re-center: waiting for the eye cameras' warm-up (Valve reads R shut)") == 1);
+    run.wait(20);
+    CHECK(run.starts == 0 && run.logs.size() == 1);
+    // Warmed up: starts kCameraMarginSec later (frameeyeosc takes the camera's eyelid by then)
+    run.in.camerasWarming = false;
+    const double warm = run.now;
+    run.wait(auto_recenter::kCameraMarginSec - 0.25);
+    CHECK(run.starts == 0);
+    run.wait(0.5);
+    CHECK(run.starts == 1 && run.startedAt >= warm + auto_recenter::kCameraMarginSec);
+    CHECK(run.logged("auto re-center: starting (after 2") == 1);
+    // Put on again, the same: one wait (and line) per wearing
+    run.finishFit();
+    run.in.camerasWarming = true;
+    run.in.tracking = false;
+    run.wait(20);
+    run.in.tracking = true;
+    run.wait(10);
+    CHECK(run.starts == 1 && run.logged("auto re-center: waiting") == 2);
+    // ...also when the eye reads open on Valve's eye server again
+    run.in.valveShut[1] = false;
+    const double open = run.now;
+    run.wait(2);
+    CHECK(run.starts == 2 && run.startedAt >= open + auto_recenter::kCameraMarginSec);
+    // The dashboard opened meanwhile: the margin ran all the same, and it starts once it has been closed a second
+    Run dash;
+    dash.in.valveShut[0] = true;
+    dash.in.camerasWarming = true;
+    dash.wait(5);
+    CHECK(dash.logged("(Valve reads L shut)") == 1);
+    dash.in.dashboardOpen = true;
+    dash.wait(1);
+    dash.in.camerasWarming = false;
+    dash.wait(5);
+    dash.in.dashboardOpen = false;
+    const double closed = dash.now;
+    dash.wait(2);
+    CHECK(dash.starts == 1 && dash.startedAt >= closed + auto_recenter::kClosedSec &&
+          dash.startedAt <= closed + auto_recenter::kClosedSec + 0.25);
+}
+
+void testCameraWarmupCap() {
+    // Still warming up kCameraWaitSec after it would have started: it starts anyway
+    Run run;
+    run.in.valveShut[0] = true;
+    run.in.valveShut[1] = true;
+    run.in.camerasWarming = true;
+    run.wait(4);
+    CHECK(run.starts == 0 && run.logged("(Valve reads both eyes shut)") == 1);
+    run.wait(auto_recenter::kCameraWaitSec - 1.5);
+    CHECK(run.starts == 0);
+    run.wait(1);
+    CHECK(run.starts == 1);
+    CHECK(run.startedAt >= 103.0 + auto_recenter::kCameraWaitSec &&
+          run.startedAt <= 103.25 + auto_recenter::kCameraWaitSec);
+    CHECK(run.logged("auto re-center: starting (the eye cameras still warming up after 45.") == 1);
+    run.finishFit();
+    run.wait(60);
+    CHECK(run.starts == 1);
+}
+
+void testCameraWarmupOtherwiseAsBefore() {
+    // An eye shut on Valve's eye server without the cameras warming up (none, ready, or no use waiting): as before
+    Run noCamera;
+    noCamera.in.valveShut[1] = true;
+    noCamera.wait(3.5);
+    CHECK(noCamera.starts == 1 && noCamera.startedAt <= 103.25 && noCamera.logged("waiting") == 0);
+    // Both eyes open on it while the cameras warm up: as before
+    Run open;
+    open.in.camerasWarming = true;
+    open.wait(3.5);
+    CHECK(open.starts == 1 && open.startedAt <= 103.25 && open.logged("waiting") == 0);
+    CHECK(open.logs.size() == 1 && open.logs[0] == "auto re-center: starting");
+    // ...and a blink just as it would start isn't an eye shut
+    Run blink;
+    blink.in.camerasWarming = true;
+    blink.wait(2.75);
+    blink.in.valveShut[0] = true;
+    blink.in.valveShut[1] = true;
+    blink.wait(0.5);
+    blink.in.valveShut[0] = false;
+    blink.in.valveShut[1] = false;
+    CHECK(blink.starts == 1 && blink.startedAt <= 103.25 && blink.logged("waiting") == 0);
+}
+
 void testWornFor() {
     // For the records: how long the eyes have been tracked, and how long they weren't before that
     Run run;
@@ -374,6 +467,9 @@ int main() {
     testSuspendCountsAsOff();
     testDisabledDisarms();
     testOneShotPerPutOn();
+    testCameraWarmupHolds();
+    testCameraWarmupCap();
+    testCameraWarmupOtherwiseAsBefore();
     testWornFor();
     if (gFailures == 0) std::printf("auto-recenter-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

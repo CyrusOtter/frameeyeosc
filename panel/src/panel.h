@@ -63,6 +63,11 @@ enum class PanelAction {
     FitDetailsPage,    ///< show arg (0 gaze, 1 eyelids) under "Fine-tune" (handled inside the panel)
     LidsPage,          ///< show the Eyelids tab's sub-tab arg (LidsPage; handled inside the panel, which opens the tab;
                        ///< the caller remembers it, see lidsPage)
+    GazePage,          ///< show the Gaze tab's sub-tab arg (GazePage; handled inside the panel, which opens the tab;
+                       ///< the caller remembers it, see gazePage)
+    GazeScaleLink,     ///< the gaze scale's lock for pair arg (0 left / right, 1 up / down): the panel opens or closes
+                       ///< it (gazeScaleLinked); the caller, once it is closed, sets the second value to the first
+                       ///< (gazeScaleRelink) and remembers the locks
     SetLidWiden,       ///< lid_widen = kLidWidenModes[arg]
     LidPreset,         ///< eyelid smoothing preset arg (0 light, 1 medium, 2 strong)
     NumberSlider,      ///< a setting's slider (key): pressed and dragged inside the panel; the caller takes the value
@@ -89,6 +94,7 @@ enum class PanelAction {
                        ///< 1 = passwd; the caller starts it, never from --dump-png)
     SetupVideo,        ///< ...open the setup video (only shown with a video URL)
     SetupProceed,      ///< ...on to the usual page (its "start using", or "continue" with the standard widening)
+    SetupBegin,        ///< "Get started" under what the eye cameras add: on to the setup checklist (handled inside)
     EyecamBack,        ///< "Back" on a failed calibration's or recording's error: dismiss it in the panel only
                        ///< (SetupFlow::dismissError; eyecam-rec stays in "error" until the next command)
     DiagOpen,          ///< open the diagnostics page on the Advanced tab (the panel opens it; the caller reads the
@@ -102,6 +108,23 @@ enum class PanelAction {
                        ///< Advanced tab, the caller reads it: recordShown)
     RecordsAll,        ///< open the list of all records (the panel opens it; the caller reads them again)
     RecordBack,        ///< back from a record (to the list it came from) or from all records (handled inside)
+    AppsOpen,          ///< the row at the bottom of "Version": open the list of the other Frame apps (the panel opens it;
+                       ///< the caller fetches the list if it is due)
+    AppsClose,         ///< the list's cross: back to "Version" (handled inside)
+    AppsInstall,       ///< an app's "Install" in the list: arg = its index in the list as last drawn (the panel opens
+                       ///< the confirmation)
+    AppsMenu,          ///< the list's "Open the installer": the confirmation for the installer's menu (handled inside)
+    AppsScroll,        ///< scroll the list a third of its view, arg -1 up / 1 down (handled inside)
+    AppsCancel,        ///< the confirmation's "Cancel": back to the list (handled inside)
+    AppsLaunch,        ///< the confirmation's "Open in Konsole": the caller opens the installer for appsConfirmKey()
+                       ///< and gives the result to setAppsLaunchResult (never from --dump-png)
+    PreviewOpen,       ///< the left column's "Eye preview": open the sheet, or close it if it is open (handled inside;
+                       ///< the caller follows previewOpen)
+    PreviewClose,      ///< the sheet's cross (handled inside)
+    PreviewSource,     ///< which values drive the drawn eyes: arg = eye_preview::Source (handled inside)
+    PreviewMirror,     ///< show the eyes as in a mirror, or as seen from the front (handled inside)
+    PreviewCamera,     ///< the eye cameras' pictures on / off (handled inside; the caller follows previewPictures)
+    PreviewFreeze,     ///< stop the drawing where it is, or let it move again (handled inside)
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -120,7 +143,7 @@ struct PanelHit {
 enum class PanelTab { Basic, Output, Gaze, EyeFit, Lids, Advanced, Eyecam };
 
 /** An icon before a button's label. */
-enum class ButtonIcon { None, Terminal, Play };
+enum class ButtonIcon { None, Terminal, Play, Pause };
 
 /**
  * Draws the panel image and finds the button under the laser pointer.
@@ -228,6 +251,31 @@ public:
      */
     void setLidsPage(LidsPage page) { lidsPage_ = page; }
 
+    /** @return the Gaze tab's sub-tab (shown whenever the tab is; kept while other tabs show) */
+    GazePage gazePage() const { return gazePage_; }
+
+    /**
+     * Choose the Gaze tab's sub-tab (the one remembered from before, at start; or for --gaze-page).
+     * @param page the sub-tab
+     */
+    void setGazePage(GazePage page) { gazePage_ = page; }
+
+    /**
+     * Whether a pair of the gaze scale is linked (its lock closed): changing one changes the other to the same value.
+     * @param pair 0 (left / right) or 1 (up / down)
+     * @return true if linked
+     */
+    bool gazeScaleLinked(int pair) const { return pair >= 0 && pair < 2 && gazeScaleLinked_[pair]; }
+
+    /**
+     * Link or unlink a pair of the gaze scale (at start: as remembered, but open while its values differ).
+     * @param pair 0 (left / right) or 1 (up / down)
+     * @param linked whether linked
+     */
+    void setGazeScaleLinked(int pair, bool linked) {
+        if (pair >= 0 && pair < 2) gazeScaleLinked_[pair] = linked;
+    }
+
     /**
      * Show a record on the Advanced tab ("Having trouble"), as its "View" does (for --record).
      * @param folder its folder name
@@ -257,6 +305,15 @@ public:
      * @param page 0 = gaze, 1 = eyelids
      */
     void setFitDetailsPage(int page) { fitDetailsPage_ = page; }
+
+    /**
+     * Whether "Get started" under what the eye cameras add was pressed (then their tab shows the setup checklist).
+     * @param begun pressed
+     */
+    void setSetupBegun(bool begun) { setupBegun_ = begun; }
+
+    /** @return "Get started" was pressed since the panel started */
+    bool setupBegun() const { return setupBegun_; }
 
     /**
      * Open the keypad for the target PC's IPv4 address (only its buttons work while it is open).
@@ -289,6 +346,35 @@ public:
 
     /** @return true while the light warning shows */
     bool eyecamConfirmOpen() const { return eyecamConfirm_.isOpen(); }
+
+    /**
+     * Open the eye preview over the tabs' content (the left column stays; any tab closes it), as its button does.
+     * It opens moving, with the values and the view of its last opening (at first: the values as sent, as in a
+     * mirror), and always without the eye cameras' pictures: they start off each time, so an eye never shows by
+     * accident (in a screenshot or a stream); only its switch turns them on.
+     */
+    void openPreview();
+
+    /** Close the eye preview (the dashboard closed). */
+    void closePreview() { previewOpen_ = false; }
+
+    /** @return true while the eye preview is open */
+    bool previewOpen() const { return previewOpen_; }
+
+    /** @return true while it wants the eye cameras' pictures (open, with its "Camera picture" on) */
+    bool previewPictures() const { return previewOpen_ && previewCamera_; }
+
+    /** The eye cameras can't give pictures now: their switch goes off (pressed again once they can, not by itself). */
+    void stopPreviewPictures() { previewCamera_ = false; }
+
+    /**
+     * For --preview-sheet: how the sheet is set.
+     * @param source which values drive the drawn eyes
+     * @param mirror as in a mirror
+     * @param camera the eye cameras' pictures
+     * @param frozen stopped (at the model drawn next)
+     */
+    void setPreviewOptions(eye_preview::Source source, bool mirror, bool camera, bool frozen);
 
     /**
      * The widening sensitivity slider was let go of (once per release). It keeps showing that value until
@@ -345,8 +431,63 @@ public:
 
     /** @return true while the Advanced tab shows its sub-tabs and a page of them (nothing open over them) */
     bool advPageShown() const {
-        return tab_ == PanelTab::Advanced && !historyOpen_ && !diagOpen_ && recordOpen_.empty() && !recordsAllOpen_;
+        return tab_ == PanelTab::Advanced && !historyOpen_ && !diagOpen_ && recordOpen_.empty() && !recordsAllOpen_ &&
+               !appsListOpen_;
     }
+
+    /**
+     * Open the list of the other Frame apps on the Advanced tab (in place of its page; "Version" again when it is
+     * closed), at its top, without a confirmation. Choosing another tab closes it.
+     */
+    void openAppsList();
+
+    /** Close the list (and the confirmation over it). */
+    void closeAppsList() {
+        appsListOpen_ = false;
+        appsConfirmOpen_ = false;
+    }
+
+    /**
+     * Open the confirmation over the list, as an app's "Install" or "Open the installer" does (for --apps-sheet).
+     * @param key the app's installer short name, or "" for the installer's menu
+     */
+    void openAppsConfirm(const std::string& key);
+
+    /** Close the confirmation (the list shows again). */
+    void closeAppsConfirm() { appsConfirmOpen_ = false; }
+
+    /** @return true while the list of the other Frame apps shows (with or without the confirmation over it) */
+    bool appsListOpen() const { return tab_ == PanelTab::Advanced && appsListOpen_; }
+
+    /** @return true while the confirmation before Konsole shows */
+    bool appsConfirmOpen() const { return appsListOpen() && appsConfirmOpen_; }
+
+    /** @return true while the other apps' states are on screen ("Version" with its row, or the list): look again often */
+    bool appsShown() const { return appsListOpen() || (advPageShown() && advPage_ == AdvPage::Version); }
+
+    /** @return the confirmation's app (its installer short name; "" = the installer's menu) */
+    const std::string& appsConfirmKey() const { return appsConfirmKey_; }
+
+    /**
+     * What came of "Open in Konsole": started closes the confirmation (back to the list); anything else stays on it
+     * with its message.
+     * @param result frame_apps::AppsManager::openInstaller's result
+     */
+    void setAppsLaunchResult(frame_apps::LaunchResult result);
+
+    /**
+     * The confirmation's app, looked up by its short name in the list now (it may be one only the site has).
+     * @param model the model (its apps)
+     * @return the entry, or nullptr for the menu or a short name no longer in the list
+     */
+    const frame_apps::Entry* appsConfirmEntry(const PanelModel& model) const;
+
+    /**
+     * The command the confirmation shows: the same frame_apps::installerCommand Konsole runs.
+     * @param model the model (its apps)
+     * @return the command line (the menu's for the menu, or for a short name no longer in the list)
+     */
+    std::string appsConfirmCommand(const PanelModel& model) const;
 
     /**
      * For --history-open: open this version's row instead (without scrolling to it).
@@ -380,10 +521,11 @@ public:
 
     /**
      * @return true while the panel wants the controller's scroll events: the version history is shown, or the
-     * Advanced tab's page (or the list of all records) is taller than its view
+     * Advanced tab's page (or the list of all records, or of the other Frame apps) is taller than its view
      */
     bool wantsScroll() const {
         if (tab_ != PanelTab::Advanced) return false;
+        if (appsListOpen_) return !appsConfirmOpen_ && appsScrollable_;
         if (historyOpen_) return true;
         if (diagOpen_ || !recordOpen_.empty()) return false;
         return recordsAllOpen_ ? listScrollable_ : advScrollable_;
@@ -480,6 +622,7 @@ private:
     PanelHit pressed_;
     PanelTab tab_ = PanelTab::Basic;
     bool fitDetails_ = false;  ///< "Fine-tune" is open on the Eye fit tab
+    bool setupBegun_ = false;  ///< "Get started" pressed: the eye cameras tab shows the setup checklist, not the intro
     int fitDetailsPage_ = 0;   ///< what "Fine-tune" shows: 0 = gaze, 1 = eyelids
     bool quitArmed_ = false;
     double quitArmedUntil_ = 0.0;
@@ -506,6 +649,8 @@ private:
     bool advScrollable_ = false;        ///< the last draw showed the page scrolled, with ▲ / ▼ (it didn't fit)
     AdvPage advPage_ = AdvPage::Version;  ///< the Advanced tab's sub-tab
     LidsPage lidsPage_ = LidsPage::Look;  ///< the Eyelids tab's sub-tab
+    GazePage gazePage_ = GazePage::Motion;  ///< the Gaze tab's sub-tab
+    bool gazeScaleLinked_[2] = {true, true};  ///< the gaze scale's locks: left / right, up / down
     SnapMark snapMark_;                   ///< mark ⑤ as last drawn
     std::string recordOpen_;            ///< the record shown on the Advanced tab ("" = none)
     bool recordsAllOpen_ = false;       ///< all records are listed on the Advanced tab (a record may be open over them)
@@ -532,6 +677,23 @@ private:
     double numValue_ = 0.0;             ///< ...its value while held, or as last let go of
     bool numReleased_ = false;          ///< ...let go of, not taken yet (takeNumberSlider)
     std::map<std::string, std::pair<double, double>> numTrack_;  ///< each one's track (x, width) as last drawn
+    bool appsListOpen_ = false;         ///< the other Frame apps' list is shown on the Advanced tab
+    bool appsConfirmOpen_ = false;      ///< ...with the confirmation before Konsole over it
+    std::string appsConfirmKey_;        ///< ...for this app's short name ("" = the installer's menu)
+    frame_apps::LaunchResult appsLaunchResult_ = frame_apps::LaunchResult::Started;  ///< the last "Open in Konsole"
+    std::vector<std::string> appsKeys_; ///< the list's apps as last drawn (AppsInstall's arg is an index)
+    double appsScroll_ = 0.0;           ///< px the list is scrolled
+    double appsMaxScroll_ = 0.0;        ///< as far as it can scroll (from the last draw)
+    double appsViewH_ = 0.0;            ///< the height it is shown in
+    bool appsScrollable_ = false;       ///< the last draw showed it scrolled (it didn't fit)
+    bool previewOpen_ = false;          ///< the eye preview is shown over the tabs' content
+    eye_preview::Source previewSource_ = eye_preview::Source::Sent;  ///< ...which values drive its eyes
+    bool previewMirror_ = true;         ///< ...as in a mirror (the right eye on the right; off: seen from the front)
+    bool previewCamera_ = false;        ///< ...with the eye cameras' pictures (off each time it opens, and whenever
+                                        ///< the cameras can't give them)
+    bool previewFrozen_ = false;        ///< ...stopped where it was
+    bool previewFreezePending_ = false; ///< ...the values to keep are taken at the next draw
+    eye_preview::View previewKept_;     ///< ...the values and pictures it stopped at
 
     /**
      * The slider's value at a pointer position (on its track, two decimals).
@@ -568,6 +730,83 @@ private:
     int pointerState(const PanelHit& hit) const;
 
     /**
+     * The left column's "Eye preview" button at its bottom: wide with its label, or a square with only the eye when a
+     * notice shares the bottom row (it is then at the right of it).
+     * @param pen drawing tools
+     * @param t texts
+     * @param x left
+     * @param y top
+     * @param w width
+     * @param h height
+     * @param label with its label (else the eye alone)
+     */
+    void drawPreviewButton(const Pen& pen, const UiText& t, double x, double y, double w, double h, bool label);
+
+    /**
+     * The eye preview over the tabs' content: the title and a cross, the controls (which values, mirror, the
+     * pictures, freeze), both eyes drawn with their eyelid, pupil and source, each eye's camera picture with what was
+     * found on it, and a footer with the gaze and a note.
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model (its preview, eyecam-rec and camera_lids)
+     */
+    void drawPreview(const Pen& pen, const UiText& t, const PanelModel& m);
+
+    /**
+     * One drawn eye: the almond, the white, the iris and pupil where the eye looks, the upper lid down to its eyelid
+     * (raised for widening), the lower lid up for a squint; faded with no value.
+     * @param pen drawing tools
+     * @param eye its values
+     * @param x left of its box
+     * @param y top
+     * @param w width
+     * @param h height
+     * @param turned its gaze sideways turned round (seen from the front)
+     */
+    void drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, double x, double y, double w, double h,
+                        bool turned);
+
+    /**
+     * One eye's camera picture, upright with its temporal side toward the sheet's outside, the search window
+     * and the found pupil on it, and "Read as closed"; "waiting" while there is none.
+     * @param pen drawing tools
+     * @param t texts
+     * @param picture the picture
+     * @param fresh new enough to show
+     * @param x left
+     * @param y top
+     * @param side its size (px)
+     * @param flip mirrored left to right
+     */
+    void drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
+                            double x, double y, double side, bool flip);
+
+    /**
+     * A switch as a pill: a check, bold and the accent while on.
+     * @param pen drawing tools
+     * @param x left
+     * @param y top
+     * @param w width
+     * @param h height
+     * @param label its label
+     * @param hit what it does
+     * @param on on
+     * @param usable it can be pressed
+     */
+    void drawToggle(const Pen& pen, double x, double y, double w, double h, const std::string& label,
+                    const PanelHit& hit, bool on, bool usable);
+
+    /**
+     * A sheet's cross at its top right (the other Frame apps' list, the eye preview).
+     * @param pen drawing tools
+     * @param hit what it does
+     * @param x left
+     * @param y top
+     * @param s its size
+     */
+    void drawSheetClose(const Pen& pen, const PanelHit& hit, double x, double y, double s);
+
+    /**
      * The always-visible status column (left).
      * @param pen drawing tools
      * @param t texts
@@ -593,14 +832,58 @@ private:
 
     /**
      * The Basic tab's destination: three cards (VRChat directly, VRCFT LiveLink, VRCFT ETVR), each with what it
-     * carries in three short lines.
+     * carries in three short lines. Widening needs the eye cameras: while they aren't in use, that line is dimmer and
+     * says so ("（カメラ）"), on one line.
      * @param pen drawing tools
      * @param t texts
      * @param view the settings shown
      * @param y top
+     * @param camera the eye cameras are in use
      * @return the height used
      */
-    double drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& view, double y);
+    double drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& view, double y, bool camera);
+
+    /**
+     * The Basic tab's eye cameras row: not set up, what they add, "not in use" and the way to their tab; set up, a
+     * "Camera" badge, the camera_lids switch ("Use" / "Don't use") and the short state after it.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     * @param y top
+     * @param h height
+     */
+    void drawEyeCamerasRow(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view, double y,
+                           double h);
+
+    /**
+     * The small green "Camera" badge after the title of a row that only works with the eye cameras.
+     * @param pen drawing tools
+     * @param t texts
+     * @param x left
+     * @param cy middle (y)
+     * @param draw draw it (else only measure)
+     * @return its width
+     */
+    double cameraBadge(const Pen& pen, const UiText& t, double x, double cy, bool draw = true);
+
+    /**
+     * In place of the rows that only work with the eye cameras while they aren't in use: one dashed line saying what
+     * they would add, which opens their tab when pressed (while it is in the tab row).
+     * @param pen drawing tools
+     * @param text what they would add
+     * @param y top
+     * @return the height used
+     */
+    double drawCameraLine(const Pen& pen, const std::string& text, double y);
+
+    /**
+     * The eye cameras tab before they are set up: what they add, the one-time setup, and "Get started" (into the setup
+     * checklist).
+     * @param pen drawing tools
+     * @param t texts
+     */
+    void drawCameraIntro(const Pen& pen, const UiText& t);
 
     /**
      * The Output tab: the target PC and port, then the VRChat-only rows (parameter prefix, EyeTrackingActive type, Steam Link's names, VRChat's own eye tracking),
@@ -613,13 +896,42 @@ private:
     void drawOutput(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
 
     /**
-     * The Gaze tab.
+     * The Gaze tab: its sub-tabs, and under them the one chosen.
      * @param pen drawing tools
      * @param t texts
      * @param model what is shown (the status, for the one-eye hint)
      * @param view the settings shown
      */
     void drawGaze(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The Gaze tab's "Motion": smoothing on / off, its presets, the three One Euro values and the deadzone.
+     * @param pen drawing tools
+     * @param t texts
+     * @param view the settings shown
+     * @param top where it starts
+     */
+    void drawGazeMotion(const Pen& pen, const UiText& t, const SettingsView& view, double top);
+
+    /**
+     * The Gaze tab's "Reach": the gaze scale (left / right and up / down, each pair with its lock) and moving the eyes
+     * separately.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model what is shown (the status, for the one-eye hint)
+     * @param view the settings shown
+     * @param top where it starts
+     */
+    void drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view, double top);
+
+    /**
+     * The Gaze tab's "Glitch guard": holding the gaze while blinking, skipping unreliable gaze, and the despike.
+     * @param pen drawing tools
+     * @param t texts
+     * @param view the settings shown
+     * @param top where it starts
+     */
+    void drawGazeGlitch(const Pen& pen, const UiText& t, const SettingsView& view, double top);
 
     /**
      * The Eye fit tab: one button for the whole fit (gaze and eyelids), re-centering, the result, and the values
@@ -640,17 +952,23 @@ private:
     void drawEyeFitRunning(const Pen& pen, const UiText& t, const gaze_fit::View& fit);
 
     /**
-     * "Fine-tune" on the Eye fit tab, gaze page: the zero point, the gains, the far-down hold and each eye's own
-     * sideways values.
+     * "Fine-tune" on the Eye fit tab, gaze page: the zero point, the gains and the far-down hold.
      * @param pen drawing tools
      * @param t texts
      * @param view the settings shown
-     * @param saved the fit in config.json
      * @param busy a fit is running (nothing can be changed)
      * @param y top
      */
-    void drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& view, const FitInConfig& saved, bool busy,
-                        double y);
+    void drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& view, bool busy, double y);
+
+    /**
+     * The Eye fit tab's box under "Fine-tune" while that is folded: how fitting works (each wear the middle dot, the
+     * whole fit at first and when something is off, no tilt any more). Left out when there is no room.
+     * @param pen drawing tools
+     * @param t texts
+     * @param y top
+     */
+    void drawEyeFitInfo(const Pen& pen, const UiText& t, double y);
 
     /**
      * "Fine-tune" on the Eye fit tab, eyelid page: each eye's four lid readings.
@@ -795,6 +1113,61 @@ private:
      */
     double drawVersionPage(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view,
                            double top, double right);
+
+    /**
+     * The row at the bottom of "Version" that opens the other Frame apps' list: their icons overlapping, "Frame apps by
+     * sasaken@" and how many of them aren't installed, and a chevron.
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model (its apps)
+     * @param x0 left
+     * @param y top
+     * @param x1 right
+     */
+    void drawAppsRow(const Pen& pen, const UiText& t, const PanelModel& m, double x0, double y, double x1);
+
+    /**
+     * An app's icon (fetched or built in), or its letters on a dark tile when it has none.
+     * @param pen drawing tools
+     * @param entry the app
+     * @param x left
+     * @param y top
+     * @param size side (px)
+     */
+    void drawAppIcon(const Pen& pen, const frame_apps::Entry& entry, double x, double y, double size);
+
+    /**
+     * One app in the list: its icon, name and description, and "Install" (not installed) or a chip with its state.
+     * @param pen drawing tools
+     * @param t texts
+     * @param language the panel's language (the description's)
+     * @param entry the app
+     * @param index its place in the list (AppsInstall's arg)
+     * @param x left
+     * @param y top
+     * @param w width
+     * @param h height
+     */
+    void drawAppLine(const Pen& pen, const UiText& t, Language language, const frame_apps::Entry& entry, int index,
+                     double x, double y, double w, double h);
+
+    /**
+     * The other Frame apps' list in place of the Advanced tab: the title, a cross, a row per app (scrolled with ▲ / ▼
+     * when they don't fit), where the list comes from and "Open the installer".
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model (its apps)
+     */
+    void drawAppsList(const Pen& pen, const UiText& t, const PanelModel& m);
+
+    /**
+     * The confirmation over the list (only its buttons and the tabs stay usable): the app and "Install", the command
+     * Konsole will run, what to expect, why it couldn't open, "Cancel" and "Open in Konsole".
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model (its apps)
+     */
+    void drawAppsConfirm(const Pen& pen, const UiText& t, const PanelModel& m);
 
     /**
      * "Having trouble": the diagnostics row (its code and "Open"), the newest three records, how to read them over
@@ -1158,9 +1531,10 @@ private:
      * @param hint the hint (may be empty)
      * @param locked show the lock note instead of the hint
      * @param indent how far right of the usual place (room for a numbered circle before it)
+     * @param badge a "Camera" badge after the title (cameraBadge; the title gets smaller to leave it room)
      */
     void drawRowLabel(const Pen& pen, const UiText& t, double y, double h, const std::string& title,
-                      const std::string& hint, bool locked, double indent = 0);
+                      const std::string& hint, bool locked, double indent = 0, bool badge = false);
 
     /**
      * A pill with 2 or more choices; the chosen one gets the accent fill, a check mark and bold text.
@@ -1208,6 +1582,14 @@ private:
      */
     void drawCaption(const Pen& pen, double x, double baseline, const std::string& text, int number, bool locked);
 };
+
+/**
+ * The line under "Frame apps by sasaken@" on "Version": how many of the listed apps aren't installed, or that all are.
+ * @param t texts
+ * @param entries the other apps (frameeyeosc itself left out)
+ * @return the line
+ */
+std::string appsCountText(const UiText& t, const std::vector<frame_apps::Entry>& entries);
 
 /**
  * Draw the dashboard thumbnail (an eye and "Eye"). The launcher icons in contrib/icons are the same picture.

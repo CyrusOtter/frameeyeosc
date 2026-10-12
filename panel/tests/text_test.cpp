@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -115,8 +116,12 @@ void testFailureTexts() {
     fit.detail.last.samples = 20;
     SAME(failureDetailText(en, fit),
          "Eyes closed: 20 of 45 samples usable · L 0.62 (needs below 0.56) · R 0.40 (needs below 0.53) · 3 tries");
+    // An eye the eye camera stood in for wasn't checked, so it isn't in the numbers
+    fit.detail.last.samples = 200;
+    fit.detail.closedBelow[1] = NAN;
+    SAME(failureDetailText(ja, fit), "目を閉じる: 左 0.62（0.56 未満が必要）・3 回");
 
-    // A point that hardly moved, and an eye's own sideways fit
+    // A point that hardly moved
     fit = gaze_fit::View();
     fit.failure = Failure::NoMovement;
     fit.point = Point::Up;
@@ -125,11 +130,10 @@ void testFailureTexts() {
     SAME(failureDetailText(ja, fit), "上の点: 動いたのは 2.1°（3.8° 以上が必要）");
     SAME(failureDetailText(en, fit), "Up dot: moved 2.1° (needs 3.8°)");
     fit.point = Point::Right;
-    fit.detail.eye = 0;
-    fit.detail.movedDeg = 5.0;
-    fit.detail.neededDeg = 10.0;
-    SAME(failureDetailText(ja, fit), "左目の左右: 動いたのは 5.0°（10.0° 以上が必要）");
-    SAME(failureDetailText(en, fit), "Left eye sideways: moved 5.0° (needs 10.0°)");
+    fit.detail.movedDeg = 1.0;
+    fit.detail.neededDeg = 5.0;
+    SAME(failureDetailText(ja, fit), "右の点: 動いたのは 1.0°（5.0° 以上が必要）");
+    SAME(failureDetailText(en, fit), "Right dot: moved 1.0° (needs 5.0°)");
 
     // Eyelids that barely changed: which eye and reading
     fit = gaze_fit::View();
@@ -158,7 +162,7 @@ void testFailureTexts() {
     SAME(failureText(en, fit), "Stopped: the dashboard was opened");
     // The fit's words no longer ask to close the dashboard (the intro says it can stay open)
     for (const UiText* t : {&ja, &en}) {
-        for (const char* text : {t->fitHowTo, t->fitHowToCenter, t->fitHowToTilt, t->fitRunningTitle}) {
+        for (const char* text : {t->fitHowTo, t->fitHowToCenter, t->fitRunningTitle}) {
             const std::string s = text;
             CHECK(s.find("ダッシュボード") == std::string::npos && s.find("dashboard") == std::string::npos);
         }
@@ -212,17 +216,74 @@ void testFitRecord() {
     fit.mode = gaze_fit::Mode::Center;
     fit.values.offsetX = 0.021;
     fit.values.offsetY = -0.013;
-    fit.values.rollDeg = 1.2;
     CHECK(!fitStopped(fit));
     fillFitResult(s, fit);
     CHECK(s.result == report::Result::Ok);
     CHECK(s.reasonEn.find("+0.021") != std::string::npos && s.reasonEn.find("-0.013") != std::string::npos);
+    const std::string plain = s.reason;
+    CHECK(standInText(uiText(Language::Ja), fit).empty());
+
+    // An eye the eye camera stood in for (Valve's openness stuck at 0): said on the tab and in the record
+    fit.notes.standIn[1] = true;
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    SAME(standInText(ja, fit), ja.fitStandInCenterRight);
+    fillFitResult(s, fit);
+    SAME(s.reason, plain + " " + ja.fitStandInCenterRight);
+    CHECK(s.reasonEn.find(en.fitStandInCenterRight) != std::string::npos);
+    fit.mode = gaze_fit::Mode::Full;
+    SAME(standInText(en, fit), en.fitStandInRight);
+    fit.notes.standIn[0] = true;
+    SAME(standInText(ja, fit), std::string(ja.fitStandInLeft) + "\n" + ja.fitStandInRight);
+    fillFitResult(s, fit);
+    CHECK(s.reason.find('\n') == std::string::npos);
+    // Only once it is done
+    fit.phase = gaze_fit::Phase::Failed;
+    CHECK(standInText(ja, fit).empty());
+    // The words say which eye, in the panel's own names for them
+    CHECK(std::string(ja.fitStandInRight).find("右目") != std::string::npos);
+    CHECK(std::string(en.fitStandInLeft).find("left") != std::string::npos);
 }
 
 /**
  * No text in either table has an arrow or a symbol the panel draws with paths: they are icon markers, so the font
  * never draws them. Kept: "×" for "times" (×0.99) and "＋" as a word ("+ is right", "camera + Valve").
  */
+void testLidFitLines() {
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    gaze_fit::Values v;
+    v.lidOpen[0] = 0.85;
+    v.lidClosed[0] = 0.2;
+    v.lidDown[0] = 0.7;
+    v.lidOpen[1] = 0.9;
+    v.lidClosed[1] = 0.25;
+    v.lidDown[1] = 0.9;
+    // Both eyes fitted: a line each
+    const bool both[2] = {true, true};
+    const std::vector<std::string> lines = lidFitLines(ja, v, both);
+    CHECK(lines.size() == 2);
+    SAME(lines[0], "まぶた 左: 開 0.85・閉 0.20・下を見ると -18%");
+    SAME(lines[1], "まぶた 右: 開 0.90・閉 0.25・下を見ると +0%");
+    // A first whole fit with the eye camera standing in for the right eye: the left eye's readings, the right "not
+    // fitted"
+    const bool left[2] = {true, false};
+    const std::vector<std::string> one = lidFitLines(ja, v, left);
+    CHECK(one.size() == 2);
+    SAME(one[0], lines[0]);
+    SAME(one[1], "まぶた 右: 合わせていません（自動で覚えています）");
+    const bool right[2] = {false, true};
+    const std::vector<std::string> other = lidFitLines(en, v, right);
+    CHECK(other.size() == 2);
+    SAME(other[0], "Eyelid L: not fitted (learned automatically)");
+    SAME(other[1], "Eyelid R: open 0.90, closed 0.25, looking down +0%");
+    // Neither: one line, as before
+    const bool neither[2] = {false, false};
+    const std::vector<std::string> none = lidFitLines(en, v, neither);
+    CHECK(none.size() == 1);
+    if (!none.empty()) SAME(none[0], en.fitLidsNone);
+}
+
 void testNoSymbolGlyphs() {
     static_assert(sizeof(UiText) % sizeof(const char*) == 0, "UiText holds only strings");
     const char* const glyphs[] = {"‹", "›", "▲", "▼", "△", "▽", "→", "←", "♪", "✓", "✗", "◯", "●", "▶", "▷"};
@@ -258,6 +319,7 @@ int main() {
     testHosts();
     testFailureTexts();
     testFitRecord();
+    testLidFitLines();
     testNoSymbolGlyphs();
     if (gFailures == 0) std::printf("text-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

@@ -202,6 +202,8 @@ pub struct Status {
     pub live: bool,
     /// Live processing time per frame (one eye), ms, averaged over the last second.
     pub live_ms: f64,
+    /// The panel's eye preview is on (`preview on` within the last few seconds, and its file is there).
+    pub preview: bool,
     /// Per eye, the share of the last 2 s of frames in which the pupil was found (as the calibration counts them);
     /// NaN (null in the JSON) when live processing is off or the eye's frames stopped.
     pub pupil: [f64; 2],
@@ -218,6 +220,8 @@ pub struct Status {
     /// The last `error` message (kept after the state moves on; "" for none) and when it came (Unix seconds).
     pub last_error: String,
     pub last_error_unix: f64,
+    /// The drift log (`driftlog on` / `off`): whether it is on, its file, how much is in it.
+    pub driftlog: crate::driftlog::DriftStatus,
 }
 
 impl Default for Status {
@@ -253,6 +257,7 @@ impl Default for Status {
             calib_failed_eye: "",
             live: false,
             live_ms: 0.0,
+            preview: false,
             pupil: [f64::NAN; 2],
             cam_fps: [f64::NAN; 2],
             prox_min: 20.0,
@@ -260,6 +265,7 @@ impl Default for Status {
             last_calib: None,
             last_error: String::new(),
             last_error_unix: 0.0,
+            driftlog: Default::default(),
         }
     }
 }
@@ -292,7 +298,7 @@ impl Status {
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"search\":{},\"last_session_aborted\":{},\"calib_state\":{},\
-\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"pid\":{pid},\"updated_unix\":{}}}",
+\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"driftlog\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
             json_str(&crate::message_en::message_en(&self.message)),
@@ -325,6 +331,7 @@ impl Status {
             json_str(self.calib_failed_eye),
             self.live,
             num(self.live_ms),
+            self.preview,
             num_or_null(self.pupil[0]),
             num_or_null(self.pupil[1]),
             num_or_null(self.cam_fps[0]),
@@ -335,6 +342,7 @@ impl Status {
             json_str(&self.last_error),
             json_str(&crate::message_en::message_en(&self.last_error)),
             num(self.last_error_unix),
+            self.driftlog.to_json(),
             num(updated_unix),
         )
     }
@@ -382,7 +390,18 @@ pub enum Command {
     Live(bool),
     /// `set widen_sensitivity <0..1>`: answered by the control thread itself, in every state.
     SetWidenSensitivity(f64),
+    /// `preview on` / `preview off`: the panel's eye preview, answered by the control thread itself, in every state.
+    Preview(bool),
+    /// `driftlog on [<stem>]`: start the drift log (`driftlog`), answered by the control thread itself, in every state;
+    /// with the panel's eye log name (`eyes_YYYY-MM-DD_HH-MM-SS`) its file is `<stem>.eyecam.csv`, else
+    /// `drift_<time>.csv`.
+    DriftLogOn(Option<String>),
+    /// `driftlog off`: stop it (the same).
+    DriftLogOff,
 }
+
+/// The reply to `driftlog on <stem>` with a stem that isn't an eye log's name.
+pub const DRIFTLOG_BAD_NAME: &str = "ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で";
 
 /// Parse one control line. Protocol names are 1-32 of [A-Za-z0-9_-], so they can never name a path.
 pub fn parse_command(line: &str) -> Result<Command, String> {
@@ -403,6 +422,14 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         (Some("calib"), Some("user")) => Command::Calib(CalibKind::User),
         (Some("live"), Some("on")) => Command::Live(true),
         (Some("live"), Some("off")) => Command::Live(false),
+        (Some("preview"), Some("on")) => Command::Preview(true),
+        (Some("preview"), Some("off")) => Command::Preview(false),
+        (Some("driftlog"), Some("on")) => match words.next() {
+            None => Command::DriftLogOn(None),
+            Some(stem) if crate::driftlog::is_eye_log_stem(stem) => Command::DriftLogOn(Some(stem.into())),
+            Some(_) => return Err(DRIFTLOG_BAD_NAME.into()),
+        },
+        (Some("driftlog"), Some("off")) => Command::DriftLogOff,
         (Some("set"), Some("widen_sensitivity")) => {
             let v = words.next().and_then(|w| w.parse::<f64>().ok()).filter(|v| (0.0..=1.0).contains(v));
             Command::SetWidenSensitivity(v.ok_or("widen_sensitivity は 0 から 1 の数で")?)
@@ -429,6 +456,32 @@ mod tests {
         assert_eq!(parse_command("calib user"), Ok(Command::Calib(CalibKind::User)));
         assert_eq!(parse_command("live off"), Ok(Command::Live(false)));
         assert!(parse_command("calib").is_err() && parse_command("live maybe").is_err());
+        assert_eq!(parse_command("preview on\n"), Ok(Command::Preview(true)));
+        assert_eq!(parse_command("preview off"), Ok(Command::Preview(false)));
+        for bad in ["preview", "preview maybe", "preview on now"] {
+            assert!(parse_command(bad).is_err(), "{bad}");
+        }
+        assert_eq!(parse_command("driftlog on\n"), Ok(Command::DriftLogOn(None)));
+        assert_eq!(parse_command(" driftlog off"), Ok(Command::DriftLogOff));
+        assert_eq!(
+            parse_command("driftlog on eyes_2026-10-12_14-03-09\n"),
+            Ok(Command::DriftLogOn(Some("eyes_2026-10-12_14-03-09".into())))
+        );
+        for bad in ["driftlog", "driftlog yes", "drift on", "driftlog off eyes_2026-10-12_14-03-09"] {
+            assert_eq!(parse_command(bad), Err("知らないコマンド".into()), "{bad}");
+        }
+        // A name that isn't an eye log's (a path, another pattern, a suffix) is refused with why
+        for bad in [
+            "driftlog on /tmp/x",
+            "driftlog on ../eyes_2026-10-12_14-03-09",
+            "driftlog on eyes_2026-10-12_14-03-09.csv",
+            "driftlog on eyes_2026-10-12_14-03-09_2",
+            "driftlog on drift_2026-10-12_14-03-09",
+            "driftlog on eyes_2026-10-12",
+        ] {
+            assert_eq!(parse_command(bad), Err(DRIFTLOG_BAD_NAME.into()), "{bad}");
+        }
+        assert!(parse_command("driftlog on eyes_2026-10-12_14-03-09 x").is_err());
         assert_eq!(parse_command("set widen_sensitivity 0.25"), Ok(Command::SetWidenSensitivity(0.25)));
         for bad in ["set widen_sensitivity", "set widen_sensitivity 1.5", "set widen_sensitivity x", "set widen_sensitivity 0.5 1", "set foo 1"] {
             assert!(parse_command(bad).is_err(), "{bad}");
@@ -462,6 +515,8 @@ mod tests {
         assert!(json.contains("\"widen_sensitivity\":0.500,\"dev\":false,\"setup_done\":false,"));
         assert!(Status { dev: true, ..Status::default() }.to_json(1.5, 7).contains(",\"dev\":true,"));
         assert!(json.contains("\"last_calib_widen\":\"\",\"calib_failed_eye\":\"\","));
+        assert!(json.contains(",\"live_ms\":0.000,\"preview\":false,\"pupil_l\":"), "{json}");
+        assert!(Status { preview: true, ..Status::default() }.to_json(1.5, 7).contains(",\"preview\":true,"));
         assert!(json.contains(",\"pupil_l\":null,\"pupil_r\":null,\"cam_fps\":[null,null],"), "{json}");
         let slow = Status { cam_fps: [15.0, 14.9], ..Status::default() }.to_json(1.5, 7);
         assert!(slow.contains(",\"cam_fps\":[15.000,14.900],") && crate::json::parse(&slow).is_ok(), "{slow}");
@@ -472,6 +527,13 @@ mod tests {
             json.contains(",\"prox_min\":20.000,\"search_detail\":null,\"last_calib\":null,\"last_error\":\"\",\"last_error_en\":\"\",\"last_error_unix\":0.000,"),
             "{json}"
         );
+        assert!(
+            json.contains(",\"driftlog\":{\"on\":false,\"path\":\"\",\"rows\":0,\"bytes\":0,\"full\":false,\"error\":\"\"},\"pid\":7,"),
+            "{json}"
+        );
+        let drift = crate::driftlog::DriftStatus { on: true, path: "/home/steamos/eyecam/drift/drift_x.csv".into(), rows: 12, bytes: 3400, full: false, error: String::new() };
+        let on = Status { driftlog: drift, ..Status::default() }.to_json(1.5, 7);
+        assert!(on.contains("\"driftlog\":{\"on\":true,\"path\":\"/home/steamos/eyecam/drift/drift_x.csv\",\"rows\":12,") && crate::json::parse(&on).is_ok(), "{on}");
     }
 
     #[test]

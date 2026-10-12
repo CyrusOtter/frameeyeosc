@@ -18,6 +18,8 @@ const CHECK_INTERVAL: Duration = Duration::from_millis(100);
 // Allowed gaze zero points and gains (the panel's steppers stay inside these too).
 const GAZE_OFFSET_RANGE: std::ops::RangeInclusive<f32> = -0.5..=0.5;
 const GAZE_GAIN_RANGE: std::ops::RangeInclusive<f32> = 0.5..=2.0;
+// Allowed gaze scales (the user's own multipliers after the eye fit; the panel's steppers stay inside these too).
+const GAZE_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.25..=1.5;
 // Allowed headset tilt (degrees).
 const GAZE_ROLL_RANGE: std::ops::RangeInclusive<f32> = -20.0..=20.0;
 // camera_lid_floor, in VRCFT units: up to relaxed open.
@@ -181,6 +183,13 @@ pub struct Settings {
     pub gaze_offset_x_right: Option<f32>,
     pub gaze_gain_x_left: Option<f32>,
     pub gaze_gain_x_right: Option<f32>,
+    /// The user's own multipliers on how far the gaze goes left, right, up and down from the fitted zero point, applied
+    /// after the eye fit's correction (see main.rs, `scale_gaze`). The eye fit never changes them. 1.0 leaves the gaze
+    /// exactly as it is.
+    pub gaze_scale_left: f32,
+    pub gaze_scale_right: f32,
+    pub gaze_scale_up: f32,
+    pub gaze_scale_down: f32,
     /// Stream each sample's sent gaze to the panel, which shows it as dots (debug). Not a command-line option.
     pub gaze_debug_dots: bool,
     /// Each eye's Frame openness measured by the panel's eye fit: eyes shut, and open while looking
@@ -255,6 +264,10 @@ impl Default for Settings {
             gaze_offset_x_right: None,
             gaze_gain_x_left: None,
             gaze_gain_x_right: None,
+            gaze_scale_left: 1.0,
+            gaze_scale_right: 1.0,
+            gaze_scale_up: 1.0,
+            gaze_scale_down: 1.0,
             gaze_debug_dots: false,
             lid_fit_closed_left: None,
             lid_fit_closed_right: None,
@@ -343,6 +356,10 @@ impl Settings {
             self.gaze_gain_down,
             self.gaze_roll_deg,
             self.gaze_down_hold_x_deg,
+            self.gaze_scale_left,
+            self.gaze_scale_right,
+            self.gaze_scale_up,
+            self.gaze_scale_down,
         ];
         let scales = [self.lid_scale_left, self.lid_scale_right];
         let eye_offsets = [self.gaze_offset_x_left, self.gaze_offset_x_right];
@@ -424,6 +441,10 @@ impl Settings {
         }
         if !(0.0..=45.0).contains(&self.gaze_down_hold_x_deg) {
             return Err("gaze_down_hold_x_deg must be between 0 and 45".into());
+        }
+        let gaze_scales = [self.gaze_scale_left, self.gaze_scale_right, self.gaze_scale_up, self.gaze_scale_down];
+        if !gaze_scales.iter().all(|scale| GAZE_SCALE_RANGE.contains(scale)) {
+            return Err("gaze_scale_left/right/up/down must be between 0.25 and 1.5".into());
         }
         if !lid_fit.iter().all(|eye| eye.iter().all(Option::is_some) || eye.iter().all(Option::is_none)) {
             return Err("an eye's lid_fit_* values must all be set, or all null".into());
@@ -630,7 +651,11 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
         gaze_offset_x_left,
         gaze_offset_x_right,
         gaze_gain_x_left,
-        gaze_gain_x_right
+        gaze_gain_x_right,
+        gaze_scale_left,
+        gaze_scale_right,
+        gaze_scale_up,
+        gaze_scale_down
     );
     // "/" alone means no prefix, like "".
     let prefix = settings.prefix.trim_end_matches('/');
@@ -916,6 +941,28 @@ mod tests {
             "lid_fit_down_left": 0.55}"#, &[]).is_err());
         assert!(merged(r#"{"lid_fit_closed_left": -0.1, "lid_fit_up_left": 0.9, "lid_fit_open_left": 0.9,
             "lid_fit_down_left": 0.8}"#, &[]).is_err());
+    }
+
+    #[test]
+    fn gaze_scales_default_to_one_and_keep_their_limits() {
+        let (settings, _) = merged("{}", &[]).unwrap();
+        let scales = |s: &Settings| [s.gaze_scale_left, s.gaze_scale_right, s.gaze_scale_up, s.gaze_scale_down];
+        assert_eq!(scales(&settings), [1.0; 4]);
+        for name in ["gaze_scale_left", "gaze_scale_right", "gaze_scale_up", "gaze_scale_down"] {
+            for bad in ["0.2", "1.55", "-1", "0", "\"big\""] {
+                assert!(merged(&format!(r#"{{"{name}": {bad}}}"#), &[]).is_err(), "{name} {bad}");
+            }
+            for good in ["0.25", "1.5", "1", "0.8"] {
+                assert!(merged(&format!(r#"{{"{name}": {good}}}"#), &[]).is_ok(), "{name} {good}");
+            }
+        }
+        let file = r#"{"gaze_scale_left": 1.2, "gaze_scale_right": 0.9, "gaze_scale_up": 0.5, "gaze_scale_down": 1.5}"#;
+        assert_eq!(scales(&merged(file, &[]).unwrap().0), [1.2, 0.9, 0.5, 1.5]);
+        // The command line wins over the file and locks the key
+        let (settings, locked) = merged(file, &["--gaze-scale-up", "0.75", "--gaze-scale-left", "1"]).unwrap();
+        assert_eq!(scales(&settings), [1.0, 0.9, 0.75, 1.5]);
+        assert_eq!(locked, ["gaze_scale_left", "gaze_scale_up"]);
+        assert!(merged("{}", &["--gaze-scale-down", "2"]).is_err());
     }
 
     #[test]

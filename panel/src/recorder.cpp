@@ -51,7 +51,8 @@ std::string lastLine(const std::string& path) {
     std::string last;
     while (std::getline(file, line)) {
         while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
-        if (!line.empty()) last = line;
+        // (the panel's own lines are not the child's)
+        if (!line.empty() && line.rfind(kNotePrefix, 0) != 0) last = line;
     }
     if (last.size() > 160) last = last.substr(0, 157) + "...";
     return last;
@@ -197,7 +198,8 @@ bool Recorder::start(const std::string& program, const std::string& dir, const s
             out << in.rdbuf();
         }
     }
-    const int logFd = ::open(log_.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    // (appending, so the panel's own lines added meanwhile aren't written over)
+    const int logFd = ::open(log_.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0644);
     const int nullFd = ::open("/dev/null", O_RDWR | O_CLOEXEC);
     int pipeFds[2] = {-1, -1};
     if (logFd < 0 || nullFd < 0 || ::pipe2(pipeFds, O_CLOEXEC) != 0) {
@@ -337,6 +339,16 @@ void Recorder::shutdown() {
     }
 }
 
+void Recorder::note(const std::string& line) {
+    if (log_.empty()) return;
+    const int fd = ::open(log_.c_str(), O_WRONLY | O_APPEND | O_CLOEXEC);
+    const std::string text = kNotePrefix + line + "\n";
+    if (fd < 0 || ::write(fd, text.data(), text.size()) != static_cast<ssize_t>(text.size())) {
+        std::fprintf(stderr, "[record] can't add to %s: %s\n", log_.c_str(), std::strerror(errno));
+    }
+    if (fd >= 0) ::close(fd);
+}
+
 View Recorder::view(double now) const {
     View view;
     view.recording = recording();
@@ -345,6 +357,95 @@ View Recorder::view(double now) const {
     view.error = error_;
     view.autoStopped = !busy() && autoStopped_;
     return view;
+}
+
+namespace {
+
+/**
+ * Whether a name is an eye log's: eyes_YYYY-MM-DD_HH-MM-SS, digits where the pattern has them (as eyecam checks it).
+ * @param name the name
+ * @return true if it is
+ */
+bool eyeLogStem(const std::string& name) {
+    static const std::string pattern = "eyes_9999-99-99_99-99-99";
+    if (name.size() != pattern.size()) return false;
+    for (size_t i = 0; i < name.size(); ++i) {
+        const bool ok = pattern[i] == '9' ? (name[i] >= '0' && name[i] <= '9') : name[i] == pattern[i];
+        if (!ok) return false;
+    }
+    return true;
+}
+
+/**
+ * A path's last part.
+ * @param path the path
+ * @return what follows its last '/'
+ */
+std::string baseName(const std::string& path) {
+    const size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+}  // namespace
+
+std::string driftStem(const std::string& csvPath) {
+    std::string name = baseName(csvPath);
+    if (name.size() < 4 || name.compare(name.size() - 4, 4, ".csv") != 0) return "";
+    name.resize(name.size() - 4);
+    const std::string stem = name.substr(0, 24);
+    if (!eyeLogStem(stem)) return "";
+    // (uniqueBase's _2, _3...: eyecam adds its own)
+    if (name.size() > stem.size()) {
+        const std::string rest = name.substr(stem.size());
+        if (rest.size() < 2 || rest[0] != '_' || rest.find_first_not_of("0123456789", 1) != std::string::npos) return "";
+    }
+    return stem;
+}
+
+bool panelDriftFile(const std::string& path) {
+    const std::string name = baseName(path);
+    const std::string end = ".eyecam.csv";
+    return name.rfind("eyes_", 0) == 0 && name.size() > end.size() + 5 &&
+           name.compare(name.size() - end.size(), end.size(), end) == 0;
+}
+
+bool DriftLink::next(const DriftInputs& in, bool busy, std::string& command) {
+    if (busy) return false;
+    const bool seen = in.eyecamRunning && in.hasDriftlog;
+    // A drift log started by hand is someone's own
+    const bool byHand = seen && in.driftlogOn && !panelDriftFile(in.driftlogPath);
+    if (in.recording && !in.stem.empty() && seen && in.camerasInUse && !byHand) {
+        // Its file is <stem>.eyecam.csv, or <stem>_2.eyecam.csv... (eyecam adds its own when that one is there)
+        const bool showsOurs = in.stem == on_ && in.driftlogOn && panelDriftFile(in.driftlogPath) &&
+                               baseName(in.driftlogPath).rfind(in.stem, 0) == 0;
+        if (showsOurs) shown_ = true;
+        // New, or gone since it showed (eyecam-rec restarted), or never shown for kDriftRetrySec (refused)
+        const bool again = in.stem == on_ && !showsOurs && (shown_ || in.now - sentAt_ >= kDriftRetrySec);
+        if (in.stem != on_ || again) {
+            command = "driftlog on " + in.stem;
+            on_ = in.stem;
+            checked_ = true;
+            shown_ = false;
+            sentAt_ = in.now;
+            return true;
+        }
+    }
+    if (!on_.empty() && (!in.recording || in.stem != on_)) {
+        on_.clear();
+        shown_ = false;
+        if (byHand) return false;
+        command = "driftlog off";
+        return true;
+    }
+    // Once, with no recording running: one left on by a panel that ended without turning it off
+    if (!checked_ && seen && !in.recording) {
+        checked_ = true;
+        if (in.driftlogOn && panelDriftFile(in.driftlogPath)) {
+            command = "driftlog off";
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace recorder

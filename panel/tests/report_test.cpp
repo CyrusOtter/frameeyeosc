@@ -963,6 +963,73 @@ void testUiState() {
     LidsPage lids = LidsPage::Look;
     CHECK(ui_state::parseLidsPage("blinks", lids) && lids == LidsPage::Blinks);
     CHECK(!ui_state::parseLidsPage("Fine", lids) && lids == LidsPage::Blinks);
+
+    // The Gaze tab's: the first time Motion, kept beside the others
+    ::unlink(path.c_str());
+    CHECK(ui_state::readGazePage(path) == GazePage::Motion);
+    for (const GazePage gaze : {GazePage::Reach, GazePage::Glitch, GazePage::Motion, GazePage::Reach}) {
+        CHECK(ui_state::writeGazePage(path, gaze, error));
+        CHECK(ui_state::readGazePage(path) == gaze);
+    }
+    CHECK(has(readText(path), "\"gaze_page\": \"reach\""));
+    CHECK(ui_state::writeLidsPage(path, LidsPage::Fine, error));
+    CHECK(ui_state::readGazePage(path) == GazePage::Reach && ui_state::readLidsPage(path) == LidsPage::Fine);
+    writeText(path, "{\"gaze_page\": \"scale\"}");
+    CHECK(ui_state::readGazePage(path) == GazePage::Motion);
+    GazePage gaze = GazePage::Motion;
+    CHECK(ui_state::parseGazePage("glitch", gaze) && gaze == GazePage::Glitch);
+    CHECK(!ui_state::parseGazePage("Reach", gaze) && gaze == GazePage::Glitch);
+
+    // The gaze scale's locks: linked the first time (and when broken), each pair kept, the other members too
+    ::unlink(path.c_str());
+    bool linked[2] = {false, false};
+    ui_state::readGazeScaleLinks(path, linked);
+    CHECK(linked[0] && linked[1]);
+    const bool open[2] = {false, true};
+    CHECK(ui_state::writeGazePage(path, GazePage::Glitch, error));
+    CHECK(ui_state::writeGazeScaleLinks(path, open, error));
+    ui_state::readGazeScaleLinks(path, linked);
+    CHECK(!linked[0] && linked[1]);
+    CHECK(has(readText(path), "\"gaze_scale_link_x\": false") && ui_state::readGazePage(path) == GazePage::Glitch);
+    CHECK(ui_state::writePage(path, AdvPage::Files, error));
+    ui_state::readGazeScaleLinks(path, linked);
+    CHECK(!linked[0] && linked[1]);
+    writeText(path, "{\"gaze_scale_link_x\": \"no\", \"gaze_scale_link_y\": false}");
+    ui_state::readGazeScaleLinks(path, linked);
+    CHECK(linked[0] && !linked[1]);
+    CHECK(!exists(path + ".tmp"));
+
+    // The last whole eye fits' up gains: none the first time, kept beside the others, emptied by "Reset"
+    ::unlink(path.c_str());
+    CHECK(ui_state::readUpGains(path).empty());
+    CHECK(ui_state::writeLidsPage(path, LidsPage::Fine, error));
+    CHECK(ui_state::writeUpGains(path, {0.89, 1.01, 0.78}, error));
+    CHECK(ui_state::readUpGains(path) == std::vector<double>({0.89, 1.01, 0.78}));
+    CHECK(has(readText(path), "\"fit_up_gains\": [") && ui_state::readLidsPage(path) == LidsPage::Fine);
+    CHECK(ui_state::writeUpGains(path, {}, error) && ui_state::readUpGains(path).empty());
+    // Broken, or numbers no fit writes: left out
+    writeText(path, "{\"fit_up_gains\": [0.9, \"x\", 7, 0.3, 1.1]}");
+    CHECK(ui_state::readUpGains(path) == std::vector<double>({0.9, 1.1}));
+    writeText(path, "{\"fit_up_gains\": 0.9}");
+    CHECK(ui_state::readUpGains(path).empty());
+    CHECK(!exists(path + ".tmp"));
+
+    // A file that can't be read is moved aside to panel.json.broken (an older one replaced) before a write, which
+    // then holds only what it wrote; one that reads is not
+    const std::string aside = path + ".broken";
+    ::unlink(aside.c_str());
+    CHECK(ui_state::writeUpGains(path, {0.9}, error) && !exists(aside));
+    const std::string broken = "{\"fit_up_gains\": [0.89, 1.01], \"gaze_page\": \"reach\", ";
+    writeText(path, broken);
+    CHECK(ui_state::readUpGains(path).empty() && ui_state::readGazePage(path) == GazePage::Motion);
+    CHECK(exists(path) && !exists(aside));  // reading leaves it as it is
+    CHECK(ui_state::writeLidsPage(path, LidsPage::Blinks, error));
+    CHECK(readText(aside) == broken);
+    CHECK(ui_state::readLidsPage(path) == LidsPage::Blinks && ui_state::readUpGains(path).empty());
+    writeText(path, "not json");
+    CHECK(ui_state::writePage(path, AdvPage::Tools, error));
+    CHECK(readText(aside) == "not json" && ui_state::readPage(path) == AdvPage::Tools);
+    CHECK(ui_state::readLidsPage(path) == LidsPage::Look && !exists(path + ".tmp"));
 }
 
 }  // namespace

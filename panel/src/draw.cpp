@@ -36,9 +36,9 @@ FontSet::~FontSet() {
     // (the OS will clean it up on exit).
 }
 
-cairo_font_face_t* FontSet::createFace(const std::string& path, bool bold) {
+cairo_font_face_t* FontSet::createFace(const std::string& path, bool bold, long index, const char* fallback) {
     FT_Face face = nullptr;
-    if (ftLibrary_ != nullptr && FT_New_Face(static_cast<FT_Library>(ftLibrary_), path.c_str(), 0, &face) == 0) {
+    if (ftLibrary_ != nullptr && FT_New_Face(static_cast<FT_Library>(ftLibrary_), path.c_str(), index, &face) == 0) {
         cairo_font_face_t* cairoFace = cairo_ft_font_face_create_for_ft_face(face, 0);
         if (cairo_font_face_set_user_data(cairoFace, &kFtFaceKey, face, destroyFtFace) == CAIRO_STATUS_SUCCESS) {
             return cairoFace;
@@ -46,8 +46,8 @@ cairo_font_face_t* FontSet::createFace(const std::string& path, bool bold) {
         cairo_font_face_destroy(cairoFace);
         FT_Done_Face(face);
     }
-    std::fprintf(stderr, "[draw] can't read font %s, falling back to Noto Sans CJK JP\n", path.c_str());
-    return cairo_toy_font_face_create("Noto Sans CJK JP", CAIRO_FONT_SLANT_NORMAL,
+    std::fprintf(stderr, "[draw] can't read font %s (face %ld), falling back to %s\n", path.c_str(), index, fallback);
+    return cairo_toy_font_face_create(fallback, CAIRO_FONT_SLANT_NORMAL,
                                       bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
 }
 
@@ -55,8 +55,10 @@ void FontSet::release() {
     // If a cairo_t still holds a reference, the font stays alive until that reference is dropped
     if (regular_ != nullptr) cairo_font_face_destroy(regular_);
     if (bold_ != nullptr) cairo_font_face_destroy(bold_);
+    if (mono_ != nullptr) cairo_font_face_destroy(mono_);
     regular_ = nullptr;
     bold_ = nullptr;
+    mono_ = nullptr;
 }
 
 void FontSet::load(const std::string& regularPath, const std::string& boldPath) {
@@ -64,6 +66,8 @@ void FontSet::load(const std::string& regularPath, const std::string& boldPath) 
     release();
     regular_ = createFace(regularPath, false);
     bold_ = createFace(boldPath, true);
+    // Noto Sans CJK's .ttc has the monospaced Japanese face as its sixth
+    mono_ = createFace(regularPath, false, 5, "Noto Sans Mono CJK JP");
     regularPath_ = regularPath;
     boldPath_ = boldPath;
 }
@@ -319,6 +323,22 @@ double Pen::text(double x, double y, const std::string& text, double size, Color
     double endY = y;
     cairo_get_current_point(cr, &endX, &endY);
     return endX - x;
+}
+
+double Pen::measureMono(const std::string& text, double size) const {
+    cairo_set_font_face(cr, fonts->mono());
+    cairo_set_font_size(cr, size);
+    cairo_text_extents_t extents;
+    cairo_text_extents(cr, text.c_str(), &extents);
+    return extents.x_advance;
+}
+
+void Pen::textMono(double x, double y, const std::string& text, double size, Color c) const {
+    color(c);
+    cairo_set_font_face(cr, fonts->mono());
+    cairo_set_font_size(cr, size);
+    cairo_move_to(cr, x, y);
+    cairo_show_text(cr, text.c_str());
 }
 
 void Pen::roundedRect(double x, double y, double w, double h, double r) const {

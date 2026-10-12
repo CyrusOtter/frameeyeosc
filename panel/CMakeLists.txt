@@ -15,6 +15,16 @@ if(NOT FRAMEEYEOSC_VERSION)
 endif()
 # The update checker shared with the other Frame apps (copied by frame-updater's sync.sh)
 set(FRAME_UPDATER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/frame-updater")
+# The other Frame apps' list and their installer in Konsole, shared with the other Frame apps (copied by frame-apps'
+# sync.sh)
+set(FRAME_APPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/frame-apps")
+set(FRAME_APPS_SOURCES
+  ${FRAME_APPS_DIR}/cpp/frame_apps.cpp
+  ${FRAME_APPS_DIR}/cpp/frame_apps_data.cpp
+  ${FRAME_APPS_DIR}/cpp/frame_apps_catalog.cpp
+  ${FRAME_APPS_DIR}/cpp/frame_apps_icons.cpp
+  ${FRAME_APPS_DIR}/cpp/frame_apps_cairo.cpp
+)
 
 # The OpenVR library that ships with SteamVR (its path on the Frame's SteamOS)
 set(OPENVR_LIB_DIR "/opt/steamvr/bin/linuxarm64" CACHE PATH "Directory containing libopenvr_api.so")
@@ -35,6 +45,7 @@ add_executable(frameeyeosc-panel
   src/diag.cpp
   src/draw.cpp
   src/eyecam.cpp
+  src/eye_preview.cpp
   src/gaze_dots.cpp
   src/gaze_fit.cpp
   src/fit_text.cpp
@@ -56,8 +67,9 @@ add_executable(frameeyeosc-panel
   src/vk_texture.cpp
   src/vr_overlay.cpp
   ${FRAME_UPDATER_DIR}/cpp/update_check.cpp
+  ${FRAME_APPS_SOURCES}
 )
-target_include_directories(frameeyeosc-panel PRIVATE third_party/openvr ${FRAME_UPDATER_DIR}/cpp)
+target_include_directories(frameeyeosc-panel PRIVATE third_party/openvr ${FRAME_UPDATER_DIR}/cpp ${FRAME_APPS_DIR}/cpp)
 target_compile_definitions(frameeyeosc-panel PRIVATE FRAMEEYEOSC_VERSION="${FRAMEEYEOSC_VERSION}")
 target_compile_options(frameeyeosc-panel PRIVATE -Wall -Wextra)
 target_link_libraries(frameeyeosc-panel PRIVATE
@@ -88,6 +100,16 @@ target_include_directories(gaze-dots-test PRIVATE src)
 target_compile_options(gaze-dots-test PRIVATE -Wall -Wextra)
 add_test(NAME gaze-dots COMMAND gaze-dots-test)
 
+# The eye preview without cairo or OpenVR: which values drive the drawn eyes, the lids' and pupil's geometry, eyecam-rec's
+# preview file (made-up pictures in a folder under /tmp: its checks, the seqlock, a replaced or removed file), when the
+# pictures can show and "preview on" / "off": panel/build/eye-preview-test
+add_executable(eye-preview-test tests/eye_preview_test.cpp src/eye_preview.cpp src/gaze_dots.cpp src/eyecam.cpp
+  src/i18n.cpp src/json.cpp src/setup_tools.cpp src/recorder.cpp)
+target_include_directories(eye-preview-test PRIVATE src)
+target_compile_options(eye-preview-test PRIVATE -Wall -Wextra)
+target_link_libraries(eye-preview-test PRIVATE Threads::Threads)
+add_test(NAME eye-preview COMMAND eye-preview-test)
+
 # The eye fit's sound cues (the WAV files and which cue goes with which moment), without playing: panel/build/sounds-test
 add_executable(sounds-test tests/sounds_test.cpp src/sounds.cpp src/gaze_fit.cpp src/status.cpp src/json.cpp)
 target_include_directories(sounds-test PRIVATE src)
@@ -112,12 +134,12 @@ add_test(NAME recorder COMMAND recorder-test)
 # cards' arguments: panel/build/model-test
 add_executable(model-test tests/model_test.cpp src/model.cpp src/config.cpp src/json.cpp src/gaze_fit.cpp
   src/status.cpp)
-target_include_directories(model-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp)
+target_include_directories(model-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp ${FRAME_APPS_DIR}/cpp)
 target_compile_options(model-test PRIVATE -Wall -Wextra)
 add_test(NAME model COMMAND model-test)
 
 # The Eyelids and eye cameras tabs as drawn (案E: the widening slider's routing, "Fine-tune", the moved sensitivity
-# slider, a setting's slider): panel/build/panel-test, run right after it is built (it renders with the panel's fonts)
+# slider, a setting's slider), the other Frame apps' row, list and confirmation, and the eye preview's sheet: panel/build/panel-test, run right after it is built (it renders with the panel's fonts)
 add_executable(panel-test tests/panel_test.cpp
   src/autostart.cpp
   src/changelog.cpp
@@ -126,6 +148,7 @@ add_executable(panel-test tests/panel_test.cpp
   src/diag.cpp
   src/draw.cpp
   src/eyecam.cpp
+  src/eye_preview.cpp
   src/fit_text.cpp
   src/gaze_fit.cpp
   src/host_entry.cpp
@@ -142,8 +165,9 @@ add_executable(panel-test tests/panel_test.cpp
   src/theme.cpp
   src/ui_state.cpp
   ${FRAME_UPDATER_DIR}/cpp/update_check.cpp
+  ${FRAME_APPS_SOURCES}
 )
-target_include_directories(panel-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp)
+target_include_directories(panel-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp ${FRAME_APPS_DIR}/cpp)
 target_compile_definitions(panel-test PRIVATE FRAMEEYEOSC_VERSION="${FRAMEEYEOSC_VERSION}")
 target_compile_options(panel-test PRIVATE -Wall -Wextra)
 target_link_libraries(panel-test PRIVATE PkgConfig::CAIRO PkgConfig::FREETYPE Threads::Threads)
@@ -181,7 +205,7 @@ add_test(NAME eyecam COMMAND eyecam-test)
 # without cairo: panel/build/diag-test
 add_executable(diag-test tests/diag_test.cpp src/diag.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp src/status.cpp
   src/model.cpp src/config.cpp src/gaze_fit.cpp src/setup_tools.cpp src/recorder.cpp)
-target_include_directories(diag-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp)
+target_include_directories(diag-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp ${FRAME_APPS_DIR}/cpp)
 target_compile_options(diag-test PRIVATE -Wall -Wextra)
 target_link_libraries(diag-test PRIVATE Threads::Threads)
 add_test(NAME diag COMMAND diag-test)

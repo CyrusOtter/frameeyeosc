@@ -217,6 +217,8 @@ struct Status {
     bool recalibSuggested = false; ///< drifted since the calibration: "calib wear" again
     bool live = false;             ///< the eyelids are read from the cameras live
     double liveMs = 0.0;           ///< how long one live frame took (ms; NaN when missing)
+    bool hasPreview = false;       ///< "preview" is there (an eyecam-rec that makes the eye preview's pictures)
+    bool preview = false;          ///< ...it makes them now (the panel asked within the last few seconds)
     std::string autoGrab;          ///< "auto_grab": how eyecam-rec takes the buffers by itself ("" when missing)
     bool grabOutdated = false;     ///< "grab_outdated": the installed eyecam-grab (root's copy) differs from the one
                                    ///< bundled with eyecam-rec, so an update brought a new one (false when missing)
@@ -251,6 +253,9 @@ struct Status {
     std::string lastError;         ///< "last_error": the last error's message, kept after it ("" = none)
     std::string lastErrorEn;       ///< ...in English
     double lastErrorUnix = 0.0;    ///< ...when (Unix seconds; 0 = none)
+    bool hasDriftlog = false;      ///< "driftlog" is there (a newer eyecam-rec that keeps a drift log on request)
+    bool driftlogOn = false;       ///< ...it is on
+    std::string driftlogPath;      ///< ...its file, or the last one ("" before the first)
 };
 
 /**
@@ -335,6 +340,7 @@ struct Reply {
     bool ok = false;
     std::string command;  ///< "start" / "stop" / "calib wear" / ...
     std::string error;    ///< "err <reason>"'s reason, or what went wrong talking to it (English); "" when ok
+    std::string detail;   ///< what follows "ok " ("driftlog on" says its file); "" for a bare "ok"
 };
 
 /** What the panel draws of the recorder. */
@@ -520,6 +526,16 @@ bool isCalib(Run run);
 bool baselineWarming(const Status& status);
 
 /**
+ * Whether the eyelids from the eye cameras become usable for frameeyeosc only when eyecam-rec's warm-up ends: read
+ * live, the relaxed eyes still being learned, and no baseline for this wear yet (calib_state kCalibWearBit or
+ * kCalibAutoBit, as frameeyeosc's Live::lids_usable wants). Not before the setup is done either: the learned baseline
+ * only counts after it (an eyecam-rec without "setup_done" counts as done).
+ * @param status the status
+ * @return true while that warm-up is all they wait for
+ */
+bool lidsAwaitWarmup(const Status& status);
+
+/**
  * eyecam-rec's line in the panel's language: in English its message_en when there is one, else (and in Japanese)
  * its message.
  * @param status the status
@@ -569,6 +585,43 @@ ToolNotice toolNotice(const Status& status, PasswordState password);
  * @return true if complete
  */
 bool setupComplete(const Status& status);
+
+/**
+ * Whether the eye cameras are set up: eyecam-rec runs (their tab shows) and its setup is done, the camera tool there
+ * (setupStep is Done).
+ * @param view eyecam-rec
+ * @return true if set up
+ */
+bool setUp(const View& view);
+
+/**
+ * Whether the eye cameras are in use: set up (setUp) and switched on (camera_lids, on the Basic tab). The rows that only
+ * work with them show only then (with a "Camera" badge); otherwise one dashed line in their place says what the cameras
+ * would add.
+ * @param view eyecam-rec
+ * @param cameraLids the camera_lids setting
+ * @return true if in use
+ */
+bool inUse(const View& view, bool cameraLids);
+
+/**
+ * Whether re-centering by itself waits for eyecam-rec's warm-up: the eye cameras in use (inUse; with them switched off
+ * frameeyeosc never takes their eyelids, so there is nothing to wait for) and their eyelids waiting for it
+ * (lidsAwaitWarmup).
+ * @param view eyecam-rec
+ * @param cameraLids the camera_lids setting
+ * @return true while it waits
+ */
+bool recenterAwaitsWarmup(const View& view, bool cameraLids);
+
+/**
+ * Whether the eye cameras tab shows what the cameras add (and "Get started") instead of the setup checklist: not set up
+ * and nothing of the setup done yet (at (1) or (2), never set up before), until that button is pressed.
+ * @param view eyecam-rec
+ * @param begun "Get started" was pressed since the panel started
+ * @return true to show it
+ */
+bool introShown(const View& view, bool begun);
 
 /**
  * The current step, from this status and password check alone: the first one not met.
@@ -771,7 +824,7 @@ private:
 std::string instruction(const UiText& t, const std::string& label);
 
 /**
- * Read the recorder's one-line reply: "ok", or "err <reason>".
+ * Read the recorder's one-line reply: "ok" (or "ok <detail>"), or "err <reason>".
  * @param line the line (a trailing newline is ignored)
  * @param command the command it answers
  * @return the reply (an empty or other line is an error that says so)

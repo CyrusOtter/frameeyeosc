@@ -58,6 +58,30 @@ struct UiText {
     const char* errWrite;           ///< writing config.json failed
     const char* errConfigBroken;    ///< config.json can't be parsed
     const char* errAutostart;       ///< systemctl enable/disable failed
+    // The eye preview: the left column's button and the sheet it opens (eye_preview.h)
+    const char* previewButton;          ///< the button at the bottom of the left column (and the sheet's title)
+    const char* previewSourceSent;      ///< which values drive the drawn eyes: as sent...
+    const char* previewSourceRaw;       ///< ...as read (Valve's openness, the gaze before smoothing)...
+    const char* previewSourceCamera;    ///< ...the eye camera's own
+    const char* previewMirror;          ///< the switch that shows the eyes as in a mirror (off: seen from the front)
+    const char* previewPicture;         ///< the switch for the eye cameras' pictures
+    const char* previewFreeze;          ///< stop the drawing where it is
+    const char* previewResume;          ///< ...and let it move again
+    const char* previewLidFormat;       ///< an eye's chip: its eyelid (%.2f)
+    const char* previewLidNone;         ///< ...without one
+    const char* previewFromValve;       ///< the badge: the eyelid is Valve's (the eye camera's is cameraBadge)
+    const char* previewPupilFormat;     ///< an eye's chip: its pupil (%.1f mm)
+    const char* previewPupilNone;       ///< ...without one
+    const char* previewClosed;          ///< on a camera picture: eyecam-rec reads the eye closed
+    const char* previewGazeFormat;      ///< the footer: the gaze (%+.0f sideways, %+.0f up / down, in degrees)
+    const char* previewNotePicture;     ///< the footer while the pictures show: only shown, what the marks are
+    const char* previewNoteShape;       ///< ...otherwise: avatars' eyes differ, it is for the movement
+    const char* previewWaitingPicture;  ///< in a picture's place while none has come (or it stopped)
+    const char* previewCamNotRunning;   ///< why there are no pictures (and no camera values): eyecam-rec isn't running
+    const char* previewCamNotSetUp;     ///< ...the eye cameras aren't set up
+    const char* previewCamNotInUse;     ///< ...camera_lids is off
+    const char* previewCamOld;          ///< why there are no pictures: an eyecam-rec without the preview
+    const char* previewCamRefused;      ///< ...eyecam-rec refused "preview on"
 
     // Tabs
     const char* tabBasic;
@@ -91,6 +115,26 @@ struct UiText {
     /** Each card's three lines (VRChat, LiveLink, ETVR): wide eyes, sync, VRCFT. A leading ICON_CHECK or ICON_CROSS
      *  and a space hang in front of the lines (icons.h). */
     const char* outputMarks[3][3];
+    const char* outputCameraSuffix;  ///< after a card's wide-eyes line while the eye cameras aren't in use ("（カメラ）")
+    // The Basic tab's eye cameras row: not set up (a way to their tab), or set up (the camera_lids switch)
+    const char* rowEyeCameras;
+    const char* hintEyeCamerasNew;   ///< ...not set up: what they add
+    const char* eyeCamerasUnused;    ///< ...its state then (grey)
+    const char* eyeCamerasStart;     ///< ...and the button to their tab
+    const char* hintEyeCamerasOn;    ///< ...set up: what off means
+    const char* eyeCamerasUse;       ///< ...the switch: on...
+    const char* eyeCamerasDontUse;   ///< ...and off
+    const char* camBriefBoth;        ///< ...the short state after it: both eyes on the cameras...
+    const char* camBriefLeft;        ///< ...only the left...
+    const char* camBriefRight;       ///< ...only the right...
+    const char* camBriefOff;         ///< ...switched off...
+    const char* camBriefWarming;     ///< ...learning the relaxed eyes...
+    const char* camBriefWaiting;     ///< ...or not on the cameras for another reason (the headset off, ...)
+    const char* cameraBadge;         ///< the small green badge after a row that only works with the eye cameras
+    // Where a row only for the eye cameras would be while they aren't in use: one dashed line (to their tab)
+    const char* cameraLineWiden;     ///< Eyelids, Look
+    const char* cameraLineFloor;     ///< Eyelids, Blinks and narrowing
+    const char* cameraLinePupils;    ///< Output
     const char* rowActiveType;      ///< how EyeTrackingActive is sent
     const char* hintActiveType;
     const char* activeOff;
@@ -178,8 +222,7 @@ struct UiText {
     const char* hintFit;
     const char* fitStart;            ///< the one big button before any fit
     const char* fitAgain;            ///< the same button once fitted
-    const char* fitCenterOnly;       ///< small button: re-center the gaze only...
-    const char* fitCenterTilt;       ///< ...or re-center and measure the tilt (as auto_recenter says)
+    const char* fitCenterOnly;       ///< small button: re-center the gaze only (the middle dot)
     const char* fitStop;
     const char* fitIntro;            ///< before any fit (fitHowTo follows it)
     const char* fitNeedsRunning;
@@ -187,22 +230,25 @@ struct UiText {
     const char* fitRunningTitle;     ///< while a fit runs: the one calm line ("Look at the dot")...
     const char* fitHowTo;            ///< ...and under it, what to do (full fit)
     const char* fitHowToCenter;      ///< (re-centering)
-    const char* fitHowToTilt;        ///< (re-centering and the tilt)
     const char* fitDone;             ///< right after a full fit
     const char* fitDoneCenter;       ///< right after re-centering
-    const char* fitDoneTilt;         ///< right after re-centering and the tilt
     const char* fitFitted;           ///< a fit is in config.json
     const char* fitNotYet;           ///< the folded result line before any fit
-    const char* fitGazeCenterFormat; ///< "Gaze center: L-R %s, U-D %s, tilt %s"
+    const char* fitGazeCenterFormat; ///< "Gaze center: L-R %s, U-D %s"
     const char* fitGazeRangeFormat;  ///< "Gaze range: L-R %s, up %s, down %s"
     const char* fitGazeNone;
-    const char* fitEyeXFormat;       ///< "Each eye: L %s x%s, R %s x%s" (zero point, gain)
     const char* fitLidFormat;        ///< "Eyelid %s: open %s, closed %s, looking down %s"
     const char* fitLidsNone;
-    const char* fitRollJumpFormat;      ///< re-wear tilt not used: "Tilt read %s, too far from the last one (%s)..."
-    const char* fitRollDisagreeFormat;  ///< full fit tilt not used: "Tilt read %s up/down but %s sideways..."
-    const char* fitEyeSpreadFormat;     ///< Valve's per-eye x off straight ahead: "...%s apart (%s at the dot)..."
-    const char* fitEyeSpreadKeptFormat; ///< the same, each eye's gain kept (full fit)
+    const char* fitLidNoneFormat;    ///< "Eyelid %s: not fitted ...", for one eye while the other is fitted
+    const char* fitStandInLeft;      ///< after a full fit: Valve read the left eye stuck at 0 and the eye camera saw it
+                                     ///< open, so its gaze counted and its lid fit was kept (gaze_fit::Notes::standIn)
+    const char* fitStandInRight;
+    const char* fitStandInCenterLeft;   ///< the same after re-centering (no lid fit there)
+    const char* fitStandInCenterRight;
+    const char* fitInfoTitle;       ///< the box under "Fine-tune" while it is folded: how fitting works...
+    const char* fitInfoRewear;       ///< ...each wear: the one dot in the middle, by itself...
+    const char* fitInfoFull;         ///< ...the whole fit: the first time, and when something is off...
+    const char* fitInfoNoTilt;       ///< ...and the tilt isn't used any more
     const char* fitFailed;
     const char* failCancelled;       ///< "Stop" pressed
     const char* fitUnchanged;        ///< under a stop (Cancelled, Left, DashboardOpened): "Nothing was changed"
@@ -227,8 +273,6 @@ struct UiText {
     const char* failDetailEyeRight;
     const char* failDetailClosedFormat;   ///< "%s %.2f (needs below %.2f)"
     const char* failDetailMovedFormat;    ///< "moved %.1f° (needs %.1f°)"
-    const char* failDetailSidewaysLeft;   ///< "left eye sideways" (its own fit)
-    const char* failDetailSidewaysRight;
     const char* failDetailLidWhereFormat;  ///< "%s eyelid, %s dot"
     const char* failDetailLidFormat;      ///< "open %.2f vs shut %.2f, %.2f apart (needs %.2f)"
     const char* failDetailLidNone;        ///< no open reading
@@ -248,8 +292,7 @@ struct UiText {
     const char* rowAutoRecenter;     ///< the row for what runs when the headset is put on...
     const char* hintAutoRecenter;
     const char* autoRecenterOff;     ///< ...and its choices: nothing...
-    const char* autoRecenterCenter;  ///< ...re-centering...
-    const char* autoRecenterTilt;    ///< ...or re-centering and the tilt
+    const char* autoRecenterCenter;  ///< ...or re-centering (the middle dot)
     const char* rowOffset;
     const char* hintOffset;
     const char* rowGain;
@@ -260,8 +303,6 @@ struct UiText {
     const char* capDown;
     const char* detailsGaze;         ///< "Fine-tune" pages
     const char* detailsLids;
-    const char* rowEyeX;             ///< each eye's own sideways zero point and gain
-    const char* hintEyeX;
     const char* rowDownHold;         ///< holding the sideways gaze when looking far down
     const char* hintDownHold;
     const char* rowEyeLog;           ///< the eye log row (Advanced tab)
@@ -269,11 +310,10 @@ struct UiText {
     const char* eyeLogStopFormat;    ///< ...and stop, with the time so far ("Stop 1:23")
     const char* eyeLogWhereFormat;   ///< where the files go ("Saved to %s")...
     const char* eyeLogLimit;         ///< ...and that it stops by itself after 60 minutes
+    const char* eyeLogDrift;         ///< ...with the eye cameras in use: eyecam's numbers kept beside it
     const char* eyeLogFailedFormat;  ///< it could not start or ended by itself ("Couldn't record: %s")
     const char* eyeLogAutoStopped;   ///< the last one was stopped by the 60-minute limit
     const char* recordingFormat;     ///< the mark in the left column while recording ("Recording 1:23")
-    const char* rowTilt;             ///< the headset's tilt (gaze_roll_deg), next to the far-down hold
-    const char* hintTilt;
     const char* downHoldFormat;      ///< "Below %s°"
     const char* rowLidFit;
     const char* hintLidFit;
@@ -333,6 +373,32 @@ struct UiText {
     const char* advFiles;           ///< the files and the process
     const char* updateToFormat;     ///< the update button: "%s に更新する" (the new version)
     const char* updateNotesFormat;  ///< over the new release's summary: "%s の内容"
+    // The other Frame apps (frame-apps' strings.md): the row at the bottom of "Version", the list it opens and the
+    // confirmation before the installer opens in Konsole. Their names and descriptions come from frame_apps' catalog
+    const char* appsAllTitle;           ///< the row's title and the list's title
+    const char* appsAllCountFormat;     ///< under the row's title (%1$d the apps listed, %2$d of them not installed)
+    const char* appsAllInstalledFormat; ///< ...when all are installed (%d the apps listed)
+    const char* appsInstall;            ///< an app that isn't installed: its button
+    const char* appsChipRunning;        ///< an app that runs (its unit is active): the chip
+    const char* appsChipInstalled;      ///< an app that is installed, not running
+    const char* appsChipBusy;           ///< an app whose Konsole is still open (and the menu button then)
+    const char* appsListSub;            ///< under the list's title
+    const char* appsListNote;           ///< at the bottom of the list: where the list comes from ("\n" breaks it)
+    const char* appsOpenInstaller;      ///< the list's button that opens the installer's menu
+    const char* appsClose;              ///< the list's close button (its name; it is drawn as a cross)
+    const char* appsConfirmTitleFormat; ///< the confirmation for one app ("%s を入れる", the app's name)
+    const char* appsConfirmMenuTitle;   ///< ...for the menu
+    const char* appsConfirmLead;        ///< over the command
+    const char* appsConfirmProgress;    ///< for one app: where the progress shows
+    const char* appsConfirmMenu;        ///< for the menu: what it offers
+    const char* appsConfirmNoSudo;      ///< always: no sudo, all in the home folder
+    const char* appsConfirmClose;       ///< always: close Konsole when done
+    const char* appsConfirmCancel;      ///< its buttons
+    const char* appsConfirmLaunch;
+    const char* appsErrorBusy;          ///< Konsole couldn't be opened (frame_apps::LaunchResult): Busy
+    const char* appsErrorNoDisplay;     ///< ...NoDisplay
+    const char* appsErrorNoKonsole;     ///< ...NoKonsole
+    const char* appsErrorFailed;        ///< ...Failed and UnknownApp
     // Records of calibrations and eye fits (report.h): the "Having trouble" page, a record, all records, report.txt
     const char* recordsTitle;       ///< "Recent records"
     const char* recordsHint;        ///< beside it
@@ -528,8 +594,7 @@ struct UiText {
     const char* eyecamStartNoLight;    ///< ...sends "start widen_nolight"
     const char* eyecamCancel;          ///< ...back without starting
     const char* eyecamNoLight;         ///< by the step number while recording without the light
-    // ...the eye cameras for frameeyeosc (their usual page): the camera_lids switch and what frameeyeosc uses now
-    const char* rowCameraLids;         ///< the camera_lids switch
+    // ...the eye cameras for frameeyeosc (their usual page): what frameeyeosc uses now
     const char* cameraUseBoth;         ///< the cameras drive both eyes
     const char* cameraUseLeft;         ///< ...only the left one
     const char* cameraUseRight;        ///< ...only the right one
@@ -684,7 +749,6 @@ struct UiText {
     const char* camRowState;  ///< the eye cameras page: rows (title, hint)
     const char* camRowStateHint;
     const char* camLearned;  ///< ...the baseline learned (green pill)
-    const char* camRowLidsHint;
     const char* camRowCalib;
     const char* camRowCalibHint;
     const char* camCalibButton;
@@ -717,13 +781,28 @@ struct UiText {
     const char* lidsLook;  ///< the Eyelids tab's sub-tabs: the look (widening, smoothing, sync)
     const char* lidsBlinks;  ///< ...blinks and squints
     const char* lidsFine;  ///< ...the values by hand
+    const char* gazeMotion;  ///< the Gaze tab's sub-tabs: how the gaze moves (smoothing, deadzone)
+    const char* gazeReach;  ///< ...how far it goes (the gaze scale, each eye on its own)
+    const char* gazeGlitch;  ///< ...guarding against glitches (blinks, unreliable gaze, dropouts)
+    const char* rowGazeScale;  ///< the gaze scale row (gaze_scale_*)
+    const char* hintGazeScale;  ///< ...its hint: after the eye fit, kept by fitting again
+    const char* capScaleLeft;  ///< ...the captions over its four steppers
+    const char* capScaleRight;
+    const char* capScaleUp;
+    const char* capScaleDown;
     const char* lidsNowLabel;  ///< the Eyelids tab (案E): the band at the top of "Look", "now"
     const char* lidsNowBoth;  ///< ...from both cameras
     const char* lidsNowLeft;  ///< ...the left camera, Valve for the right
     const char* lidsNowRight;  ///< ...the right camera, Valve for the left
     const char* lidsNowValve;  ///< ...Valve's values
-    const char* lidsNowSwitch;  ///< ...at its right: where to switch
-    const char* lidsNowNoCamera;  ///< ...no eye cameras set up
+    const char* lidsNowWaiting;  ///< ...the eye cameras in use, but neither eye on them yet
+    const char* lidsNowSwitch;  ///< ...at its right, set up: where they are switched on and off
+    // The eye cameras tab before they are set up: what they add, and the way into the setup
+    const char* camIntroTitle;
+    const char* camIntro[3];      ///< the three things they add
+    const char* camIntroBox;      ///< the one-time setup, and the video staying in the Frame
+    const char* camIntroButton;   ///< starts the setup checklist
+    const char* camIntroNote;     ///< without them all works as before
     const char* rowWidenEase;  ///< the one widening slider
     const char* widenHintCamera;  ///< ...its hint: the cameras
     const char* widenHintMixed;  ///< ...one eye on the cameras

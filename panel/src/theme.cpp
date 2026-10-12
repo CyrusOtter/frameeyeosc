@@ -148,6 +148,23 @@ const std::vector<ContrastPair>& contrastPairs() {
         {"records: a stop's box outline (pill-colored)", kBorder, kControl, ContrastKind::Ui},
         {"records: card titles (pill-colored card)", kAccent, kControl, ContrastKind::Text},
         {"records: the saved bar's sheet (pill-colored card)", kSuccess, kControl, ContrastKind::Ui},
+        // The other Frame apps (the row on "Version", the list and the confirmation)
+        {"other apps: row and sheet outlines, the list's cross (card)", kBorder, kCard, ContrastKind::Ui},
+        {"other apps: \"Running\" chip and its dot (green tint)", kSuccess, kSuccessTint, ContrastKind::Text},
+        {"other apps: \"Installed\" chip and its dot (card-colored)", kTextMuted, kCard, ContrastKind::Text},
+        {"other apps: \"Running in Konsole\" chip (accent tint)", kAccent, kAccentTint, ContrastKind::Text},
+        {"other apps: a name and description (pill-colored row)", kTextMuted, kControl, ContrastKind::Text},
+        {"other apps: an app's letters without its icon (dark tile)", kAccent, kBg, ContrastKind::Text},
+        {"other apps: the command Konsole runs (dark box)", kText, kBg, ContrastKind::Text},
+        {"other apps: the confirmation's error (card)", kDanger, kCard, ContrastKind::Text},
+        // The eye preview: the drawn eyes (outlined with kBorder on the card) and the marks on the cameras' pictures
+        // (dark pictures: checked against the panel background)
+        {"eye preview: the lids against the white of the eye", kEyeLid, kEyeWhite, ContrastKind::Ui},
+        {"eye preview: iris (white of the eye)", kEyeIris, kEyeWhite, ContrastKind::Ui},
+        {"eye preview: pupil and upper lid edge (iris, white of the eye)", kEyeDark, kEyeIris, ContrastKind::Ui},
+        {"eye preview: the found pupil's circle (dark picture)", kPreviewPupil, kBg, ContrastKind::Ui},
+        {"eye preview: the search window's frame (dark picture)", kPreviewWindow, kBg, ContrastKind::Ui},
+        {"eye preview: \"Read as closed\" on a picture (dark badge)", kText, kBg, ContrastKind::Text},
     };
     return pairs;
 }

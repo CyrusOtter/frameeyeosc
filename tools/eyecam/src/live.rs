@@ -15,7 +15,8 @@
 //!
 //! No per-wear calibration is needed: after the HMD goes on, the open-eye levels (skin line and aperture, in pixels)
 //! are the mode of the first 30 s of usable frames (pupil seen, eye open, gaze within 15 degrees of the wearer's
-//! typical pitch), and from then on they follow slowly (60 s time constant, frames with EyeWide < 0.2 only). The widen
+//! typical pitch), and from then on they follow slowly (skin line: 30 s time constant, every usable frame, see
+//! TRACK_TAU_S; aperture: 20 s, frames with EyeWide and EyeSquint < 0.6, see TRACK_AP_TAU_S). The widen
 //! step and the closed aperture come from the median of the user's past wear calibrations (in iris radii) times the
 //! current iris radius, or population defaults when there is none. A wear calibration only sets the starting levels
 //! (and adds its step to the history). EyeWide is 0 while warming up and for 0.3 s after the gaze drops by 8 degrees
@@ -45,6 +46,69 @@ const PUPIL_SETTLE_S: f64 = 0.3;
 pub const PRIOR_RESET_S: f64 = 10.0 / FPS;
 /// Closed needs no pupil for this long (3 frames at 90 fps; at least 2 frames).
 const CLOSED_NO_PUPIL_S: f64 = 3.0 / FPS;
+/// A pupil lost while the last one seen had its small-x edge within this many px of the search window's left edge ran
+/// out of the lit part of the picture, not under a lid. The small-x side of both upright pictures is the temporal one
+/// (toward the ear; the 2026-10-09 recordings: an eye turning outward moves its pupil there, one turning inward toward
+/// the lens-edge band at large x), and it is dark: an eye turned 25 degrees or more outward takes its pupil into that
+/// shading, where it merges with it (a blob too big to be one), and the iris box, cut by the window's edge, takes in
+/// sclera and skin and reads 1.31-1.50 x its open level. Such an eye is not closed; its eyelid, widen and squint keep
+/// their last values (but widen 0 and the eyelid at most 0.75) until the pupil is seen again, as long as the lids
+/// measured there are still apart (`EDGE_OPEN_AP`): an eye that really closes after an outward glance (the last pupil
+/// stays at the edge) still closes.
+/// 12 px missed a right look of 35 degrees on 2026-10-09 15:23 (the right eye's last pupil 15 px from the edge, 9 s
+/// falsely closed). On the features of the 2026-10-03/04 and 10-08 eye videos: 53 of the 55 frames falsely closed
+/// looking outward (Valve's openness 0.9 or more) no longer closed, none of the 6118 closed frames (Valve's below 0.5);
+/// replays of the 10-07 to 10-09 videos: 3 of 10515 closed frames lost (blinks' last frames; the blinks still closed).
+const EDGE_LOST_PX: f64 = 16.0;
+/// The aperture (iris radii, 5-frame median) down to which an eye lost at the window's edge is held open. Closed eyes
+/// measure 0.3-0.8 (99% below 1.03 on 2026-10-03/08, below 1.2 on 10-09), the eyes falsely closed looking outward
+/// 1.06-1.59 (95% above 1.27).
+const EDGE_OPEN_AP: f64 = 1.2;
+/// The extended pupil search (`feat::Search::find_x_min`, `search_x_min` in the drift log): how far (px) its left edge
+/// may go past `x_min` toward the ear. `x_min` is where the temporal shading ends minus 10 px, fixed in the first 20 s of
+/// a wear; lying down darkens the frame, so it moves in while the pupil moves out (2026-10-12 guided recordings, the
+/// right eye's pupil found in 0.66 of the open steps sitting, 0.39 on the back and 0.09 on the right side; on the side
+/// its temporal edge sat a few px past x_min for the whole minute). Moving x_min itself 10 px further out (shading
+/// end - 20) found it lying down (0.78 / 0.65) but lost blinks sitting (1042 -> 1002 short closes over the free
+/// recordings, one eye 69 -> 48, and a new 7 s false close): x_min also bounds the iris box, the lids and the edge
+/// hold, and a box with shading in it no longer brightens enough over a closed lid. So x_min stays, and only the
+/// pupil search reaches further, and only when the search inside x_min finds nothing. Replays (2026-10-12): the right
+/// eye's pupil in 0.73 / 0.70 / 0.65 of the open steps sitting / on the back / on the side, the side's close steps
+/// all read closed (none before) and its 6 s false close gone; the 7 free recordings (3 min sitting each) caught 320 of
+/// Valve's 341 closes (321 before) with 504 short closes where Valve closed too (506), false closes 21.3 s (23.7, none
+/// new); the 10 wear calibrations found the pupil in as many normal-step frames or more (one eye 276 -> 465 of 486)
+/// with the same fitted levels (within 0.008). The pupils it found had their temporal edge up to 16 px past x_min
+/// (medians 13 on the side, 8 on the back); where the shading reaches the pupil itself (the iris around it in the
+/// dark), no edge finds it, and the edge hold keeps the eye open.
+pub const EXT_MAX_PX: f64 = 24.0;
+/// The extended search's edge keeps this many px (`feat::EXT_EDGE_PX`) left of a pupil found near it, and opens to
+/// EXT_MAX_PX when the pupil is lost with its last small-x edge within this of it (or when the search inside x_min
+/// refused a blob cut by its edge that refined into an ellipse: the first pupil of a wear may never be seen inside).
+const EXT_NEAR_PX: f64 = feat::EXT_EDGE_PX;
+/// It comes back toward x_min this fast (px/s) while the pupil is seen with its small-x edge EXT_NEAR_PX or more
+/// inside x_min (24 px in 6 s): a glance back in does not close it at once.
+const EXT_BACK_PX_S: f64 = 4.0;
+/// A pupil from the extended search is taken only when it looks like the open eye's pupil: at least this share of
+/// its rays reached its edge, this round (b/a), 0.6-1.3 x the open pupil's size (the crease check takes 0.45, for a
+/// pupil in bright light at 0.55-0.65 x; stricter here, where the shading's blobs are as dark), at most EXT_DARKER
+/// levels lighter inside
+/// (before the open pupil is known, the first 30 samples of a wear: a semi-axis within EXT_A_PX); and while Valve's
+/// openness for the eye is known, it is at least EXT_VALVE_OPEN. Without Valve's openness, it must be within
+/// EXT_TRACK_PX of the last pupil when that was seen within EXT_TRACK_S. Both guard against what a blink leaves near
+/// where the pupil was: the pupil half under the closing lid, lashes. The extended search runs on every frame without
+/// a pupil while it is open, and such a "pupil" moves the place the iris box is measured at to the shaded edge, where a
+/// closed lid no longer reads bright enough: before the Valve check, 2026-10-09 16:37 lost a 0.4 s close (Valve's
+/// openness 0) to a pupil found at 0.26, and the 10-09 user calibration a blink's start to one found at 0.
+/// The track alone was too strict and too weak at once: a glance back from looking down (10-12 10:02, 70 px in a
+/// frame) was refused for 1.4 s and read closed, and it does not tell a lid-cut pupil from the pupil.
+const EXT_MIN_VIS: f64 = 0.5;
+const EXT_MIN_BA: f64 = 0.5;
+const EXT_SIZE: (f64, f64) = (0.6, 1.3);
+const EXT_DARKER: f64 = 10.0;
+const EXT_TRACK_S: f64 = 1.0;
+const EXT_TRACK_PX: f64 = 40.0;
+const EXT_A_PX: (f64, f64) = (8.0, 45.0);
+const EXT_VALVE_OPEN: f64 = 0.6;
 /// The lid features are causal medians over this long (5 frames at 90 fps; an odd number, at least 3).
 const MEDIAN_S: f64 = 5.0 / FPS;
 /// The long-run medians (iris radius, the open eye's box level, pupil size and darkness, typical pitch) take a
@@ -73,11 +137,26 @@ const WIDE_OFF: f64 = 0.3;
 pub const WARMUP_S: f64 = 30.0;
 /// Usable frames for the baseline: Valve pitch within this many degrees of the wearer's typical pitch.
 const PITCH_GATE: f64 = 15.0;
-/// After warm-up the baselines follow the open-eye levels with this time constant (s), using only frames with
-/// EyeWide below `TRACK_MAX_WIDE` (and EyeSquint below it, for the aperture). Faster (20 s) followed the lid down
-/// during downward glances and widened falsely more.
-const TRACK_TAU_S: f64 = 60.0;
-const TRACK_MAX_WIDE: f64 = 0.2;
+/// After warm-up the skin line's baseline follows the skin line with this time constant (s), at most half a widen step
+/// per time constant, through every usable frame. It used to take only frames with EyeWide below 0.2 (60 s): a
+/// baseline learnt low (2026-10-09 19:42, after an eyecam restart during the gaze fit: the right eye's 17 px under its
+/// skin line) read EyeWide 1 from then on and never moved, the right eye widened over 70% of the normal part (59%
+/// live) while the frames show it as open as the left one. Through every frame at 30 s: 25% (left 52 -> 10%), the
+/// other sessions' normal parts the same or less widened, and the widen steps of the protocol sessions (5 s each)
+/// kept: medians 0.75-1.00 (0.79-1.00 before). A widen of one full step held reads 0.5 or more for about 22 s (a
+/// bigger one longer: 1.4 steps about 50 s), then fades into the baseline. 20 s took the 19:42 eye down to 15%
+/// but faded some widen steps to 0.3 by their end; 0.6 as the limit (as for the aperture) left it at 66%.
+const TRACK_TAU_S: f64 = 30.0;
+/// The aperture's baseline follows faster (`TRACK_AP_TAU_S`), through frames with EyeSquint and EyeWide below
+/// `TRACK_AP_MAX`. It used to follow only frames below 0.2: an upper lid that settled lower after the warm-up
+/// (2026-10-09 16:37, both eyes 13-14 px lower from 40 s on, at the same pupil position and gaze; the frames show
+/// the lids relaxed) read as squint 0.4-0.5 from then on, and as squinting it never taught the baseline (113 -> 112 px
+/// over 2 minutes): eyelid 0.55 / 0.53 for good, while the skin line's baseline followed. Through frames up to 0.6 at
+/// 20 s: 0.72 / 0.73 (squint 0.07 / 0.03) over that part, the other sessions' normal parts the same or nearer 0.75,
+/// and the squint steps of the protocol sessions unchanged (2026-10-07 squint 1.00 / 1.00, 10-08 0.50 / 0.79). A
+/// squint held longer than that, at under 0.6, fades into the baseline.
+const TRACK_AP_TAU_S: f64 = 20.0;
+const TRACK_AP_MAX: f64 = 0.6;
 /// For this long after a wear starts the iris radius is taken from the history (the running estimate is settling).
 const R_PRIOR_S: f64 = 10.0;
 /// When Valve's pitch falls by `GAZE_DROP_DEG` within `GAZE_DROP_WINDOW` s, EyeWide is 0 for `GAZE_DROP_HOLD` s: the
@@ -153,12 +232,16 @@ pub struct Tune {
     pub track: bool,
     /// Hold EyeWide at 0 after a downward glance.
     pub gaze_drop: bool,
+    /// Not closed while the pupil is lost at the window's (temporal) edge (see EDGE_LOST_PX).
+    pub edge_hold: bool,
+    /// Look for a pupil the window's left edge cuts past it (see EXT_MAX_PX).
+    pub ext_search: bool,
 }
 
 impl Default for Tune {
     fn default() -> Self {
         let (wide_start, wide_width) = wide_curve(DEFAULT_WIDEN_SENSITIVITY);
-        Self { wide_start, wide_width, track: true, gaze_drop: true }
+        Self { wide_start, wide_width, track: true, gaze_drop: true, edge_hold: true, ext_search: true }
     }
 }
 
@@ -176,7 +259,7 @@ pub struct Params {
 }
 
 /// One frame's result for one eye.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Out {
     pub f: Features,
     pub valid: bool,
@@ -196,11 +279,50 @@ pub struct Out {
     pub r: f64,
     pub pitch: f64,
     pub xmax: f64,
-    /// The pupil search's left edge (`feat::search_x_min`).
+    /// The pupil search's left edge (`feat::search_x_min`): also the lid and iris-box regions' and the edge hold's.
     pub x_min: f64,
+    /// The extended pupil search's left edge for this frame (`x_min` when it is not extended; see EXT_MAX_PX).
+    pub search_x_min: f64,
+    /// px from the last pupil seen's small-x (temporal) edge to `x_min` (NaN before the first pupil).
+    pub edge_gap: f64,
+    /// No pupil, the last one at the window's (temporal) edge: not closed, the eyelid values held (see EDGE_LOST_PX).
+    pub edge_held: bool,
     /// The levels in use for this frame (calibrated, or the automatic baseline + stored step).
     pub b_n: f64,
     pub b_w: f64,
+}
+
+/// The widen step and open gap (iris radii) the engine uses, and the confidence factor that goes with them: the
+/// history's, or the population defaults.
+pub fn levels(params: &Params) -> (f64, f64, f64) {
+    params.hist.map_or((DEFAULT_WIDEN_STEP, DEFAULT_OPEN_GAP, 0.7), |h| (h.step, h.gap, 1.0))
+}
+
+/// What the engine holds for the current wear, read only (the drift log, `driftlog`): the references fixed early in
+/// a wear and the ones that follow.
+#[derive(Clone, Copy, Debug)]
+pub struct WearState {
+    /// The time (s) of this wear's first frame (NaN before one).
+    pub t_first: f64,
+    /// The pupil search window: x from `x_min` to `xmax`, rows feat::SEARCH_Y0..SEARCH_Y1.
+    pub x_min: f64,
+    pub xmax: f64,
+    /// The extended pupil search's left edge after the last frame (EXT_MAX_PX).
+    pub search_x_min: f64,
+    pub x_min_from: feat::XMinFrom,
+    /// The frame time (s) x_min and xmax were last worked out on, and from how many frames' column means (they stop
+    /// after 40, about 20 s into a wear).
+    pub x_min_at: f64,
+    pub x_min_frames: u32,
+    /// The open eye's long-run box brightness (the closed rule's reference) and how many samples it has (it is used
+    /// from 30 on).
+    pub box_open: f64,
+    pub box_open_n: usize,
+    /// The auto baseline (px): skin line above the pupil and aperture, and whether it is ready (warm-up over or
+    /// seeded). Before it is ready these are the warm-up's running modes (NaN at first).
+    pub base_skin_px: f64,
+    pub base_ap_px: f64,
+    pub ready: bool,
 }
 
 /// `seconds` in frames at `fps`: rounded, and at least `min`.
@@ -326,6 +448,12 @@ pub struct EyeEngine {
     cm_last: u64,
     xmax: f64,
     x_min: f64,
+    /// Where x_min came from, and the time (s) of the frame it was last worked out on (the drift log).
+    x_min_from: feat::XMinFrom,
+    x_min_at: f64,
+    /// The extended pupil search's left edge (EXT_MAX_PX), and the time (s) the last pupil was seen.
+    find_x_min: f64,
+    prev_p_t: f64,
     r_est: LongMedian,
     skin: Win,
     ap: Win,
@@ -346,6 +474,9 @@ pub struct EyeEngine {
     last_sq: f64,
     last_open: f64,
     last_pd: f64,
+    /// The last eyelid, widen and squint reported for an open eye, kept while the pupil is lost at the window's
+    /// (temporal) edge.
+    last_out: (f64, f64, f64),
     base: AutoBase,
     /// Time of this wear's first frame.
     t_first: f64,
@@ -469,6 +600,10 @@ impl Default for EyeEngine {
             cm_last: 0,
             xmax: 346.0,
             x_min: feat::X_MIN,
+            x_min_from: feat::XMinFrom::Fixed,
+            x_min_at: f64::NAN,
+            find_x_min: feat::X_MIN,
+            prev_p_t: f64::NAN,
             // 30 s for R, 60 s for the open box level, 20 s for the open pupil.
             r_est: LongMedian::new(30.0),
             skin: Win::new(),
@@ -487,6 +622,7 @@ impl Default for EyeEngine {
             last_sq: 0.0,
             last_open: 1.0,
             last_pd: f64::NAN,
+            last_out: (0.75, 0.0, 0.0),
             base: AutoBase::default(),
             t_first: f64::NAN,
             pitch_recent: VecDeque::new(),
@@ -535,6 +671,44 @@ impl EyeEngine {
         self.prev = None;
         self.prev_p = None;
         self.nopupil = 0;
+        self.find_x_min = self.x_min;
+    }
+
+    /// What a pupil from the extended search (`feat::Search::find_x_min`) must be like on a frame at `t` (see
+    /// EXT_MIN_VIS). `valve_open`: Valve's openness for this eye (NaN without it). Once the open pupil is known these
+    /// are stricter than the closed-lid crease check, which then never drops such a pupil (and its box: the lids and
+    /// the box of a pupil the check refuses are measured where the last pupil was).
+    fn ext_check(&self, t: f64, valve_open: f64) -> feat::ExtCheck {
+        let known = self.a_open.len() >= 30;
+        feat::ExtCheck {
+            min_vis: EXT_MIN_VIS,
+            min_ba: EXT_MIN_BA,
+            a: if known { (EXT_SIZE.0 * self.a_open.value, EXT_SIZE.1 * self.a_open.value) } else { EXT_A_PX },
+            inner_max: if known { self.inner_open.value + EXT_DARKER } else { f64::INFINITY },
+            near: self
+                .prev_p
+                .filter(|_| !valve_open.is_finite() && t - self.prev_p_t < EXT_TRACK_S)
+                .map(|q| (q.cx, q.cy, EXT_TRACK_PX)),
+            closing: valve_open < EXT_VALVE_OPEN,
+        }
+    }
+
+    /// What the engine holds for this wear (read only; the drift log).
+    pub fn wear_state(&self) -> WearState {
+        WearState {
+            t_first: self.t_first,
+            x_min: self.x_min,
+            xmax: self.xmax,
+            search_x_min: self.find_x_min,
+            x_min_from: self.x_min_from,
+            x_min_at: self.x_min_at,
+            x_min_frames: self.cm_n,
+            box_open: self.box_open.value,
+            box_open_n: self.box_open.len(),
+            base_skin_px: self.base.b,
+            base_ap_px: self.base.ap_n,
+            ready: self.base.ready,
+        }
     }
 
     /// The lens edge and iris radius the engine currently uses.
@@ -574,6 +748,12 @@ impl EyeEngine {
 
     /// Process one upright frame. `pitch`: Valve gaze pitch of this eye (degrees) or NaN; `t`: frame time (s).
     pub fn process(&mut self, img: &[u8], pitch: f64, t: f64, params: &Params) -> Out {
+        self.process_open(img, pitch, f64::NAN, t, params)
+    }
+
+    /// `process` with Valve's openness for this eye (0..1, NaN without it): only a hint for the extended pupil search
+    /// (EXT_VALVE_OPEN), nothing else uses it.
+    pub fn process_open(&mut self, img: &[u8], pitch: f64, valve_open: f64, t: f64, params: &Params) -> Out {
         self.frame_no += 1;
         self.rate.push(t);
         let fps = self.rate.fps();
@@ -593,9 +773,14 @@ impl EyeEngine {
             self.cm_n += 1;
             let m: Vec<f64> = self.cm_sum.iter().map(|v| v / self.cm_n as f64).collect();
             self.xmax = feat::occluder_x(&m);
-            self.x_min = feat::search_x_min(&m);
+            (self.x_min, self.x_min_from) = feat::search_x_min_from(&m);
+            self.x_min_at = t;
         }
-        self.ex.search = feat::Search::live(self.x_min);
+        // The extended search's edge: within EXT_MAX_PX past x_min (and not past X_MIN_LO), x_min itself when off.
+        let ext_lo = if params.tune.ext_search { (self.x_min - EXT_MAX_PX).max(feat::X_MIN_LO) } else { self.x_min };
+        self.find_x_min = self.find_x_min.clamp(ext_lo.min(self.x_min), self.x_min);
+        let search_x_min = self.find_x_min;
+        self.ex.search = feat::Search::live_ext(self.x_min, search_x_min, self.ext_check(t, valve_open));
         let r_ready = self.r_est.len() >= 10;
         let r_ref = r_ready.then_some(self.r_est.value);
         let no_prior = self.prev.is_none();
@@ -620,9 +805,24 @@ impl EyeEngine {
             (f.pupil_cx, f.pupil_cy, f.pupil_a, f.pupil_b, f.pupil_vis) = (f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN);
             (f.iris_r, f.iris_n) = (f64::NAN, 0);
         }
+        // The extended search's edge follows the pupil: EXT_NEAR_PX left of one found near it, all the way out when it
+        // is lost near it (or a blob cut by x_min looked like an ellipse), slowly back while it is well inside x_min.
+        let lost_near = self.prev_p.is_some_and(|q| q.cx - q.a - self.find_x_min < EXT_NEAR_PX);
+        match p {
+            Some(pp) if pp.cx - pp.a - self.find_x_min < EXT_NEAR_PX => {
+                self.find_x_min = (pp.cx - pp.a - EXT_NEAR_PX).max(ext_lo).min(self.find_x_min);
+            }
+            Some(pp) if pp.cx - pp.a >= self.x_min + EXT_NEAR_PX => {
+                self.find_x_min = (self.find_x_min + EXT_BACK_PX_S / fps).min(self.x_min);
+            }
+            Some(_) => {}
+            None if lost_near || f.diag.left_refused => self.find_x_min = ext_lo.min(self.x_min),
+            None => {}
+        }
         if let Some(pp) = p {
             self.prev = Some((pp.cx, pp.cy));
             self.prev_p = Some(pp);
+            self.prev_p_t = t;
             if !box_bright && sampled {
                 self.a_open.push(pp.a, long_hz);
                 self.inner_open.push(pp.inner, long_hz);
@@ -631,7 +831,11 @@ impl EyeEngine {
                 }
             }
         }
-        if f.ok_pupil && f.iris_r.is_finite() && f.iris_n >= 4 && sampled {
+        // Not from the extended search: early in a wear the iris radius's median still jumps between modes (56 and 83 px
+        // on the 2026-10-09 18:16 user calibration's left eye), the box is sized by it, and two edge pupils found at
+        // 0.9 s flipped it half a second early, so the open eye's box level was learnt 12% brighter and the blink at
+        // 3.6 s (Valve's openness 0 for 0.2 s) never read 1.3 x. Their own box and lids still use the radius in use.
+        if f.ok_pupil && !f.diag.extended && f.iris_r.is_finite() && f.iris_n >= 4 && sampled {
             self.r_est.push(f.iris_r, long_hz);
         }
         if !self.t_first.is_finite() {
@@ -671,8 +875,11 @@ impl EyeEngine {
 
         // Closed: lid skin covers the box (brighter than the open-eye level) and no pupil for CLOSED_NO_PUPIL_S (3
         // frames at 90 fps).
+        // Not while the pupil is lost at the window's (temporal) edge with the lids still apart (EDGE_LOST_PX).
         let no_pupil_long = self.nopupil >= frames_in(CLOSED_NO_PUPIL_S, fps, 2);
-        let closed = self.box_open.len() >= 30 && box_f > 1.3 * self.box_open.value && no_pupil_long;
+        let edge_gap = self.prev_p.map_or(f64::NAN, |q| q.cx - q.a - self.x_min);
+        let edge_held = params.tune.edge_hold && !f.ok_pupil && edge_gap < EDGE_LOST_PX && ap >= EDGE_OPEN_AP;
+        let closed = self.box_open.len() >= 30 && box_f > 1.3 * self.box_open.value && no_pupil_long && !edge_held;
         self.since_closed = if closed { 0 } else { self.since_closed.saturating_add(1) };
         // Wide and squint are 0 on a closed frame and for HOLD_S after it.
         let hold = self.since_closed <= frames_in(HOLD_S, fps, 1);
@@ -692,7 +899,7 @@ impl EyeEngine {
 
         // Levels: the auto baseline (px) and the history's step and gap (iris radii) at the current radius.
         let user = params.user.unwrap_or_default();
-        let (step_r, gap_r, cal_q) = params.hist.map_or((DEFAULT_WIDEN_STEP, DEFAULT_OPEN_GAP, 0.7), |h| (h.step, h.gap, 1.0));
+        let (step_r, gap_r, cal_q) = levels(params);
         let (step_px, gap_px) = (step_r * r, gap_r * r);
         let open_seen = f.ok_pupil && !closed && skin_px.is_finite();
         if open_seen && pitch.is_finite() && sampled {
@@ -705,11 +912,14 @@ impl EyeEngine {
         } else if usable && params.tune.track && step_px > 0.0 {
             // One frame's share of the time constant.
             let k = 1.0 / (TRACK_TAU_S * fps);
-            if self.last_wide < TRACK_MAX_WIDE {
-                self.base.b += (skin_px - self.base.b).clamp(-0.5 * step_px, 0.5 * step_px) * k;
-            }
-            if self.last_wide < TRACK_MAX_WIDE && self.last_sq < TRACK_MAX_WIDE && ap_px.is_finite() && self.base.ap_n.is_finite() {
-                self.base.ap_n += (ap_px - self.base.ap_n).clamp(-0.25 * gap_px, 0.25 * gap_px) * k;
+            self.base.b += (skin_px - self.base.b).clamp(-0.5 * step_px, 0.5 * step_px) * k;
+            let k_ap = 1.0 / (TRACK_AP_TAU_S * fps);
+            if self.last_wide < TRACK_AP_MAX
+                && self.last_sq < TRACK_AP_MAX
+                && ap_px.is_finite()
+                && self.base.ap_n.is_finite()
+            {
+                self.base.ap_n += (ap_px - self.base.ap_n).clamp(-0.25 * gap_px, 0.25 * gap_px) * k_ap;
             }
         }
         let ready = self.base.ready;
@@ -758,6 +968,13 @@ impl EyeEngine {
         let open = if open.is_finite() { open } else { 1.0 };
         self.last_open = open;
         let eye_lid = if closed { 0.0 } else { 0.75 * open + 0.25 * wide };
+        // Held at the last open values, but never widened: the pupil is often lost just as the eye widens to look aside
+        // (2026-10-09 18:17: the right eye held at 0.93 / widen 0.71 for 10 s of a right look).
+        let (eye_lid, wide, squint) =
+            if edge_held { (self.last_out.0.min(0.75), 0.0, self.last_out.2) } else { (eye_lid, wide, squint) };
+        if !closed {
+            self.last_out = (eye_lid, wide, squint);
+        }
 
         // The pupil keeps its last whole-pupil value while closed, just after reopening, and while partly hidden.
         if pupil_whole && pd.is_finite() && !hold && !closed {
@@ -791,6 +1008,9 @@ impl EyeEngine {
             pitch,
             xmax: self.xmax,
             x_min: self.x_min,
+            search_x_min,
+            edge_gap,
+            edge_held,
             b_n,
             b_w,
         }
@@ -2505,6 +2725,225 @@ mod tests {
         // The real pupil is still taken without the prior.
         let o = e.process(&eye, f64::NAN, 1.1, &p);
         assert!(o.f.ok_pupil && !o.f.diag.gated);
+    }
+
+    /// Lid skin (150) with the eye open between rows 130 and 270 (sclera 110), the iris (70) and pupil (12) at `pupil`
+    /// (radius 25) if any, and the lens-edge band; `open` false: lid skin all over (a closed eye).
+    fn lid_frame(pupil: Option<(f64, f64)>, open: bool) -> Vec<u8> {
+        lid_frame_between(pupil, if open { 130..270 } else { 0..0 })
+    }
+
+    /// `lid_frame` with the eye open between the rows of `opening`.
+    fn lid_frame_between(pupil: Option<(f64, f64)>, opening: std::ops::Range<usize>) -> Vec<u8> {
+        let mut img = vec![150u8; vision::W * vision::H];
+        for y in 0..vision::H {
+            for x in 0..vision::W {
+                let v = &mut img[y * vision::W + x];
+                if x >= 350 {
+                    *v = 4;
+                } else if opening.contains(&y) {
+                    *v = 110;
+                    if let Some((px, py)) = pupil {
+                        let d = (x as f64 - px).hypot(y as f64 - py);
+                        if d < 25.0 {
+                            *v = 12;
+                        } else if d < 55.0 {
+                            *v = 70;
+                        }
+                    }
+                }
+            }
+        }
+        img
+    }
+
+    /// An engine that has seen the open eye looking ahead for a second, then `at` (the pupil's centre) for 10 frames.
+    fn seen_at(at: (f64, f64), tune: Tune) -> (EyeEngine, Params, f64) {
+        let p = Params { tune, ..Params::default() };
+        let mut e = EyeEngine::default();
+        let mut t = 0.0;
+        for k in 0..100 {
+            let pupil = if k < 90 { (250.0, 200.0) } else { at };
+            t = k as f64 / FPS;
+            let o = e.process(&lid_frame(Some(pupil), true), f64::NAN, t, &p);
+            assert!(o.f.ok_pupil && !o.closed, "frame {k}: {:?}", o.f.diag);
+        }
+        (e, p, t)
+    }
+
+    /// Whether the engine reports closed within 10 frames of `frame`, and the outputs of the last one.
+    fn closes(e: &mut EyeEngine, p: &Params, t0: f64, frame: &[u8]) -> (bool, Out) {
+        let mut any = false;
+        let mut last = None;
+        for k in 1..=10 {
+            let o = e.process(frame, f64::NAN, t0 + k as f64 / FPS, p);
+            assert!(!o.f.ok_pupil);
+            any |= o.closed;
+            last = Some(o);
+        }
+        (any, last.unwrap())
+    }
+
+    #[test]
+    fn a_pupil_lost_at_the_temporal_edge_with_the_lids_apart_is_not_closed() {
+        // The pupil gone, the iris box all sclera (brighter than the open eye's), the lids where they were.
+        let lost = lid_frame(None, true);
+        let shut = lid_frame(None, false);
+        let edge = (128.0, 200.0);
+        // Lost looking ahead: closed, as before.
+        let (mut e, p, t) = seen_at((250.0, 200.0), Tune::default());
+        let (closed, o) = closes(&mut e, &p, t, &lost);
+        assert!(closed && !o.edge_held, "{o:?}");
+        assert_eq!(o.x_min, feat::X_MIN_LO);
+        // Lost with its small-x edge 3 px from the window's: not closed, the open eye's values held.
+        let (mut e, p, t) = seen_at(edge, Tune::default());
+        let before = e.process(&lid_frame(Some(edge), true), f64::NAN, t + 0.5 / FPS, &p);
+        let (closed, o) = closes(&mut e, &p, t + 0.5 / FPS, &lost);
+        assert!(!closed && o.edge_held && o.valid, "{o:?}");
+        assert!((o.edge_gap - 3.0).abs() < 1.0 && o.aperture >= EDGE_OPEN_AP, "{o:?}");
+        assert_eq!((o.eye_lid, o.eye_wide, o.eye_squint), (before.eye_lid, before.eye_wide, before.eye_squint));
+        assert!(o.eye_lid > 0.5);
+        // The pupil back: no longer held.
+        let o = e.process(&lid_frame(Some(edge), true), f64::NAN, t + 1.0, &p);
+        assert!(o.f.ok_pupil && !o.edge_held && !o.closed);
+        // The eye closing after the glance (the last pupil still at the edge, the lids together): closed.
+        let (closed, o) = closes(&mut e, &p, t + 1.0, &shut);
+        assert!(closed && !o.edge_held, "{o:?}");
+        assert_eq!(o.eye_lid, 0.0);
+        // The pupil back after that close, then lost at the edge again: held at the open eye's values, not at closed.
+        e.process(&lid_frame(Some(edge), true), f64::NAN, t + 1.5, &p);
+        let (closed, o) = closes(&mut e, &p, t + 1.5, &lost);
+        assert!(!closed && o.edge_held && o.eye_lid > 0.5, "{o:?}");
+        // Held after a widened open eye: not widened (relaxed open at most).
+        let (mut e, p, t) = seen_at(edge, Tune::default());
+        e.last_out = (0.93, 0.71, 0.0);
+        let (closed, o) = closes(&mut e, &p, t, &lost);
+        assert!(!closed && o.edge_held && o.eye_lid == 0.75 && o.eye_wide == 0.0, "{o:?}");
+        // 14 px from the edge (the right eye on 2026-10-09 15:23 was lost at 15): held too.
+        let (mut e, p, t) = seen_at((139.0, 200.0), Tune::default());
+        let (closed, o) = closes(&mut e, &p, t, &lost);
+        assert!(!closed && o.edge_held && (o.edge_gap - 14.0).abs() < 1.0, "{o:?}");
+        // The old rule (--no-edge-hold): closed.
+        let (mut e, p, t) = seen_at(edge, Tune { edge_hold: false, ..Tune::default() });
+        let (closed, o) = closes(&mut e, &p, t, &lost);
+        assert!(closed && !o.edge_held, "{o:?}");
+    }
+
+    #[test]
+    fn the_extended_search_follows_a_pupil_past_the_window_edge() {
+        // The window's edge fixed at 186 (as if the shading ended at 196); the lid frames have no shading of their own.
+        let run = |tune: Tune| {
+            let p = Params { tune, ..Params::default() };
+            let mut e = EyeEngine::default();
+            let mut t = 0.0;
+            let mut out = Vec::new();
+            let mut feed = |e: &mut EyeEngine, at: Option<(f64, f64)>, open: f64, n: usize, out: &mut Vec<Out>| {
+                for _ in 0..n {
+                    out.push(e.process_open(&lid_frame(at, true), f64::NAN, open, t, &p));
+                    if e.frame_no == 1 {
+                        (e.cm_n, e.x_min, e.find_x_min) = (40, 186.0, 186.0);
+                    }
+                    t += 1.0 / FPS;
+                }
+            };
+            // Ahead for a second: the extended edge stays at x_min
+            feed(&mut e, Some((250.0, 200.0)), 1.0, 90, &mut out);
+            let ahead = *out.last().unwrap();
+            // Out toward the ear: the window still finds it cut by its edge (175..225), and the extended edge moves out
+            feed(&mut e, Some((200.0, 200.0)), 1.0, 10, &mut out);
+            let near = *out.last().unwrap();
+            // Further out (135..185, left of the window): only the extended search can find it (and its iris fit
+            // does not go into the iris radius)
+            let r_n = e.r_est.len();
+            feed(&mut e, Some((160.0, 200.0)), 1.0, 10, &mut out);
+            let past = *out.last().unwrap();
+            assert_eq!(e.r_est.len(), r_n);
+            // ... not while Valve says the eye is closing
+            feed(&mut e, Some((160.0, 200.0)), 0.2, 1, &mut out);
+            let closing = *out.last().unwrap();
+            // Lost out there: held at the edge, not closed
+            feed(&mut e, None, 1.0, 10, &mut out);
+            let lost = out[out.len() - 10..].to_vec();
+            // Back ahead for 2 s, then 6 s more
+            feed(&mut e, Some((250.0, 200.0)), 1.0, 180, &mut out);
+            let back2 = *out.last().unwrap();
+            feed(&mut e, Some((250.0, 200.0)), 1.0, 540, &mut out);
+            (ahead, near, past, closing, lost, back2, *out.last().unwrap(), e.wear_state())
+        };
+        let (ahead, near, past, closing, lost, back2, back8, state) = run(Tune::default());
+        assert!(ahead.f.ok_pupil && (ahead.x_min, ahead.search_x_min) == (186.0, 186.0), "{ahead:?}");
+        assert!(near.f.ok_pupil && !near.f.diag.extended && near.f.diag.left_edge, "{:?}", near.f.diag);
+        assert_eq!(near.search_x_min, 186.0 - EXT_MAX_PX, "its small-x edge (175) less EXT_NEAR_PX, capped");
+        assert!(past.f.ok_pupil && past.f.diag.extended && !past.closed, "{:?}", past.f.diag);
+        assert!((past.f.pupil_cx - 160.0).abs() < 1.5 && past.x_min == 186.0, "{past:?}");
+        assert!(!closing.f.ok_pupil && !closing.f.diag.ext_tried, "{:?}", closing.f.diag);
+        assert!(lost.iter().all(|o| !o.closed && !o.f.ok_pupil) && lost[9].edge_held && lost[9].edge_gap < 0.0, "{:?}", lost[9]);
+        // Back: EXT_BACK_PX_S toward x_min, then there
+        assert!((back2.search_x_min - (162.0 + 2.0 * EXT_BACK_PX_S)).abs() < 0.5, "{}", back2.search_x_min);
+        assert_eq!((back8.search_x_min, state.search_x_min, state.x_min), (186.0, 186.0, 186.0));
+        // Without it (--no-ext-search): the pupil out there is not found, the edge never moves
+        let (_, near, past, _, _, _, _, _) = run(Tune { ext_search: false, ..Tune::default() });
+        assert!(near.f.ok_pupil && near.search_x_min == 186.0);
+        assert!(!past.f.ok_pupil && past.search_x_min == 186.0 && !past.f.diag.ext_tried, "{:?}", past.f.diag);
+    }
+
+    #[test]
+    fn the_aperture_baseline_follows_lids_that_settle_lower_but_not_a_squint() {
+        // A user calibration (squint and the eyelid from the aperture), 15 frames a second
+        let p = Params { user: Some(UserParams::default()), ..Params::default() };
+        let mut e = EyeEngine::default();
+        let mut t = 0.0;
+        let mut run = |e: &mut EyeEngine, opening: std::ops::Range<usize>, seconds: f64| {
+            let mut last = None;
+            for _ in 0..(seconds * 15.0) as usize {
+                t += 1.0 / 15.0;
+                last = Some(e.process(&lid_frame_between(Some((250.0, 200.0)), opening.clone()), f64::NAN, t, &p));
+            }
+            last.unwrap()
+        };
+        let o = run(&mut e, 130..270, 7.0);
+        e.seed_px(o.skin_up * o.r, o.aperture * o.r);
+        let (_, ap_open) = e.baseline_px().unwrap();
+        let o = run(&mut e, 130..270, 2.0);
+        assert!(o.eye_lid > 0.74 && o.eye_squint < 0.01, "{o:?}");
+        // The upper lid settles 14 px lower: a mild squint at first, then the baseline follows (20 s time constant)
+        let o = run(&mut e, 144..270, 1.0);
+        assert!((0.2..0.6).contains(&o.eye_squint), "{o:?}");
+        let o = run(&mut e, 144..270, 45.0);
+        let (_, ap_low) = e.baseline_px().unwrap();
+        assert!(ap_open - ap_low > 0.8 * 14.0, "{ap_open} -> {ap_low}");
+        assert!(o.eye_lid > 0.7 && o.eye_squint < 0.1, "{o:?}");
+        // A real squint (lids 50 px nearer) shows and does not move the baseline
+        let o = run(&mut e, 160..250, 3.0);
+        assert!(o.eye_squint > 0.9 && o.eye_lid < 0.3, "{o:?}");
+        assert!((e.baseline_px().unwrap().1 - ap_low).abs() < 0.5);
+    }
+
+    #[test]
+    fn the_skin_line_baseline_follows_a_higher_lid_and_a_held_widen_fades_slowly() {
+        let p = Params::default();
+        let mut e = EyeEngine::default();
+        let mut t = 0.0;
+        // At 15 frames a second; the outputs of every frame
+        let mut run = |e: &mut EyeEngine, opening: std::ops::Range<usize>, seconds: f64| {
+            (0..(seconds * 15.0) as usize)
+                .map(|_| {
+                    t += 1.0 / 15.0;
+                    e.process(&lid_frame_between(Some((250.0, 200.0)), opening.clone()), f64::NAN, t, &p)
+                })
+                .collect::<Vec<_>>()
+        };
+        let o = run(&mut e, 130..270, 7.0).pop().unwrap();
+        e.seed_px(o.skin_up * o.r, o.aperture * o.r);
+        let (b_open, _) = e.baseline_px().unwrap();
+        assert!(run(&mut e, 130..270, 2.0).iter().all(|o| o.eye_wide < 0.01));
+        // The upper lid 10 px higher (about one widen step, 0.19 x the iris radius): widened at once, 0.5 or more for
+        // about 22 s (0.7 x TRACK_TAU_S), and followed (EyeWide below 0.2) within a minute and a half
+        let out = run(&mut e, 120..270, 90.0);
+        let wide_for = out.iter().skip(5).position(|o| o.eye_wide < 0.5).map_or(f64::INFINITY, |k| (k + 5) as f64 / 15.0);
+        assert!(out[5].eye_wide > 0.9 && (15.0..35.0).contains(&wide_for), "{} {wide_for}", out[5].eye_wide);
+        assert!(out.last().unwrap().eye_wide < 0.2, "{:?}", out.last());
+        assert!(e.baseline_px().unwrap().0 - b_open > 7.0);
     }
 
     #[test]

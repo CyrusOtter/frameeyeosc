@@ -1,8 +1,9 @@
 // The eye log ("Eye log" on the Advanced tab): the panel runs `frameeyeosc --record FILE` as its child, which only
 // reads the eye server's shared memory and writes every raw sample to a CSV file; nothing is sent. Stopping sends it
 // SIGINT (it then writes out everything so far), and it stops by itself after kMaxSec. The child never outlives the
-// panel: it is stopped when the panel exits, and gets SIGINT from the kernel if the panel dies. Nothing here talks to
-// OpenVR, so it can be tested on its own (recorder_test.cpp).
+// panel: it is stopped when the panel exits, and gets SIGINT from the kernel if the panel dies. With the eye cameras in
+// use, eyecam's drift log runs alongside it (DriftLink). Nothing here talks to OpenVR, so it can be tested on its own
+// (recorder_test.cpp).
 #pragma once
 
 #include <sys/types.h>
@@ -113,6 +114,13 @@ public:
     /** Stop and wait for the child (the panel is exiting). */
     void shutdown();
 
+    /**
+     * Add a line of the panel's own to the current or last recording's .log (the child appends after it). Marked
+     * "[panel] ", so it is never taken for the child's last words.
+     * @param line the line, without the newline
+     */
+    void note(const std::string& line);
+
     /** @return true while a recording runs (not stopping) */
     bool recording() const { return pid_ > 0 && !stopping_; }
 
@@ -142,6 +150,72 @@ private:
      * @param now monotonic seconds
      */
     void finished(int status, double now);
+};
+
+/** What the panel's own lines in a recording's .log start with (Recorder::note). */
+constexpr const char* kNotePrefix = "[panel] ";
+
+/**
+ * The name eyecam's drift log takes for a recording (`driftlog on <stem>`): its CSV's name without ".csv", and without
+ * the _2, _3... of a second recording within the same second (eyecam takes only eyes_YYYY-MM-DD_HH-MM-SS, and adds its
+ * own _2 when that file is there; the .log says which file it was).
+ * @param csvPath the recording's CSV
+ * @return "eyes_2026-10-12_14-03-09", or "" if it isn't named so
+ */
+std::string driftStem(const std::string& csvPath);
+
+/**
+ * Whether a drift log file is one the panel started for a recording (eyes_….eyecam.csv), not one started by hand
+ * (drift_….csv).
+ * @param path the file (status.json's driftlog.path)
+ * @return true if the panel's
+ */
+bool panelDriftFile(const std::string& path);
+
+/** What the drift link looks at, each loop. */
+struct DriftInputs {
+    bool recording = false;      ///< the eye log runs (not stopping)
+    std::string stem;            ///< ...its driftStem ("" = none)
+    bool eyecamRunning = false;  ///< eyecam-rec runs (its status.json is fresh)
+    bool camerasInUse = false;   ///< the eye cameras are in use (eyecam::inUse)
+    bool hasDriftlog = false;    ///< its status.json has "driftlog" (an older eyecam-rec doesn't: nothing is sent)
+    bool driftlogOn = false;     ///< ...it is on
+    std::string driftlogPath;    ///< ...its file (or the last one)
+    double now = 0.0;            ///< monotonic seconds
+};
+
+/** A "driftlog on" that never showed in eyecam-rec's status (refused, or not answered) is sent again this often (s). */
+constexpr double kDriftRetrySec = 30.0;
+
+/**
+ * eyecam's drift log (numbers only, one row per eye per second, in ~/eyecam/drift) alongside the eye log while the eye
+ * cameras are in use, so the two can be laid side by side: "driftlog on <stem>" once a recording runs (also when
+ * eyecam-rec comes up during it), "driftlog off" once it ends, however it ends (stopped, failed, at its limit, the panel
+ * exiting). A drift log started by hand (drift_….csv) is left alone: no "on" over it, no "off" for it. The first time
+ * eyecam-rec is seen with no recording running, a panel's drift log still on (left by a panel that crashed during a
+ * recording) is turned off. Once eyecam-rec showed the recording's drift log on, the log going off (or to another file
+ * that isn't one started by hand) during the recording, as when eyecam-rec restarts, sends "driftlog on" again at once;
+ * one that never showed is asked for again every kDriftRetrySec. One command at a time: it waits while another is out.
+ */
+class DriftLink {
+public:
+    /**
+     * The command to send now, if any.
+     * @param in the eye log and eyecam-rec now
+     * @param busy a command is still out
+     * @param command where to write it
+     * @return true if there is one (it counts as sent)
+     */
+    bool next(const DriftInputs& in, bool busy, std::string& command);
+
+    /** @return the stem "driftlog on" went out for (no "off" since), "" if none */
+    const std::string& on() const { return on_; }
+
+private:
+    std::string on_;
+    bool checked_ = false;  ///< eyecam-rec was seen with no recording (or the panel turned its log on)
+    bool shown_ = false;    ///< eyecam-rec's status showed on_'s drift log on since "driftlog on" last went out
+    double sentAt_ = 0.0;   ///< ...which was then
 };
 
 }  // namespace recorder

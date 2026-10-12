@@ -366,14 +366,23 @@ pub struct LiveOpts {
     pub prewarm: bool,
     pub tune: crate::live::Tune,
     pub limit: Option<usize>,
+    /// Also write the panel's eye preview into this folder (its `preview` file), paced at the recording's own speed so
+    /// a panel can show it while it runs (development: the pictures come from a recording on disk anyway).
+    pub preview: Option<PathBuf>,
+    /// Also write the drift log (`driftlog`, as `driftlog on` does live) to this file; `wall_unix` stays empty.
+    pub driftlog: Option<PathBuf>,
 }
 
 pub const LIVE_HEADER: &str = "eye,eye_index,t_cam,label,step,ok_pupil,skin_up,aperture,lower,pupil_ratio,box_f,r,pitch,v_open,\
-closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready";
+closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready,edge_held,pupil_cx,pupil_cy,pupil_a,pupil_b,x_min,search_x_min,ext";
 
 /// The live engine over a session, both eyes in step, causally. Returns ms per processed frame.
 pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, String> {
     use crate::live::{self, EyeEngine, Label, Params, Sample};
+    // Eye pictures only ever go to memory, as live (preview::on_tmpfs)
+    if let Some(dir) = opts.preview.as_ref().filter(|dir| !crate::preview::on_tmpfs(dir)) {
+        return Err(format!("--preview {}: not a folder on tmpfs (the eye pictures are only written to memory; use one under /dev/shm)", dir.display()));
+    }
     let mut w = BufWriter::new(File::create(out).map_err(|e| format!("{}: {e}", out.display()))?);
     writeln!(w, "{LIVE_HEADER}").map_err(|e| e.to_string())?;
     let mut engines = [EyeEngine::default(), EyeEngine::default()];
@@ -390,6 +399,7 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
     let n = opts.limit.map_or(n, |l| l.min(n));
     let mut img = vec![0u8; FRAME];
     let pitch_of = |e: usize, t: f64| s.valve.nearest(t).map_or(f64::NAN, |j| s.valve.pitch[e][j]);
+    let open_of = |e: usize, t: f64| s.valve.nearest(t).map_or(f64::NAN, |j| s.valve.open[e][j]);
     if opts.prewarm {
         let mut warm = [EyeEngine::default(), EyeEngine::default()];
         'pass: for k in 0..n {
@@ -397,7 +407,7 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 if k < s.frames(e) {
                     s.read(e, k, &mut img).map_err(|err| err.to_string())?;
                     let t = s.t_cam[e].get(k).copied().unwrap_or(f64::NAN);
-                    warm[e].process(&img, pitch_of(e, t), t, &params[e]);
+                    warm[e].process_open(&img, pitch_of(e, t), open_of(e, t), t, &params[e]);
                 }
             }
             if warm.iter().all(EyeEngine::baseline_ready) {
@@ -430,6 +440,16 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
     let mut processed = 0usize;
     let mut last_t = [f64::NEG_INFINITY; 2];
     let f = |v: f64| if v.is_finite() { format!("{v:.4}") } else { String::new() };
+    let mut preview = opts.preview.as_ref().map(|dir| crate::preview::Preview::new(dir.join(crate::preview::FILE_NAME)));
+    // (the wall clock and the camera time the paced replay started at)
+    let mut paced: Option<(std::time::Instant, f64)> = None;
+    let mut drift = match &opts.driftlog {
+        Some(path) => {
+            let file = File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            Some(crate::driftlog::DriftLog::new(path.clone(), BufWriter::new(file), crate::driftlog::CAP_BYTES))
+        }
+        None => None,
+    };
     for k in 0..n {
         for e in 0..2 {
             if k >= s.frames(e) {
@@ -437,14 +457,27 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
             }
             s.read(e, k, &mut img).map_err(|err| err.to_string())?;
             let t = s.t_cam[e].get(k).copied().unwrap_or(f64::NAN);
+            if preview.is_some() && t.is_finite() {
+                let (start, t0) = *paced.get_or_insert((std::time::Instant::now(), t));
+                let ahead = (t - t0) - start.elapsed().as_secs_f64();
+                if ahead > 0.0 {
+                    std::thread::sleep(std::time::Duration::from_secs_f64(ahead.min(1.0)));
+                }
+            }
             let j = s.valve.nearest(t);
             let pitch = j.map_or(f64::NAN, |j| s.valve.pitch[e][j]);
             let v_open = j.map_or(f64::NAN, |j| s.valve.open[e][j]);
             let t0 = std::time::Instant::now();
-            let o = engines[e].process(&img, pitch, t, &params[e]);
+            let o = engines[e].process_open(&img, pitch, v_open, t, &params[e]);
             busy += t0.elapsed();
             processed += 1;
             last_t[e] = t;
+            if let Some(p) = preview.as_mut() {
+                p.frame(true, e, &img, &o, t, crate::liveshm::clock_ns(libc::CLOCK_MONOTONIC));
+            }
+            if let Some(d) = drift.as_mut() {
+                d.push(e, &crate::driftlog::Probe::of(&engines[e], &o, &params[e], t, v_open), f64::NAN);
+            }
             let (label, step) = s.label_at(t, live::STEP_DELAY);
             if let Some(l) = label {
                 let smp = Sample::from_out(Label::parse(l), &o, t);
@@ -485,6 +518,22 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 f(o.f.upper_frac),
                 f(o.f.lower_frac),
                 (engines[e].baseline_ready() as u8).to_string(),
+                (o.edge_held as u8).to_string(),
+                f(o.f.pupil_cx),
+                f(o.f.pupil_cy),
+                f(o.f.pupil_a),
+                f(o.f.pupil_b),
+                f(o.x_min),
+                f(o.search_x_min),
+                // 1: the pupil came from the extended search; 2: it found one the engine dropped
+                (if o.f.diag.extended && o.f.ok_pupil {
+                    1
+                } else if o.f.diag.extended || o.f.diag.ext_refused {
+                    2
+                } else {
+                    0
+                })
+                .to_string(),
             ];
             writeln!(w, "{}", row.join(",")).map_err(|e| e.to_string())?;
         }
@@ -507,6 +556,19 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
         }
     }
     w.flush().map_err(|e| e.to_string())?;
+    if let Some(mut d) = drift {
+        d.finish(f64::NAN);
+        let st = d.status(false);
+        if !st.error.is_empty() {
+            return Err(format!("{}: {}", st.path, st.error));
+        }
+        eprintln!("drift log: {} rows in {}", st.rows, st.path);
+    }
+    if let Some(p) = &preview {
+        eprintln!("preview: {} pictures, {:.0} us each (halving and writing)", p.pictures, p.us_per_picture());
+    }
+    // (its file removed now)
+    drop(preview);
     if let Some(path) = &opts.fit_user {
         let (wear, _) = live::fit_wear(&all, [live::DEFAULT_WIDEN_STEP; 2])?;
         let old = opts.calib.as_ref().and_then(|c| c.user);
@@ -570,8 +632,10 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
                 continue;
             }
             s.read(e, k, &mut img).map_err(|err| err.to_string())?;
-            let pitch = s.valve.nearest(t).map_or(f64::NAN, |j| s.valve.pitch[e][j]);
-            let o = engines[e].process(&img, pitch, t, &params[e]);
+            let j = s.valve.nearest(t);
+            let pitch = j.map_or(f64::NAN, |j| s.valve.pitch[e][j]);
+            let open = j.map_or(f64::NAN, |j| s.valve.open[e][j]);
+            let o = engines[e].process_open(&img, pitch, open, t, &params[e]);
             if let (Some(l), _) = s.label_at(t, live::STEP_DELAY) {
                 samples[e].push(Sample::from_out(Label::parse(l), &o, t));
             }

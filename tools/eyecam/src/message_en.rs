@@ -39,6 +39,8 @@ const EXACT: &[(&str, &str)] = &[
     ("自動でバッファを取りに行ってる…", "Getting the buffers automatically…"),
     ("視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度", "Couldn't get the gaze direction from Valve. Check that frameeyeosc is running and try again"),
     ("視線と目の開きの関係が求められなかった（もう一度）", "Couldn't work out how gaze changes the eye opening (try again)"),
+    ("目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ", "The eye preview is only written to a folder in memory (tmpfs)"),
+    ("ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で", "The drift log's name must be eyes_YYYY-MM-DD_HH-MM-SS"),
 ];
 
 /// Per-eye calibration failures, after "左目" / "右目" / "両目" (the details in [...] follow).
@@ -61,6 +63,7 @@ const PREFIX: &[(&str, &str)] = &[
     ("失敗した: ", "Failed: "),
     ("保存できなかった: ", "Couldn't save: "),
     ("プロトコルが見つからない: ", "Protocol not found: "),
+    ("ドリフトの記録を始められなかった: ", "Couldn't start the drift log: "),
 ];
 
 /// The eyes a message can start with.
@@ -256,6 +259,7 @@ mod tests {
             "（fake）両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]",
             "アイトラッカーが終了した。パネルの「目のカメラ」タブで、目のカメラの道具を入れてね",
             "バッファが更新されなくなった",
+            "目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ",
             "校正の計算が終わらなかった",
             "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）",
             "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[12/486、90 必要]",
@@ -287,6 +291,8 @@ mod tests {
             "カメラの映像が毎秒 15 枚しか届いていない",
             "protocol_x.txt の書き方がおかしい: line 3",
             "プロトコルが見つからない: protocol_x.txt",
+            "ドリフトの記録を始められなかった: /home/steamos/eyecam/drift: Permission denied (os error 13)",
+            "ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で",
         ];
         for ja in all {
             let en = message_en(ja);

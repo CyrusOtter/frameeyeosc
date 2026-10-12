@@ -15,7 +15,9 @@ namespace gaze_dots {
 namespace {
 
 constexpr uint8_t kMagic[4] = {'F', 'E', 'O', 'D'};
-constexpr uint8_t kVersion = 1;
+constexpr uint8_t kVersion = 2;
+/** Where the eyes' values start. */
+constexpr size_t kEyesAt = 64;
 
 // The Frame is little-endian (aarch64), like every machine this is built for; the packet is read with memcpy
 static_assert(sizeof(float) == 4 && sizeof(double) == 8, "the packet has 4-byte floats and an 8-byte double");
@@ -28,8 +30,26 @@ bool decode(const uint8_t* data, size_t size, Packet& out) {
     packet.independent = (data[5] & 1) != 0;
     std::memcpy(&packet.time, data + 8, 8);
     std::memcpy(packet.gaze, data + 16, 24);
-    for (float value : packet.gaze) {
-        if (!std::isfinite(value)) return false;
+    std::memcpy(packet.rawGaze, data + 40, 24);
+    for (int i = 0; i < 6; ++i) {
+        if (!std::isfinite(packet.gaze[i]) || !std::isfinite(packet.rawGaze[i])) return false;
+    }
+    for (int eye = 0; eye < 2; ++eye) {
+        // (its values may be NaN: none for that eye)
+        const uint8_t* at = data + kEyesAt + eye * kEyeSize;
+        PacketEye& e = packet.eyes[eye];
+        float values[8];
+        std::memcpy(values, at, sizeof(values));
+        e.lid = values[0];
+        e.openness = values[1];
+        e.opennessScaled = values[2];
+        e.cameraLid = values[3];
+        e.squint = values[4];
+        e.pupilMm = values[5];
+        e.cameraSquint = values[6];
+        e.cameraPupilMm = values[7];
+        e.lidFrom = at[32];
+        e.cameraClosed = (at[33] & 1) != 0;
     }
     out = packet;
     return true;
@@ -42,6 +62,16 @@ std::vector<uint8_t> encode(const Packet& packet) {
     data[5] = packet.independent ? 1 : 0;
     std::memcpy(data.data() + 8, &packet.time, 8);
     std::memcpy(data.data() + 16, packet.gaze, 24);
+    std::memcpy(data.data() + 40, packet.rawGaze, 24);
+    for (int eye = 0; eye < 2; ++eye) {
+        uint8_t* at = data.data() + kEyesAt + eye * kEyeSize;
+        const PacketEye& e = packet.eyes[eye];
+        const float values[8] = {e.lid,    e.openness, e.opennessScaled, e.cameraLid,
+                                 e.squint, e.pupilMm,  e.cameraSquint,   e.cameraPupilMm};
+        std::memcpy(at, values, sizeof(values));
+        at[32] = static_cast<uint8_t>(e.lidFrom);
+        at[33] = e.cameraClosed ? 1 : 0;
+    }
     return data;
 }
 
@@ -110,7 +140,7 @@ void Receiver::close() {
 bool Receiver::poll(Packet& latest) {
     if (fd_ < 0) return false;
     bool got = false;
-    uint8_t buffer[64];
+    uint8_t buffer[kPacketSize + 8];
     for (;;) {
         const ssize_t n = ::recv(fd_, buffer, sizeof(buffer), 0);
         if (n < 0) break;  // EAGAIN: nothing more waiting

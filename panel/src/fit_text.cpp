@@ -109,6 +109,8 @@ std::string failureDetailText(const UiText& t, const gaze_fit::View& fit) {
             std::vector<std::string> parts;
             if (d.last.samples < gaze_fit::samplesNeeded(d.last)) parts.push_back(samples);
             for (int eye = 0; eye < 2; ++eye) {
+                // An eye the eye camera stood in for wasn't checked
+                if (!std::isfinite(d.closedBelow[eye])) continue;
                 parts.push_back(format(t.failDetailClosedFormat, eyes[eye], d.last.openness[eye], d.closedBelow[eye]));
             }
             parts.push_back(tries);
@@ -116,8 +118,7 @@ std::string failureDetailText(const UiText& t, const gaze_fit::View& fit) {
         }
         case Failure::NoMovement: {
             if (!std::isfinite(d.movedDeg)) return "";
-            const std::string where = d.eye < 0 ? dot : (d.eye == 0 ? t.failDetailSidewaysLeft : t.failDetailSidewaysRight);
-            return line(where, format(t.failDetailMovedFormat, d.movedDeg, d.neededDeg));
+            return line(dot, format(t.failDetailMovedFormat, d.movedDeg, d.neededDeg));
         }
         case Failure::NoLidRange: {
             if (d.eye < 0) return "";
@@ -128,6 +129,37 @@ std::string failureDetailText(const UiText& t, const gaze_fit::View& fit) {
         }
         default: return "";
     }
+}
+
+std::string standInText(const UiText& t, const gaze_fit::View& fit) {
+    if (fit.phase != gaze_fit::Phase::Done) return "";
+    const bool center = fit.mode == gaze_fit::Mode::Center;
+    const char* notes[2] = {center ? t.fitStandInCenterLeft : t.fitStandInLeft,
+                            center ? t.fitStandInCenterRight : t.fitStandInRight};
+    std::string out;
+    for (int eye = 0; eye < 2; ++eye) {
+        if (!fit.notes.standIn[eye]) continue;
+        if (!out.empty()) out += "\n";
+        out += notes[eye];
+    }
+    return out;
+}
+
+std::vector<std::string> lidFitLines(const UiText& t, const gaze_fit::Values& values, const bool fitted[2]) {
+    if (!fitted[0] && !fitted[1]) return {t.fitLidsNone};
+    std::vector<std::string> lines;
+    for (int eye = 0; eye < 2; ++eye) {
+        const char* side = eye == 0 ? t.left : t.right;
+        if (!fitted[eye]) {
+            lines.push_back(format(t.fitLidNoneFormat, side));
+            continue;
+        }
+        const std::string open = format("%.2f", values.lidOpen[eye]);
+        const std::string closed = format("%.2f", values.lidClosed[eye]);
+        const std::string drop = format("%+.0f%%", (values.lidDown[eye] / values.lidOpen[eye] - 1) * 100);
+        lines.push_back(format(t.fitLidFormat, side, open.c_str(), closed.c_str(), drop.c_str()));
+    }
+    return lines;
 }
 
 bool fitStopped(const gaze_fit::View& fit) {
@@ -142,13 +174,14 @@ void fillFitResult(report::Summary& s, const gaze_fit::View& fit) {
         s.result = report::Result::Ok;
         for (int i = 0; i < 2; ++i) {
             const UiText& t = *tables[i];
-            const char* title = fit.mode == gaze_fit::Mode::Center ? t.fitDoneCenter
-                                : fit.mode == gaze_fit::Mode::Tilt ? t.fitDoneTilt
-                                                                   : t.fitDone;
+            const char* title = fit.mode == gaze_fit::Mode::Center ? t.fitDoneCenter : t.fitDone;
             const std::string line = format(t.fitGazeCenterFormat, format("%+.3f", fit.values.offsetX).c_str(),
-                                            format("%+.3f", fit.values.offsetY).c_str(),
-                                            format("%+.1f°", fit.values.rollDeg).c_str());
-            (i == 0 ? s.reason : s.reasonEn) = std::string(title) + t.condSeparator + line;
+                                            format("%+.3f", fit.values.offsetY).c_str());
+            // An eye the eye camera stood in for: why its lid fit stayed, and that a restart usually helps
+            std::string standIn = standInText(t, fit);
+            for (char& c : standIn) c = c == '\n' ? ' ' : c;
+            (i == 0 ? s.reason : s.reasonEn) =
+                std::string(title) + t.condSeparator + line + (standIn.empty() ? "" : " " + standIn);
         }
         return;
     }

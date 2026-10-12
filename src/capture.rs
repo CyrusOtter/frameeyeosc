@@ -19,9 +19,15 @@ pub const CLOSED_TARGET: &str = "closed";
 // that reads 0.65 straight ahead) must still be measured there.
 const OPEN_FLOOR: f32 = 0.3;
 
-/// Whether a sample's gaze counts in a capture: both eyes open enough and at least one eye's gaze reliable.
-pub fn usable(openness: [f32; 2], reliable: [bool; 2]) -> bool {
-    openness.iter().all(|openness| *openness >= OPEN_FLOOR) && reliable.contains(&true)
+/// Whether a sample's gaze counts in a capture: both eyes open enough and at least one eye's gaze reliable. An eye the
+/// eye server reads closing while the eye camera has seen it open for longer than a blink (`camera_open`: its eyelid
+/// is the camera's, LidFrom::CameraOpen) counts as open enough, as long as the eye server reads the other eye open
+/// enough itself. The eye server can get stuck reading one eye at 0.000 for a whole wear while that eye is open
+/// (2026-10-11: the right eye, the camera's eyelid about 0.75), its combined gaze (the one measured) as steady as
+/// ever, and then every sample failed the floor and so did every eye fit. Without such an eye, the same as before.
+pub fn usable(openness: [f32; 2], camera_open: [bool; 2], reliable: [bool; 2]) -> bool {
+    let open = openness.map(|openness| openness >= OPEN_FLOOR);
+    open.contains(&true) && (0..2).all(|eye| open[eye] || camera_open[eye]) && reliable.contains(&true)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -48,6 +54,9 @@ pub struct CaptureResult {
     pub x_right: Option<f32>,
     /// Each eye's average openness; None without samples.
     pub openness: Option<[f32; 2]>,
+    /// Each eye that was camera-open (see usable) in most of the samples averaged: its openness above is the eye
+    /// server's stuck reading, not the eye's, and the panel leaves that eye's lid fit as it was. False without samples.
+    pub camera_open: [bool; 2],
     /// Samples that went into the average.
     pub samples: u32,
     /// Samples that came in after the skipped start, usable or not: the panel judges `samples`
@@ -71,6 +80,8 @@ pub struct Capture {
     sum_squares: [f64; 2],
     eye_x: [f64; 2],
     openness: [f64; 2],
+    // Of the samples averaged, those with each eye camera-open.
+    camera_open: [u32; 2],
     samples: u32,
 }
 
@@ -88,14 +99,23 @@ impl Capture {
             sum_squares: [0.0; 2],
             eye_x: [0.0; 2],
             openness: [0.0; 2],
+            camera_open: [0; 2],
             samples: 0,
         }
     }
 
-    /// Take one sample's combined raw gaze, each eye's raw x and openness; `usable` is false while the
-    /// eyes are shut or the gaze is held (ignored by the eyes-shut capture). Returns true once the
-    /// capture is over.
-    pub fn add(&mut self, time: f64, gaze: [f32; 2], eye_x: [f32; 2], openness: [f32; 2], usable: bool) -> bool {
+    /// Take one sample's combined raw gaze, each eye's raw x and openness, and which eyes are camera-open (see
+    /// usable); `usable` is false while the eyes are shut or the gaze is held (ignored by the eyes-shut capture).
+    /// Returns true once the capture is over.
+    pub fn add(
+        &mut self,
+        time: f64,
+        gaze: [f32; 2],
+        eye_x: [f32; 2],
+        openness: [f32; 2],
+        camera_open: [bool; 2],
+        usable: bool,
+    ) -> bool {
         let elapsed = time - *self.first_time.get_or_insert(time);
         if elapsed >= self.request.seconds {
             return true;
@@ -117,6 +137,9 @@ impl Capture {
             }
             for (sum, value) in self.openness.iter_mut().zip(openness) {
                 *sum += f64::from(value);
+            }
+            for (count, camera_open) in self.camera_open.iter_mut().zip(camera_open) {
+                *count += u32::from(camera_open);
             }
             self.samples += 1;
         }
@@ -146,6 +169,7 @@ impl Capture {
             x_left: gaze.then_some((self.eye_x[0] / count) as f32),
             x_right: gaze.then_some((self.eye_x[1] / count) as f32),
             openness: known.then(|| self.openness.map(|sum| (sum / count) as f32)),
+            camera_open: self.camera_open.map(|camera_open| known && 2 * camera_open > self.samples),
             samples: if state == CaptureState::Done { self.samples } else { 0 },
             received: if state == CaptureState::Done { self.received } else { 0 },
             rate: self.rate(),
@@ -175,8 +199,15 @@ impl CaptureResult {
             }
             _ => String::new(),
         };
+        // An eye whose openness is the eye server's stuck reading, while the camera saw it open
+        let camera_open = match self.camera_open {
+            [true, true] => " (L and R open on the eye camera)",
+            [true, false] => " (L open on the eye camera)",
+            [false, true] => " (R open on the eye camera)",
+            [false, false] => "",
+        };
         format!(
-            "Gaze capture {} ({}): {gaze}openness L {left:.3} R {right:.3} from {} of {} samples{rate}",
+            "Gaze capture {} ({}): {gaze}openness L {left:.3} R {right:.3}{camera_open} from {} of {} samples{rate}",
             self.id, self.target, self.samples, self.received
         )
     }
@@ -212,7 +243,7 @@ mod tests {
             };
             let blinking = (90..100).contains(&i);
             let (gaze, openness) = if blinking { ([-1.0, -1.0], [0.1, 0.1]) } else { (gaze, [0.9, 0.8]) };
-            over = capture.add(time, gaze, [gaze[0] + 0.02, gaze[0] - 0.02], openness, !blinking);
+            over = capture.add(time, gaze, [gaze[0] + 0.02, gaze[0] - 0.02], openness, [false; 2], !blinking);
             if over {
                 break;
             }
@@ -232,6 +263,7 @@ mod tests {
         // Every sample after the skipped start came in (the blinking ones too), at 90 a second.
         assert!((134..=136).contains(&result.received), "{}", result.received);
         assert!((result.rate.unwrap() - 90.0).abs() < 0.5);
+        assert_eq!(result.camera_open, [false; 2]);
         let line = result.log_line();
         let expected = format!("from {} of {} samples at 90 Hz", result.samples, result.received);
         assert!(line.starts_with("Gaze capture 7 (up): x +0.") && line.ends_with(&expected), "{line}");
@@ -240,16 +272,17 @@ mod tests {
     #[test]
     fn eyes_that_read_less_open_are_still_measured() {
         // Whatever gaze_hold_below is: 0.45 looking down (0.65 straight ahead) counts.
-        assert!(usable([0.45, 0.45], [true; 2]));
-        assert!(usable([0.3, 0.9], [true, false]));
+        assert!(usable([0.45, 0.45], [false; 2], [true; 2]));
+        assert!(usable([0.3, 0.9], [false; 2], [true, false]));
         // A shut or closing eye does not, nor a sample with no reliable eye.
-        assert!(!usable([0.25, 0.6], [true; 2]));
-        assert!(!usable([0.8, 0.8], [false; 2]));
+        assert!(!usable([0.25, 0.6], [false; 2], [true; 2]));
+        assert!(!usable([0.8, 0.8], [false; 2], [false; 2]));
         // A whole capture from such a face: every open sample counts.
         let mut capture = capture();
         for i in 0..=180 {
             let openness = [0.45, 0.42];
-            if capture.add(f64::from(i) / 90.0, [0.0, -0.33], [0.0, 0.0], openness, usable(openness, [true; 2])) {
+            let usable = usable(openness, [false; 2], [true; 2]);
+            if capture.add(f64::from(i) / 90.0, [0.0, -0.33], [0.0, 0.0], openness, [false; 2], usable) {
                 break;
             }
         }
@@ -267,7 +300,7 @@ mod tests {
             skip: 0.3,
         });
         for i in 0..100 {
-            if capture.add(50.0 + f64::from(i) / 15.0, [0.01, 0.02], [0.03, -0.01], [1.0, 0.95], true) {
+            if capture.add(50.0 + f64::from(i) / 15.0, [0.01, 0.02], [0.03, -0.01], [1.0, 0.95], [false; 2], true) {
                 break;
             }
         }
@@ -281,12 +314,13 @@ mod tests {
     fn nothing_usable_reports_no_average() {
         let mut capture = capture();
         for i in 0..200 {
-            if capture.add(f64::from(i) / 90.0, [0.0, 0.0], [0.0, 0.0], [0.2, 0.2], false) {
+            if capture.add(f64::from(i) / 90.0, [0.0, 0.0], [0.0, 0.0], [0.2, 0.2], [false; 2], false) {
                 break;
             }
         }
         let result = capture.result(CaptureState::Done);
         assert_eq!((result.samples, result.x, result.spread, result.openness), (0, None, None, None));
+        assert_eq!(result.camera_open, [false; 2]);
         assert_eq!(result.log_line(), "Gaze capture 7 (up): no usable samples (135 received at 90 Hz)");
         let running = capture.result(CaptureState::Running);
         assert_eq!((running.state, running.x, running.samples), (CaptureState::Running, None, 0));
@@ -303,7 +337,7 @@ mod tests {
         let mut over_at = None;
         for i in 0..400 {
             // The gaze is held (not usable) all along, as it is with the eyes shut.
-            if capture.add(f64::from(i) / 90.0, [0.5, -0.5], [0.5, 0.5], [0.15, 0.26], false) {
+            if capture.add(f64::from(i) / 90.0, [0.5, -0.5], [0.5, 0.5], [0.15, 0.26], [false; 2], false) {
                 over_at = Some(i);
                 break;
             }
@@ -319,5 +353,59 @@ mod tests {
             result.log_line(),
             format!("Gaze capture 9 (closed): openness L 0.150 R 0.260 from {0} of {0} samples at 90 Hz", result.samples)
         );
+    }
+
+    #[test]
+    fn an_eye_the_camera_sees_open_stands_in_for_the_eye_server() {
+        // The eye server stuck at 0.000 for the right eye, which the camera sees open: it counts, the left eye open.
+        assert!(usable([0.95, 0.0], [false, true], [true, false]));
+        assert!(usable([0.0, 0.95], [true, false], [true; 2]));
+        // Still not without a reliable eye, nor with neither eye open on the eye server (one must be measured by it),
+        // nor for an eye the camera does not see open.
+        assert!(!usable([0.95, 0.0], [false, true], [false; 2]));
+        assert!(!usable([0.0, 0.0], [true; 2], [true; 2]));
+        assert!(!usable([0.95, 0.0], [true, false], [true; 2]));
+        // Camera-open on an eye that is open anyway changes nothing.
+        assert_eq!(usable([0.95, 0.9], [true, false], [true; 2]), usable([0.95, 0.9], [false; 2], [true; 2]));
+        // A whole capture of 2026-10-11's wear: every sample counts and the right eye is reported camera-open, except
+        // through a blink (the camera sees it closed, so it is the eye server's again, and the left eye shuts too).
+        let mut capture = capture();
+        for i in 0..=180 {
+            let blinking = (90..100).contains(&i);
+            let (openness, camera_open) = if blinking { ([0.1, 0.0], [false; 2]) } else { ([0.98, 0.0], [false, true]) };
+            let usable = usable(openness, camera_open, [true, false]);
+            if capture.add(f64::from(i) / 90.0, [0.01, -0.02], [0.0, 0.0], openness, camera_open, usable) {
+                break;
+            }
+        }
+        let result = capture.result(CaptureState::Done);
+        assert!((124..=126).contains(&result.samples), "{}", result.samples);
+        assert_eq!(result.camera_open, [false, true]);
+        let [left, right] = result.openness.unwrap();
+        assert!((left - 0.98).abs() < 1e-4 && right == 0.0);
+        let line = result.log_line();
+        assert!(line.contains("openness L 0.980 R 0.000 (R open on the eye camera) from "), "{line}");
+        // Still running: nothing to report yet.
+        assert_eq!(capture.result(CaptureState::Running).camera_open, [false; 2]);
+    }
+
+    #[test]
+    fn the_eyes_shut_capture_reports_camera_open_eyes_by_the_majority() {
+        // Every sample counts here (usable or not), and an eye is reported camera-open when it was in most of them.
+        let mut capture = Capture::new(GazeCapture {
+            id: 10,
+            target: CLOSED_TARGET.into(),
+            seconds: 3.0,
+            skip: 0.5,
+        });
+        for i in 0..400 {
+            let camera_open = [i % 3 == 0, i % 3 != 0];
+            if capture.add(f64::from(i) / 90.0, [0.0, 0.0], [0.0, 0.0], [0.15, 0.0], camera_open, false) {
+                break;
+            }
+        }
+        let result = capture.result(CaptureState::Done);
+        assert_eq!(result.camera_open, [false, true]);
+        assert!(result.log_line().contains("openness L 0.150 R 0.000 (R open on the eye camera) from "));
     }
 }

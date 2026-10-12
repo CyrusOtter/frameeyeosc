@@ -144,6 +144,10 @@ Status parseStatus(const std::string& text, double mtime) {
     const JsonValue* live = root.get("live");
     status.live = live != nullptr && live->isBool() && live->boolean;
     status.liveMs = readNumber(root, "live_ms", kNaN);
+    // The eye preview's pictures (missing on an older eyecam-rec, which can't make them)
+    const JsonValue* preview = root.get("preview");
+    status.hasPreview = preview != nullptr && preview->isBool();
+    status.preview = status.hasPreview && preview->boolean;
     // The relaxed eyes learned by itself (missing on an older eyecam-rec, which needs a calibration each wear)
     const JsonValue* baseline = root.get("baseline");
     status.hasBaseline = baseline != nullptr && baseline->isString();
@@ -235,6 +239,13 @@ Status parseStatus(const std::string& text, double mtime) {
     status.lastError = readText(root, "last_error");
     status.lastErrorEn = readText(root, "last_error_en");
     status.lastErrorUnix = readNumber(root, "last_error_unix", 0.0);
+    // The drift log (missing on an older eyecam-rec: the eye log doesn't ask for it)
+    if (const JsonValue* drift = root.get("driftlog"); drift != nullptr && drift->isObject()) {
+        status.hasDriftlog = true;
+        const JsonValue* on = drift->get("on");
+        status.driftlogOn = on != nullptr && on->isBool() && on->boolean;
+        status.driftlogPath = readText(*drift, "path");
+    }
     return status;
 }
 
@@ -379,6 +390,11 @@ bool baselineWarming(const Status& status) {
     return status.hasBaseline && status.baseline == "warming";
 }
 
+bool lidsAwaitWarmup(const Status& status) {
+    return status.live && baselineWarming(status) && (status.calibState & (kCalibWearBit | kCalibAutoBit)) == 0 &&
+           (!status.hasSetupDone || status.setupDone);
+}
+
 const std::string& shownMessage(const Status& status, Language language) {
     return language == Language::En && !status.messageEn.empty() ? status.messageEn : status.message;
 }
@@ -430,6 +446,24 @@ SetupStep setupStep(const Status& status, PasswordState password) {
     // The checklist's (2) is met only by a current tool
     if (tool == Tool::Current) return SetupStep::Learn;
     return password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool;
+}
+
+bool setUp(const View& view) {
+    return view.visible && setupStep(view.status, view.password) == SetupStep::Done;
+}
+
+bool inUse(const View& view, bool cameraLids) {
+    return cameraLids && setUp(view);
+}
+
+bool recenterAwaitsWarmup(const View& view, bool cameraLids) {
+    return inUse(view, cameraLids) && lidsAwaitWarmup(view.status);
+}
+
+bool introShown(const View& view, bool begun) {
+    if (begun || !view.visible || setupComplete(view.status)) return false;
+    const SetupScreen screen = setupScreen(view);
+    return screen == SetupScreen::Pass || screen == SetupScreen::Check;
 }
 
 std::vector<std::string> calibChips(const Status& status, Calib calib) {
@@ -740,8 +774,9 @@ Reply parseReply(const std::string& line, const std::string& command) {
     while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) text.pop_back();
     Reply reply;
     reply.command = command;
-    if (text == "ok") {
+    if (text == "ok" || text.rfind("ok ", 0) == 0) {
         reply.ok = true;
+        reply.detail = text.size() > 3 ? text.substr(3) : std::string();
         return reply;
     }
     if (text == "err" || text.rfind("err ", 0) == 0) {

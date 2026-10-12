@@ -48,22 +48,63 @@ void testPacket() {
     packet.time = 19892.729813125;
     const float gaze[6] = {0.1f, -0.2f, 0.3f, -0.4f, 0.5f, -0.6f};
     std::memcpy(packet.gaze, gaze, sizeof(gaze));
+    const float raw[6] = {-0.1f, 0.2f, -0.3f, 0.4f, -0.5f, 0.6f};
+    std::memcpy(packet.rawGaze, raw, sizeof(raw));
     packet.independent = true;
+    packet.eyes[0].lid = 0.72f;
+    packet.eyes[0].openness = 0.98f;
+    packet.eyes[0].opennessScaled = 1.02f;
+    packet.eyes[0].squint = 0.25f;
+    packet.eyes[0].cameraSquint = 0.3f;
+    packet.eyes[0].cameraPupilMm = 6.1f;
+    packet.eyes[0].lidFrom = 4;
+    packet.eyes[0].cameraClosed = true;
+    packet.eyes[1].lid = 0.0f;
+    packet.eyes[1].cameraLid = 0.81f;
+    packet.eyes[1].pupilMm = 5.5f;
     const std::vector<uint8_t> bytes = encode(packet);
-    CHECK(bytes.size() == kPacketSize && std::memcmp(bytes.data(), "FEOD\x01\x01\x00\x00", 8) == 0);
+    CHECK(bytes.size() == kPacketSize && std::memcmp(bytes.data(), "FEOD\x02\x01\x00\x00", 8) == 0);
     Packet read;
     CHECK(decode(bytes.data(), bytes.size(), read));
     CHECK(read.time == packet.time && read.independent && std::memcmp(read.gaze, gaze, sizeof(gaze)) == 0);
-    // The same bytes frameeyeosc writes (src/dots.rs): time 1.0, combined gaze only
-    const uint8_t fromRust[kPacketSize] = {'F', 'E', 'O', 'D', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f,
-                                           0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                                           0, 0, 0, 0x3f, 0, 0, 0x80, 0xbe};
-    CHECK(decode(fromRust, kPacketSize, read) && read.time == 1.0 && !read.independent);
-    CHECK(read.gaze[4] == 0.5f && read.gaze[5] == -0.25f);
+    CHECK(std::memcmp(read.rawGaze, raw, sizeof(raw)) == 0);
+    const PacketEye& left = read.eyes[0];
+    CHECK(left.lid == 0.72f && left.openness == 0.98f && left.opennessScaled == 1.02f && left.squint == 0.25f);
+    CHECK(std::isnan(left.cameraLid) && std::isnan(left.pupilMm) && left.cameraSquint == 0.3f);
+    CHECK(left.cameraPupilMm == 6.1f && left.lidFrom == 4 && left.cameraClosed);
+    const PacketEye& right = read.eyes[1];
+    CHECK(right.lid == 0.0f && right.cameraLid == 0.81f && right.pupilMm == 5.5f && std::isnan(right.openness));
+    CHECK(right.lidFrom == 0 && !right.cameraClosed);
+    // The same bytes frameeyeosc writes (src/dots.rs): time 1.0, the combined gaze as sent, the left eye's lid as
+    // sent 0.75 from the camera (4: its widening), its camera eyelid NaN and the camera reading it closed
+    std::vector<uint8_t> fromRust(kPacketSize, 0);
+    const uint8_t head[16] = {'F', 'E', 'O', 'D', 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f};
+    std::memcpy(fromRust.data(), head, sizeof(head));
+    const uint8_t x[4] = {0, 0, 0, 0x3f};
+    const uint8_t y[4] = {0, 0, 0x80, 0xbe};
+    const uint8_t lid[4] = {0, 0, 0x40, 0x3f};
+    const uint8_t nan[4] = {0, 0, 0xc0, 0x7f};
+    std::memcpy(fromRust.data() + 32, x, 4);
+    std::memcpy(fromRust.data() + 36, y, 4);
+    std::memcpy(fromRust.data() + 64, lid, 4);
+    std::memcpy(fromRust.data() + 76, nan, 4);
+    fromRust[96] = 4;
+    fromRust[97] = 1;
+    CHECK(decode(fromRust.data(), kPacketSize, read) && read.time == 1.0 && !read.independent);
+    CHECK(read.gaze[4] == 0.5f && read.gaze[5] == -0.25f && read.rawGaze[4] == 0.0f);
+    CHECK(read.eyes[0].lid == 0.75f && std::isnan(read.eyes[0].cameraLid) && read.eyes[0].lidFrom == 4);
+    CHECK(read.eyes[0].cameraClosed && read.eyes[1].lid == 0.0f && !read.eyes[1].cameraClosed);
+    // Another version (1 was 40 bytes), another size, or a gaze that isn't a number: ignored
     std::vector<uint8_t> wrong = bytes;
-    wrong[4] = 2;
+    wrong[4] = 1;
+    CHECK(!decode(wrong.data(), wrong.size(), read));
+    wrong[4] = 3;
     CHECK(!decode(wrong.data(), wrong.size(), read));
     CHECK(!decode(bytes.data(), bytes.size() - 1, read));
+    CHECK(!decode(bytes.data(), 40, read));
+    wrong = bytes;
+    std::memcpy(wrong.data() + 40, nan, 4);
+    CHECK(!decode(wrong.data(), wrong.size(), read));
 }
 
 void testGeometry() {
