@@ -295,31 +295,42 @@ const CAMERA_SIDE_BLINK_MAX: f64 = 0.3;
 // Lying down, the eye camera loses an eye's pupil at its search window's temporal edge without the eye looking to the
 // side, and eyecam-rec then judges "closed" from a box that sits on skin: it read the right eye of a lying wear
 // (2026-10-12 01:01, an hour) as closed for seconds at a time while it was open (84-127 s into it, on and off), and
-// the eye went out half-shut or shut all along. The eye server read the eye at 0.65-1.0 through those stretches, and its own per-eye
-// (pre-fusion) gaze variance, the larger of x and y as gaze_quality and the replay's covariance line read it, was as
-// low as for an open eye: over that hour above 0.01 in 0.6-1.2% of the samples where both read an eye open, against
-// 66-72% where the eye server read it closed. The eye server never read an eye that was really closed as open for
-// longer than 0.5 s in our recordings (the guided "close" steps read 0.00). So the camera's "closed" for an eye is also
-// taken as its last open eyelid (at most relaxed open, as with the side check) once the camera has read it closed for
-// longer than CAMERA_CLOSED_DOUBT_S in a row (blinks last 70-400 ms and close as before), the eye server has read it at
-// CAMERA_CLOSED_DOUBT_OPEN or more all that while (an eye it reads closing at any point in it stays closed to the end
-// of it) and its variance for that eye is below CAMERA_CLOSED_DOUBT_VARIANCE (when that goes above, the camera's
-// "closed" stands again, for as long); not within CAMERA_SIDE_SHUT_RECENT of the eye server reading the eye shut, nor
-// with the other eye's blink (blink_with_other), as for the side. See SideCheck.
+// the eye went out half-shut or shut all along. The eye server read the eye at 0.65-1.0 through those stretches, and
+// its own per-eye (pre-fusion) gaze variance, the larger of x and y as gaze_quality and the replay's covariance line
+// read it, was as low as for an open eye: over that hour above 0.01 in 0.6-1.2% of the samples where both read an eye
+// open, against 66-72% where the eye server read it closed. The eye server never read an eye that was really closed as
+// open for longer than 0.5 s in our recordings (the guided "close" steps read 0.00). So the camera's "closed" for an
+// eye is also taken as its last open eyelid (at most relaxed open, as with the side check) once the camera has read it
+// closed for longer than CAMERA_CLOSED_DOUBT_S in a row (blinks last 70-400 ms and close as before) while the eye
+// server has read it at CAMERA_CLOSED_DOUBT_OPEN or more and its variance for that eye is below
+// CAMERA_CLOSED_DOUBT_VARIANCE; not within CAMERA_SIDE_SHUT_RECENT of the eye server reading the eye shut, nor with the
+// other eye's blink (blink_with_other), as for the side. See SideCheck.
+// - The eye server may read the eye below CAMERA_CLOSED_DOUBT_OPEN in the first CAMERA_CLOSED_DOUBT_BLINK_S of the
+//   stretch (the blink it began with: lying down, the camera often loses the pupil as the eye closes and does not find
+//   it again once it opens), and CAMERA_CLOSED_DOUBT_S counts from its last such reading there. Any such reading after
+//   that keeps the eye closed to the end of the stretch: a drowsy eye whose reading goes up and down around 0.5 is
+//   one the camera is likely right about (10-12 01:01: 110 / 176 s of the camera's "closed" with the eye server at 0.5
+//   or more were in such stretches, left / right). Counting from the last such reading anywhere instead would have
+//   taken 54 / 71 s of that hour as open, much of it in 12-25 s stretches with 8-13 dips.
+// - Once the eye is taken as open, the eye server's variance going above the line closes it again only after it has
+//   stayed there for CAMERA_CLOSED_DOUBT_UNSURE_S, and the eye opens again once it is back below (for as long as the
+//   camera's "closed" goes on): taken as it came, each spike of a sample or two closed the eye for a blink's length
+//   (--blink-hold-ms), and at 10-11 00:52 the right eye went below VRCFT 0.3 87 times in those stretches instead of 49.
 // Replayed on nine recordings of 2026-10-08 to 10-12 (four lying, five sitting): the camera's "closed" taken as open
-// this way (where looking to the side did not already) for 4.2 / 31.4 s (left / right) of 10-12 01:01, 2.6 / 26.0 s of
-// 10-11 00:52 and 7.9 / 12.2 s of 10-10 02:31 (an hour each, lying), 0-2.8 s in the others. Where the camera read an
-// eye closed for longer than 0.5 s while the eye server read it at 0.5 or more all along, the right eye went out below
-// VRCFT 0.3 for 33.9 -> 11.9 s, 45.7 -> 31.3 s and 17.8 -> 10.9 s of those three (left 5.6 -> 3.4, 6.8 -> 4.5 and 9.5
-// -> 4.6 s); what is left is mostly each stretch's first 0.5 s, and at 10-11 00:52 also the variance going above the
-// line (49 -> 87 times below 0.3 there). Both-eye blinks fully closed (935 / 954 -> 935 / 955 of 1283 at 10-12 01:01,
-// the same or one more elsewhere) and cross-eye are as before. Most of what the camera reads closed lying down while the
-// eye server reads the eye at 0.5 or more is not this, and stays closed: the eye server read the eye below 0.5 earlier
-// in the same stretch, mostly a drowsy eye whose reading goes up and down around 0.5 (10-12 01:01: 110 / 176 s of such
-// against 5 / 42 s taken as open).
+// this way (where looking to the side did not already) for 8.4 / 48.0 s (left / right) of 10-12 01:01, 7.2 / 49.3 s of
+// 10-11 00:52 and 10.7 / 15.8 s of 10-10 02:31 (an hour each, lying), 0-4.6 s in the others. Where the camera read an
+// eye closed for longer than 0.5 s while the eye server read it at 0.5 or more but in its first 0.4 s, the right eye
+// went out below VRCFT 0.3 for 49.1 -> 13.6 s, 79.6 -> 48.3 s and 26.6 -> 17.0 s of those three (left 8.8 -> 5.4,
+// 12.0 -> 6.8 and 16.1 -> 9.1 s); what is left is mostly each stretch's first 0.5 s. In the stretches without such a
+// blink it went below 0.3 45 -> 28, 49 -> 50 and 35 -> 24 times (left 11 -> 10, 14 -> 12, 16 -> 9), and anywhere with
+// the eye server at 0.65 or more for 176.2 -> 131.5 s, 237.2 -> 195.3 s and 136.9 -> 122.9 s. Closing while looking
+// down 141 / 130 -> 134 / 123, 419 / 411 -> 413 / 403 and 138 / 135 -> 128 / 125 stretches. Both-eye blinks fully
+// closed (935 / 954 of 1283 at 10-12 01:01, the same or one more elsewhere) and cross-eye are as before.
 const CAMERA_CLOSED_DOUBT_S: f64 = 0.5;
 const CAMERA_CLOSED_DOUBT_OPEN: f32 = 0.5;
 const CAMERA_CLOSED_DOUBT_VARIANCE: f32 = 0.01;
+const CAMERA_CLOSED_DOUBT_BLINK_S: f64 = 0.4;
+const CAMERA_CLOSED_DOUBT_UNSURE_S: f64 = 0.25;
 // The camera's eyelid wobbles by 0.1-0.4 at 2-3 times a second while the eye is open (the right eye on 2026-10-09 15:23:
 // median 0.68, p10-p90 0.32-0.75), and an eyelid raised to it (raised_to_camera) followed every wobble: that eye went out
 // between 0.55 and 0.70 for 40 s of 105, trembling. So the eye server's eyelid is raised to the camera's highest over
@@ -1319,9 +1330,15 @@ struct SideCheck {
     shut_at: [Option<f64>; 2],
     shut_since: [Option<f64>; 2],
     shut: [bool; 2],
-    // Per eye: since when the camera has read it closed, and the eye server's lowest openness since then.
+    // Per eye: since when the camera has read it closed; from when CAMERA_CLOSED_DOUBT_S counts in that stretch (its
+    // start, or the eye server's last reading below CAMERA_CLOSED_DOUBT_OPEN in its first CAMERA_CLOSED_DOUBT_BLINK_S);
+    // whether the eye server has read it below that after those; whether the camera's "closed" is taken as open for it
+    // (CAMERA_CLOSED_DOUBT_S); and since when the eye server's variance has been at or above the line in a row.
     closed_since: [Option<f64>; 2],
-    closed_low: [f32; 2],
+    doubt_from: [f64; 2],
+    dipped: [bool; 2],
+    doubting: [bool; 2],
+    unsure_since: [Option<f64>; 2],
     // Each eye's last camera eyelid that was not closed.
     open_lid: [Option<f32>; 2],
     // Per eye: whether its camera "closed" was taken as open at the last sample because the eye server read the eye
@@ -1334,8 +1351,9 @@ impl SideCheck {
     /// gaze_variance) and how far each eye looks outward (`outward_deg`, see outward_degrees; inward is negative): the
     /// camera's eyelids as read (`camera`), with a "closed" turned into that eye's last open one (relaxed open if there
     /// was none, and at most) where the eye looks to the side, or where the camera has read it closed for longer than
-    /// CAMERA_CLOSED_DOUBT_S while the eye server read it open all along and is sure of it now; either unless the eye
-    /// server read that eye shut lately or the other eye closing with it in a blink (see CAMERA_SIDE_BLINK_SYNC).
+    /// CAMERA_CLOSED_DOUBT_S while the eye server read it open (but for the blink it began with) and was sure of it
+    /// (see doubt_closed); either unless the eye server read that eye shut lately or the other eye closing with it in a
+    /// blink (see CAMERA_SIDE_BLINK_SYNC).
     fn step(
         &mut self,
         time: f64,
@@ -1354,14 +1372,11 @@ impl SideCheck {
             }
             self.shut[eye] = shut;
             match camera[eye] {
-                Some(lid) if lid.closed => {
-                    if self.closed_since[eye].is_none() {
-                        self.closed_since[eye] = Some(time);
-                        self.closed_low[eye] = openness[eye];
-                    }
-                    self.closed_low[eye] = self.closed_low[eye].min(openness[eye]);
+                Some(lid) if lid.closed => self.doubt_closed(eye, time, openness[eye], variance[eye]),
+                _ => {
+                    self.closed_since[eye] = None;
+                    self.doubting[eye] = false;
                 }
-                _ => self.closed_since[eye] = None,
             }
         }
         self.overruled = [false; 2];
@@ -1373,11 +1388,7 @@ impl SideCheck {
             }
             let shut = self.shut_at[eye].is_some_and(|at| time - at <= CAMERA_SIDE_SHUT_RECENT);
             let side = outward_deg[eye].abs() > CAMERA_SIDE_DEG;
-            // A variance that is not a number (gaze_variance) is not below the line
-            let sure = self.closed_since[eye].is_some_and(|since| time - since > CAMERA_CLOSED_DOUBT_S)
-                && self.closed_low[eye] >= CAMERA_CLOSED_DOUBT_OPEN
-                && variance[eye] < CAMERA_CLOSED_DOUBT_VARIANCE;
-            if (side || sure) && !shut && !self.blink_with_other(eye, time) {
+            if (side || self.doubting[eye]) && !shut && !self.blink_with_other(eye, time) {
                 self.overruled[eye] = !side;
                 // No wider than relaxed open, like eyecam-rec's own hold at the lens edge
                 let held = self.open_lid[eye].unwrap_or(LID_RELAXED).min(LID_RELAXED);
@@ -1386,6 +1397,43 @@ impl SideCheck {
                 Some(lid)
             }
         })
+    }
+
+    /// Follow `eye`'s camera "closed" stretch at `time` with the eye server's `openness` and `variance` of that eye (see
+    /// CAMERA_CLOSED_DOUBT_S), and whether it is taken as open now (`doubting`). An openness or variance that is not a
+    /// number is not open or sure.
+    fn doubt_closed(&mut self, eye: usize, time: f64, openness: f32, variance: f32) {
+        let since = match self.closed_since[eye] {
+            Some(since) => since,
+            None => {
+                self.closed_since[eye] = Some(time);
+                self.doubt_from[eye] = time;
+                self.dipped[eye] = false;
+                self.doubting[eye] = false;
+                time
+            }
+        };
+        if !(openness >= CAMERA_CLOSED_DOUBT_OPEN) {
+            if time - since <= CAMERA_CLOSED_DOUBT_BLINK_S {
+                self.doubt_from[eye] = time;
+            } else {
+                self.dipped[eye] = true;
+            }
+        }
+        let unsure = !(variance < CAMERA_CLOSED_DOUBT_VARIANCE);
+        if unsure {
+            self.unsure_since[eye].get_or_insert(time);
+        } else {
+            self.unsure_since[eye] = None;
+        }
+        let ready = time - self.doubt_from[eye] > CAMERA_CLOSED_DOUBT_S && !self.dipped[eye];
+        // Once open, it stays so through the variance's spikes shorter than CAMERA_CLOSED_DOUBT_UNSURE_S
+        let sure = if self.doubting[eye] {
+            self.unsure_since[eye].is_none_or(|from| time - from < CAMERA_CLOSED_DOUBT_UNSURE_S)
+        } else {
+            !unsure
+        };
+        self.doubting[eye] = ready && sure;
     }
 
     /// Whether `eye`'s camera "closed" at `time` goes with a blink the eye server reads in the other eye: it began within
@@ -8059,9 +8107,10 @@ mod tests {
         let sent = doubt_samples(&settings, dip, sure, 90..390);
         assert!(sent[170..198].iter().all(|sample| sample.lids[0] > 0.7), "{:?}", sent[190].lids);
         assert!(sent[199..390].iter().all(|sample| sample.lids[0] == 0.0 && !sample.closed_overruled[0]), "{:?}", sent[300].lids);
-        // ... or at its start (just below CAMERA_CLOSED_DOUBT_OPEN): closed all along
-        let start = |i: usize| if i == 90 { [CAMERA_CLOSED_DOUBT_OPEN - 0.01, 0.9] } else { [0.9; 2] };
-        let sent = doubt_samples(&settings, start, sure, 90..390);
+        // ... or just after its first CAMERA_CLOSED_DOUBT_BLINK_S (0.41 s in, just below CAMERA_CLOSED_DOUBT_OPEN): closed
+        // all along
+        let late = |i: usize| if i == 127 { [CAMERA_CLOSED_DOUBT_OPEN - 0.01, 0.9] } else { [0.9; 2] };
+        let sent = doubt_samples(&settings, late, sure, 90..390);
         assert!(sent[90..390].iter().all(|sample| sample.lids[0] == 0.0), "{:?}", sent[300].lids);
         // At CAMERA_CLOSED_DOUBT_OPEN itself it counts as open
         let line = |_| [CAMERA_CLOSED_DOUBT_OPEN, 0.9];
@@ -8070,15 +8119,48 @@ mod tests {
     }
 
     #[test]
+    fn a_long_closed_of_the_cameras_that_began_with_a_blink_is_doubted_from_the_blinks_end() {
+        let settings = camera_settings();
+        let sure = |_| 0.001;
+        // The eye server reads a blink over the first 0.1 s of the camera's closed (which goes on for 3.3 s): closed until
+        // CAMERA_CLOSED_DOUBT_S after its last sample below CAMERA_CLOSED_DOUBT_OPEN (99), then its last open eyelid
+        let blink = |i: usize| if (90..100).contains(&i) { [0.1; 2] } else { [0.9; 2] };
+        let sent = doubt_samples(&settings, blink, sure, 90..390);
+        assert!(sent[90..144].iter().all(|sample| sample.lids[0] == 0.0 && !sample.closed_overruled[0]), "{:?}", sent[140].lids);
+        assert!(sent[146..390].iter().all(|sample| sample.closed_overruled[0]), "{:?}", sent[146].closed_overruled);
+        assert!(sent[180..390].iter().all(|sample| sample.lids[0] > 0.7), "{:?}", sent[180].lids);
+        // A reading below it up to CAMERA_CLOSED_DOUBT_BLINK_S in (0.39 s) counts from there
+        let edge = |i: usize| if i == 125 { [0.3, 0.9] } else { [0.9; 2] };
+        let sent = doubt_samples(&settings, edge, sure, 90..390);
+        assert!(sent[90..170].iter().all(|sample| sample.lids[0] == 0.0), "{:?}", sent[165].lids);
+        assert!(sent[172..390].iter().all(|sample| sample.closed_overruled[0]), "{:?}", sent[172].closed_overruled);
+    }
+
+    #[test]
     fn the_cameras_closed_stands_while_the_eye_server_is_unsure_of_the_eye() {
         let settings = camera_settings();
-        // Unsure from 2 s into the camera's 3.3 s closed for 0.5 s: closed then, open again after
+        // Once taken as open, the variance's spikes shorter than CAMERA_CLOSED_DOUBT_UNSURE_S leave it open
+        let spikes = |i: usize| if (200..202).contains(&i) || (250..270).contains(&i) { 0.05 } else { 0.001 };
+        let sent = doubt_samples(&settings, |_| [0.9; 2], spikes, 90..390);
+        assert!(sent[137..390].iter().all(|sample| sample.closed_overruled[0]), "{:?}", sent[260].closed_overruled);
+        assert!(sent[170..390].iter().all(|sample| sample.lids[0] > 0.7), "{:?}", sent[260].lids);
+        // Unsure from 2 s into the camera's 3.3 s closed for 0.5 s: closed once that has lasted
+        // CAMERA_CLOSED_DOUBT_UNSURE_S, open again once it is sure again
         let unsure = |i: usize| if (270..315).contains(&i) { 0.05 } else { 0.001 };
         let sent = doubt_samples(&settings, |_| [0.9; 2], unsure, 90..390);
-        assert!(sent[170..270].iter().all(|sample| sample.lids[0] > 0.7), "{:?}", sent[200].lids);
-        assert!(sent[270..315].iter().all(|sample| sample.lids[0] == 0.0 && !sample.closed_overruled[0]), "{:?}", sent[300].lids);
+        assert!(sent[170..292].iter().all(|sample| sample.lids[0] > 0.7), "{:?}", sent[290].lids);
+        assert!(sent[293..315].iter().all(|sample| sample.lids[0] == 0.0 && !sample.closed_overruled[0]), "{:?}", sent[300].lids);
         assert!(sent[315..390].iter().all(|sample| sample.closed_overruled[0]));
         assert!(sent[360..390].iter().all(|sample| sample.lids[0] > 0.7), "{:?}", sent[360].lids);
+        // Unsure as CAMERA_CLOSED_DOUBT_S runs out: not taken as open before it is sure
+        let first = |i: usize| if (120..150).contains(&i) { 0.05 } else { 0.001 };
+        let sent = doubt_samples(&settings, |_| [0.9; 2], first, 90..390);
+        assert!(sent[90..150].iter().all(|sample| sample.lids[0] == 0.0), "{:?}", sent[145].lids);
+        assert!(sent[150..390].iter().all(|sample| sample.closed_overruled[0]));
+        // The eye server reading the eye below CAMERA_CLOSED_DOUBT_OPEN closes it at once, also through a spike
+        let dip = |i: usize| if i == 250 { [0.4, 0.9] } else { [0.9; 2] };
+        let sent = doubt_samples(&settings, dip, spikes, 90..390);
+        assert!(sent[250..390].iter().all(|sample| sample.lids[0] == 0.0 && !sample.closed_overruled[0]), "{:?}", sent[300].lids);
         // At the line itself unsure; unsure all along (or no variance read), closed all along
         for variance in [CAMERA_CLOSED_DOUBT_VARIANCE, 0.05, f32::NAN] {
             let sent = doubt_samples(&settings, |_| [0.9; 2], |_| variance, 90..390);
