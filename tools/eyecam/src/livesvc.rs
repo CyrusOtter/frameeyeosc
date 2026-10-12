@@ -1,6 +1,7 @@
 //! The live processing thread of `eyecam-rec --serve`: takes eye frames from the main (polling) thread, runs the
 //! per-eye engines, publishes the shared memory, collects calibration samples and fits/stores calibrations.
 
+use crate::driftlog;
 use crate::live::{self, CalibFile, EyeEngine, Label, Params, Sample, UserParams};
 use crate::liveshm::{self, LiveWriter};
 use crate::preview::{self, Preview};
@@ -84,8 +85,9 @@ pub enum CollectKind {
 pub enum Msg {
     /// A raw frame of an anatomical eye (0 = L, 1 = R), 400x400 as stored; `upside_down`: its camera stores it upside
     /// down (the left eye's, see vision::UPSIDE_DOWN_EYE; decided by the camera, so --swap renaming the eyes does not
-    /// move it, ring::Ring::upside_down).
-    Frame { eye: usize, upside_down: bool, t_cam_ns: u64, pitch: f32, data: Vec<u8> },
+    /// move it, ring::Ring::upside_down). `pitch` and `open`: Valve's gaze pitch (degrees) and openness for that eye
+    /// (NaN without them; the openness only goes into the drift log).
+    Frame { eye: usize, upside_down: bool, t_cam_ns: u64, pitch: f32, open: f32, data: Vec<u8> },
     /// Start collecting labelled samples for a calibration.
     Collect(CollectKind),
     /// A protocol step began at `t0` (CLOCK_MONOTONIC_RAW seconds, the camera clock).
@@ -139,6 +141,8 @@ pub struct Shared {
     /// renews it for preview::HOLD), and whether its file is there now (status.json `preview`).
     pub preview_until: AtomicU64,
     pub preview_on: AtomicBool,
+    /// The drift log (`driftlog on` / `off` from ctl.sock), written by the worker as frames come.
+    pub driftlog: Mutex<driftlog::Control>,
 }
 
 impl Default for Shared {
@@ -162,6 +166,7 @@ impl Default for Shared {
             last_calib: Mutex::new(None),
             preview_until: AtomicU64::new(0),
             preview_on: AtomicBool::new(false),
+            driftlog: Mutex::new(driftlog::Control::default()),
         }
     }
 }
@@ -340,6 +345,11 @@ fn save_calib(path: &Path, file: &CalibFile) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Wall-clock seconds (the drift log's `wall_unix`).
+pub fn unix_now() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
 fn stamp() -> String {
     let t = unsafe { libc::time(std::ptr::null_mut()) };
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -438,7 +448,7 @@ impl Worker {
         });
     }
 
-    fn frame(&mut self, eye: usize, upside_down: bool, t_cam_ns: u64, pitch: f32, data: &[u8]) {
+    fn frame(&mut self, eye: usize, upside_down: bool, t_cam_ns: u64, pitch: f32, open: f32, data: &[u8]) {
         if !self.live || data.len() != W * H {
             return;
         }
@@ -487,6 +497,14 @@ impl Worker {
         self.check_pupils(eye, t, &mut o);
         let share = self.pupil_seen[eye].push(t, o.f.ok_pupil);
         self.shared.pupil_share[eye].store((share as f32).to_bits(), Ordering::Relaxed);
+        {
+            // The drift log, while on: what the engine just worked out, read only
+            let mut drift = self.shared.driftlog.lock().unwrap();
+            if drift.is_on() {
+                let p = driftlog::Probe::of(&self.engines[eye], &o, &self.params[eye], t, open as f64);
+                drift.push(eye, &p, unix_now());
+            }
+        }
         self.busy += processed + started.elapsed();
         self.busy_n += 1;
         self.frames[eye] += 1;
@@ -875,8 +893,8 @@ pub fn spawn(
             w.publish_state();
             loop {
                 match rx.recv_timeout(Duration::from_millis(50)) {
-                    Ok(Msg::Frame { eye, upside_down, t_cam_ns, pitch, data }) => {
-                        w.frame(eye, upside_down, t_cam_ns, pitch, &data)
+                    Ok(Msg::Frame { eye, upside_down, t_cam_ns, pitch, open, data }) => {
+                        w.frame(eye, upside_down, t_cam_ns, pitch, open, &data)
                     }
                     Ok(Msg::Collect(kind)) => {
                         w.collect = Some(kind);
@@ -924,6 +942,8 @@ pub fn spawn(
                 }
                 w.housekeeping();
             }
+            // The drift log's last part written and its file closed
+            w.shared.driftlog.lock().unwrap().off(unix_now());
         })
         .map_err(|e| e.to_string())?;
     Ok((tx, handle))
@@ -1021,7 +1041,7 @@ mod tests {
         let send = |k: u64| {
             for eye in 0..2 {
                 let data = frame.clone();
-                tx.send(Msg::Frame { eye, upside_down: eye == 0, t_cam_ns: 50_000_000_000 + k * 11_111_111, pitch: f32::NAN, data }).unwrap();
+                tx.send(Msg::Frame { eye, upside_down: eye == 0, t_cam_ns: 50_000_000_000 + k * 11_111_111, pitch: f32::NAN, open: f32::NAN, data }).unwrap();
             }
         };
         // Not asked: frames, but no file
@@ -1055,6 +1075,53 @@ mod tests {
         assert!(!shared.preview_on.load(Ordering::Relaxed));
         tx.send(Msg::Shutdown).unwrap();
         handle.join().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The drift log through the worker: rows for both eyes while it is on, the last part written and the file closed
+    /// when the worker stops (eyecam-rec exiting).
+    #[test]
+    fn the_worker_writes_the_drift_log_and_closes_it_at_exit() {
+        let dir = std::env::temp_dir().join(format!("eyecam-worker-drift-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shared = Arc::new(Shared::default());
+        let (tx, handle) = spawn(&dir, dir.join("calib.json"), None, shared.clone()).unwrap();
+        tx.send(Msg::Buffers(true)).unwrap();
+        let path = {
+            let mut c = shared.driftlog.lock().unwrap();
+            c.dir = dir.join(driftlog::DIR_NAME);
+            let log = driftlog::DriftLog::create(&c.dir, "test").unwrap();
+            c.on(log, 1.0)
+        };
+        // 2.5 s of made-up frames (no eye in them), Valve's openness 0.8 on the left and 0.6 on the right
+        let frame: Vec<u8> = (0..W * H).map(|i| (40 + (i % W) / 4) as u8).collect();
+        for k in 0..225u64 {
+            for eye in 0..2 {
+                let data = frame.clone();
+                let open = [0.8, 0.6][eye];
+                tx.send(Msg::Frame { eye, upside_down: false, t_cam_ns: 50_000_000_000 + k * 1_000_000_000 / 90, pitch: -10.0, open, data }).unwrap();
+            }
+        }
+        tx.send(Msg::Shutdown).unwrap();
+        handle.join().unwrap();
+        let st = shared.driftlog.lock().unwrap().status();
+        assert!(!st.on && st.path == path.display().to_string(), "{st:?}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], driftlog::HEADER);
+        // Two whole seconds and the half second left, per eye
+        assert_eq!(lines.len(), 1 + 6, "{text}");
+        let head: Vec<&str> = driftlog::HEADER.split(',').collect();
+        let col = |row: &str, name: &str| row.split(',').nth(head.iter().position(|h| *h == name).unwrap()).unwrap().to_string();
+        let frames: Vec<String> = lines[1..].iter().map(|r| col(r, "frames")).collect();
+        assert_eq!(frames.iter().filter(|f| *f == "90").count(), 4, "{frames:?}");
+        for r in &lines[1..] {
+            let open = if col(r, "eye") == "L" { "0.800" } else { "0.600" };
+            assert_eq!((col(r, "valve_open").as_str(), col(r, "valve_pitch").as_str()), (open, "-10.0"), "{r}");
+            assert_eq!(col(r, "pupil_share"), "0.000", "{r}");
+            assert!(col(r, "wall_unix").parse::<f64>().unwrap() > 1.7e9, "{r}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1143,8 +1210,9 @@ mod tests {
                     img = raw;
                 }
                 let pitch = s.valve.nearest(t).map_or(f32::NAN, |j| s.valve.pitch[e][j] as f32);
+                let open = s.valve.nearest(t).map_or(f32::NAN, |j| s.valve.open[e][j] as f32);
                 let upside_down = s.upside_down(e);
-                tx.send(Msg::Frame { eye: e, upside_down, t_cam_ns: (t * 1e9) as u64, pitch, data: img.clone() }).unwrap();
+                tx.send(Msg::Frame { eye: e, upside_down, t_cam_ns: (t * 1e9) as u64, pitch, open, data: img.clone() }).unwrap();
             }
         }
         let (rtx, rrx) = mpsc::channel();

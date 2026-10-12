@@ -220,6 +220,8 @@ pub struct Status {
     /// The last `error` message (kept after the state moves on; "" for none) and when it came (Unix seconds).
     pub last_error: String,
     pub last_error_unix: f64,
+    /// The drift log (`driftlog on` / `off`): whether it is on, its file, how much is in it.
+    pub driftlog: crate::driftlog::DriftStatus,
 }
 
 impl Default for Status {
@@ -263,6 +265,7 @@ impl Default for Status {
             last_calib: None,
             last_error: String::new(),
             last_error_unix: 0.0,
+            driftlog: Default::default(),
         }
     }
 }
@@ -295,7 +298,7 @@ impl Status {
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"search\":{},\"last_session_aborted\":{},\"calib_state\":{},\
-\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"pid\":{pid},\"updated_unix\":{}}}",
+\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"driftlog\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
             json_str(&crate::message_en::message_en(&self.message)),
@@ -339,6 +342,7 @@ impl Status {
             json_str(&self.last_error),
             json_str(&crate::message_en::message_en(&self.last_error)),
             num(self.last_error_unix),
+            self.driftlog.to_json(),
             num(updated_unix),
         )
     }
@@ -388,6 +392,9 @@ pub enum Command {
     SetWidenSensitivity(f64),
     /// `preview on` / `preview off`: the panel's eye preview, answered by the control thread itself, in every state.
     Preview(bool),
+    /// `driftlog on` / `driftlog off`: the drift log (`driftlog`), answered by the control thread itself, in every
+    /// state.
+    DriftLog(bool),
 }
 
 /// Parse one control line. Protocol names are 1-32 of [A-Za-z0-9_-], so they can never name a path.
@@ -411,6 +418,8 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         (Some("live"), Some("off")) => Command::Live(false),
         (Some("preview"), Some("on")) => Command::Preview(true),
         (Some("preview"), Some("off")) => Command::Preview(false),
+        (Some("driftlog"), Some("on")) => Command::DriftLog(true),
+        (Some("driftlog"), Some("off")) => Command::DriftLog(false),
         (Some("set"), Some("widen_sensitivity")) => {
             let v = words.next().and_then(|w| w.parse::<f64>().ok()).filter(|v| (0.0..=1.0).contains(v));
             Command::SetWidenSensitivity(v.ok_or("widen_sensitivity は 0 から 1 の数で")?)
@@ -440,6 +449,11 @@ mod tests {
         assert_eq!(parse_command("preview on\n"), Ok(Command::Preview(true)));
         assert_eq!(parse_command("preview off"), Ok(Command::Preview(false)));
         for bad in ["preview", "preview maybe", "preview on now"] {
+            assert!(parse_command(bad).is_err(), "{bad}");
+        }
+        assert_eq!(parse_command("driftlog on\n"), Ok(Command::DriftLog(true)));
+        assert_eq!(parse_command(" driftlog off"), Ok(Command::DriftLog(false)));
+        for bad in ["driftlog", "driftlog yes", "driftlog on /tmp/x", "drift on"] {
             assert!(parse_command(bad).is_err(), "{bad}");
         }
         assert_eq!(parse_command("set widen_sensitivity 0.25"), Ok(Command::SetWidenSensitivity(0.25)));
@@ -487,6 +501,13 @@ mod tests {
             json.contains(",\"prox_min\":20.000,\"search_detail\":null,\"last_calib\":null,\"last_error\":\"\",\"last_error_en\":\"\",\"last_error_unix\":0.000,"),
             "{json}"
         );
+        assert!(
+            json.contains(",\"driftlog\":{\"on\":false,\"path\":\"\",\"rows\":0,\"bytes\":0,\"full\":false,\"error\":\"\"},\"pid\":7,"),
+            "{json}"
+        );
+        let drift = crate::driftlog::DriftStatus { on: true, path: "/home/steamos/eyecam/drift/drift_x.csv".into(), rows: 12, bytes: 3400, full: false, error: String::new() };
+        let on = Status { driftlog: drift, ..Status::default() }.to_json(1.5, 7);
+        assert!(on.contains("\"driftlog\":{\"on\":true,\"path\":\"/home/steamos/eyecam/drift/drift_x.csv\",\"rows\":12,") && crate::json::parse(&on).is_ok(), "{on}");
     }
 
     #[test]

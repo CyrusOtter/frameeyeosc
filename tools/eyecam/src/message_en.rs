@@ -62,6 +62,7 @@ const PREFIX: &[(&str, &str)] = &[
     ("失敗した: ", "Failed: "),
     ("保存できなかった: ", "Couldn't save: "),
     ("プロトコルが見つからない: ", "Protocol not found: "),
+    ("ドリフトの記録を始められなかった: ", "Couldn't start the drift log: "),
 ];
 
 /// The eyes a message can start with.
@@ -289,6 +290,7 @@ mod tests {
             "カメラの映像が毎秒 15 枚しか届いていない",
             "protocol_x.txt の書き方がおかしい: line 3",
             "プロトコルが見つからない: protocol_x.txt",
+            "ドリフトの記録を始められなかった: /home/steamos/eyecam/drift: Permission denied (os error 13)",
         ];
         for ja in all {
             let en = message_en(ja);

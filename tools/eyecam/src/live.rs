@@ -243,6 +243,37 @@ pub struct Out {
     pub b_w: f64,
 }
 
+/// The widen step and open gap (iris radii) the engine uses, and the confidence factor that goes with them: the
+/// history's, or the population defaults.
+pub fn levels(params: &Params) -> (f64, f64, f64) {
+    params.hist.map_or((DEFAULT_WIDEN_STEP, DEFAULT_OPEN_GAP, 0.7), |h| (h.step, h.gap, 1.0))
+}
+
+/// What the engine holds for the current wear, read only (the drift log, `driftlog`): the references fixed early in
+/// a wear and the ones that follow.
+#[derive(Clone, Copy, Debug)]
+pub struct WearState {
+    /// The time (s) of this wear's first frame (NaN before one).
+    pub t_first: f64,
+    /// The pupil search window: x from `x_min` to `xmax`, rows feat::SEARCH_Y0..SEARCH_Y1.
+    pub x_min: f64,
+    pub xmax: f64,
+    pub x_min_from: feat::XMinFrom,
+    /// The frame time (s) x_min and xmax were last worked out on, and from how many frames' column means (they stop
+    /// after 40, about 20 s into a wear).
+    pub x_min_at: f64,
+    pub x_min_frames: u32,
+    /// The open eye's long-run box brightness (the closed rule's reference) and how many samples it has (it is used
+    /// from 30 on).
+    pub box_open: f64,
+    pub box_open_n: usize,
+    /// The auto baseline (px): skin line above the pupil and aperture, and whether it is ready (warm-up over or
+    /// seeded). Before it is ready these are the warm-up's running modes (NaN at first).
+    pub base_skin_px: f64,
+    pub base_ap_px: f64,
+    pub ready: bool,
+}
+
 /// `seconds` in frames at `fps`: rounded, and at least `min`.
 fn frames_in(seconds: f64, fps: f64, min: u32) -> u32 {
     ((seconds * fps).round() as u32).max(min)
@@ -366,6 +397,9 @@ pub struct EyeEngine {
     cm_last: u64,
     xmax: f64,
     x_min: f64,
+    /// Where x_min came from, and the time (s) of the frame it was last worked out on (the drift log).
+    x_min_from: feat::XMinFrom,
+    x_min_at: f64,
     r_est: LongMedian,
     skin: Win,
     ap: Win,
@@ -512,6 +546,8 @@ impl Default for EyeEngine {
             cm_last: 0,
             xmax: 346.0,
             x_min: feat::X_MIN,
+            x_min_from: feat::XMinFrom::Fixed,
+            x_min_at: f64::NAN,
             // 30 s for R, 60 s for the open box level, 20 s for the open pupil.
             r_est: LongMedian::new(30.0),
             skin: Win::new(),
@@ -581,6 +617,23 @@ impl EyeEngine {
         self.nopupil = 0;
     }
 
+    /// What the engine holds for this wear (read only; the drift log).
+    pub fn wear_state(&self) -> WearState {
+        WearState {
+            t_first: self.t_first,
+            x_min: self.x_min,
+            xmax: self.xmax,
+            x_min_from: self.x_min_from,
+            x_min_at: self.x_min_at,
+            x_min_frames: self.cm_n,
+            box_open: self.box_open.value,
+            box_open_n: self.box_open.len(),
+            base_skin_px: self.base.b,
+            base_ap_px: self.base.ap_n,
+            ready: self.base.ready,
+        }
+    }
+
     /// The lens edge and iris radius the engine currently uses.
     pub fn geometry(&self) -> (f64, f64) {
         (self.xmax, self.r_est.value)
@@ -637,7 +690,8 @@ impl EyeEngine {
             self.cm_n += 1;
             let m: Vec<f64> = self.cm_sum.iter().map(|v| v / self.cm_n as f64).collect();
             self.xmax = feat::occluder_x(&m);
-            self.x_min = feat::search_x_min(&m);
+            (self.x_min, self.x_min_from) = feat::search_x_min_from(&m);
+            self.x_min_at = t;
         }
         self.ex.search = feat::Search::live(self.x_min);
         let r_ready = self.r_est.len() >= 10;
@@ -739,7 +793,7 @@ impl EyeEngine {
 
         // Levels: the auto baseline (px) and the history's step and gap (iris radii) at the current radius.
         let user = params.user.unwrap_or_default();
-        let (step_r, gap_r, cal_q) = params.hist.map_or((DEFAULT_WIDEN_STEP, DEFAULT_OPEN_GAP, 0.7), |h| (h.step, h.gap, 1.0));
+        let (step_r, gap_r, cal_q) = levels(params);
         let (step_px, gap_px) = (step_r * r, gap_r * r);
         let open_seen = f.ok_pupil && !closed && skin_px.is_finite();
         if open_seen && pitch.is_finite() && sampled {

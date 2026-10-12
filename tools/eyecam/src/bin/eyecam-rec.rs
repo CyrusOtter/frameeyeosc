@@ -8,6 +8,7 @@
 
 use eyecam::autograb;
 use eyecam::cues::{self, Player, Step};
+use eyecam::driftlog::{self, DriftLog};
 use eyecam::mem::Arena;
 use eyecam::ring::{self, Clock, FRAME_BYTES, HEADER_BYTES, HEIGHT, Ring, STRIDE, WIDTH};
 use eyecam::shm::{self, Sample, Shm};
@@ -47,6 +48,9 @@ const MIN_FREE: u64 = 1 << 30;
 
 /// The reply to `preview on` when the run folder isn't in memory: the eye pictures are never put on a disk.
 const PREVIEW_NOT_TMPFS: &str = "目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ";
+
+/// The reply to `driftlog on` when its file can't be made (followed by `: ` and why).
+const DRIFTLOG_FAILED: &str = "ドリフトの記録を始められなかった";
 
 /// What waiting_fds says while the buffers can't be fetched automatically: the camera tool (eyecam-grab with
 /// cap_sys_ptrace) is put in by the panel's first-time setup. Once it is in, the automatic grab's messages replace this.
@@ -89,6 +93,8 @@ struct Args {
     calib_replay: Option<eyecam::replay::CalibRun>,
     /// --preview: with --replay, also write the panel's eye preview into this folder.
     preview: Option<PathBuf>,
+    /// --driftlog: with --replay, also write the drift log (as `driftlog on` does live) to this file.
+    driftlog: Option<PathBuf>,
     tune: eyecam::live::Tune,
     wait_grab: f64,
     wait_lock: f64,
@@ -129,6 +135,8 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --widen-sensitivity X  with --replay: the curve for widen sensitivity X in 0..1 (default 0.5, as live)
   --preview DIR      with --replay: also write the panel's eye preview (DIR/preview, as `preview on` does live), the
                      replay paced at the recording's own speed so a panel pointed at DIR can show it (development)
+  --driftlog FILE    with --replay: also write the drift log (one row per eye per second, as `driftlog on` does
+                     live) to FILE
   --seconds N        how long to record once frames are found (default 120, or the cue protocol's length)
   --out DIR          where session directories go (default ~/eyecam)
   --cues FILE        play a beep cue protocol (lines `seconds label`, see protocol_widen.txt) and log cues.csv
@@ -166,6 +174,7 @@ fn parse_args() -> Result<Args> {
         resample: None,
         calib_replay: None,
         preview: None,
+        driftlog: None,
         tune: eyecam::live::Tune::default(),
         wait_grab: 600.0,
         wait_lock: 300.0,
@@ -209,6 +218,7 @@ fn parse_args() -> Result<Args> {
                 })
             }
             "--preview" => args.preview = Some(PathBuf::from(value("--preview")?)),
+            "--driftlog" => args.driftlog = Some(PathBuf::from(value("--driftlog")?)),
             "--no-track" => args.tune.track = false,
             "--no-gaze-drop" => args.tune.gaze_drop = false,
             "--no-edge-hold" => args.tune.edge_hold = false,
@@ -323,6 +333,7 @@ fn run() -> Result<()> {
             tune: args.tune,
             limit: args.limit,
             preview: args.preview.clone(),
+            driftlog: args.driftlog.clone(),
         };
         let ms = eyecam::replay::write_live(&session, &args.out, &opts)?;
         eprintln!("live replay: {ms:.3} ms per frame (one eye) on this core");
@@ -493,6 +504,7 @@ impl StatusFile {
                 let now = now_raw();
                 s.cam_fps = [0, 1].map(|e| if s.locked { l.cam_fps(e, now) } else { f64::NAN });
                 s.last_calib = l.last_calib.lock().unwrap().clone();
+                s.driftlog = l.driftlog.lock().unwrap().status();
                 // While idle with the eyes in view, say what the live values are waiting for.
                 if s.state == "idle" && s.live && s.locked && LIVE_IDLE_MESSAGES.contains(&s.message.as_str()) {
                     s.message = live_idle_message(s.calib_saved, ready).into();
@@ -645,6 +657,23 @@ fn set_preview(on: bool, file: &StatusFile) -> String {
     "ok".into()
 }
 
+/// `driftlog on` / `driftlog off`: the drift log, done here in every state (the live worker writes the rows while frames
+/// come). `on` starts a new file in <data folder>/drift (closing one being written) and says where; `off` closes it.
+/// The fake daemon (no live engine) says ok and writes none.
+fn set_driftlog(on: bool, file: &StatusFile) -> String {
+    let Some(l) = &file.live else { return "ok".into() };
+    if !on {
+        l.driftlog.lock().unwrap().off(livesvc::unix_now());
+        return "ok".into();
+    }
+    // The file is made before taking the lock the worker writes under
+    let dir = l.driftlog.lock().unwrap().dir.clone();
+    match DriftLog::create(&dir, &local_stamp()) {
+        Ok(log) => format!("ok {}", l.driftlog.lock().unwrap().on(log, livesvc::unix_now()).display()),
+        Err(e) => format!("err {DRIFTLOG_FAILED}: {e}"),
+    }
+}
+
 /// The reply to one connection (None: not the user, so it gets nothing).
 fn ctl_reply(stream: &UnixStream, status: &Mutex<Status>, file: &StatusFile, tx: &mpsc::Sender<Request>) -> Option<String> {
     if peer_cred(stream).ok()?.uid != proto::USER_UID {
@@ -664,6 +693,7 @@ fn ctl_reply(stream: &UnixStream, status: &Mutex<Status>, file: &StatusFile, tx:
         }
         Ok(Command::SetWidenSensitivity(v)) => set_widen_sensitivity(v, status, file),
         Ok(Command::Preview(on)) => set_preview(on, file),
+        Ok(Command::DriftLog(on)) => set_driftlog(on, file),
         Ok(command) => {
             let (reply, rx) = mpsc::channel();
             if tx.send(Request { command, reply }).is_err() {
@@ -679,6 +709,7 @@ fn serve(args: &Args) -> Result<()> {
     let shared = Arc::new(livesvc::Shared::default());
     if !args.fake {
         shared.set_widen_sensitivity(Settings::load(&settings::path()).widen_sensitivity);
+        shared.driftlog.lock().unwrap().dir = args.out.join(driftlog::DIR_NAME);
     }
     let daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()))?;
     daemon.set(|s| s.prox_min = args.prox_min);
@@ -764,6 +795,8 @@ struct Live {
     valve: Option<Shm>,
     valve_retry: f64,
     pitch: [f32; 2],
+    /// Valve's openness per eye, read with the pitch (for the drift log).
+    open: [f32; 2],
     pitch_at: f64,
     dropped: u64,
     /// Each camera's frame rate (status.json cam_fps).
@@ -781,13 +814,14 @@ impl Live {
             valve: None,
             valve_retry: 0.0,
             pitch: [f32::NAN; 2],
+            open: [f32::NAN; 2],
             pitch_at: f64::NEG_INFINITY,
             dropped: 0,
             rate: Default::default(),
         })
     }
 
-    /// Keep the latest Valve gaze pitch per eye (the eye server's shared memory, read-only).
+    /// Keep the latest Valve gaze pitch and openness per eye (the eye server's shared memory, read-only).
     fn poll_valve(&mut self, now: f64) {
         if self.valve.is_none() && now >= self.valve_retry {
             self.valve = Shm::open().ok();
@@ -797,6 +831,7 @@ impl Live {
             for (p, g) in self.pitch.iter_mut().zip(&s.gaze) {
                 *p = g[1].clamp(-1.0, 1.0).asin().to_degrees();
             }
+            self.open = s.openness;
             self.pitch_at = now;
         }
     }
@@ -815,8 +850,9 @@ impl Live {
         for r in 0..HEIGHT {
             data.extend_from_slice(&frame[r * STRIDE..r * STRIDE + WIDTH]);
         }
-        let pitch = if now - self.pitch_at < 0.5 { self.pitch[eye] } else { f32::NAN };
-        if self.tx.try_send(Msg::Frame { eye, upside_down, t_cam_ns, pitch, data }).is_err() {
+        let fresh = now - self.pitch_at < 0.5;
+        let (pitch, open) = if fresh { (self.pitch[eye], self.open[eye]) } else { (f32::NAN, f32::NAN) };
+        if self.tx.try_send(Msg::Frame { eye, upside_down, t_cam_ns, pitch, open, data }).is_err() {
             self.dropped += 1;
         }
     }
@@ -939,7 +975,7 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                     continue;
                 }
                 // Answered by the control thread; never sent here.
-                Command::SetWidenSensitivity(_) | Command::Preview(_) => {
+                Command::SetWidenSensitivity(_) | Command::Preview(_) | Command::DriftLog(_) => {
                     answer(req, "ok");
                     continue;
                 }
@@ -2747,6 +2783,42 @@ mod tests {
         }
     }
 
+    /// `driftlog on` / `off` are answered in every state (here waiting_fds, no worker): `on` makes a new file with its
+    /// header in the data folder's drift/ and says where, status.json says it is on and where; `off` closes it.
+    #[test]
+    fn the_drift_log_is_turned_on_and_off_on_ctl_sock() {
+        if unsafe { libc::getuid() } != proto::USER_UID {
+            eprintln!("skipped: ctl.sock answers only uid {}", proto::USER_UID);
+            return;
+        }
+        let dir = Path::new("/dev/shm").join(format!("eyecam-drift-ctl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let shared = Arc::new(livesvc::Shared::default());
+        shared.driftlog.lock().unwrap().dir = dir.join("data").join(driftlog::DIR_NAME);
+        let daemon = Daemon::start(&dir, Some(shared.clone())).unwrap();
+        // The data folder is there (eyecam-rec makes it at start); drift/ in it is made on `on`
+        fs::create_dir(dir.join("data")).unwrap();
+        fs::set_permissions(dir.join("data"), fs::Permissions::from_mode(0o700)).unwrap();
+        let reply = ctl(&dir, "driftlog on");
+        let path = PathBuf::from(reply.strip_prefix("ok ").unwrap_or_else(|| panic!("{reply}")));
+        assert!(path.starts_with(dir.join("data/drift")) && path.file_name().unwrap().to_str().unwrap().starts_with("drift_"), "{reply}");
+        let json = fs::read_to_string(dir.join(status::STATUS_FILE)).unwrap();
+        assert!(json.contains(&format!("\"driftlog\":{{\"on\":true,\"path\":\"{}\",", path.display())), "{json}");
+        assert_eq!(ctl(&dir, "driftlog off"), "ok");
+        assert_eq!(fs::read_to_string(&path).unwrap(), format!("{}\n", driftlog::HEADER));
+        let json = fs::read_to_string(dir.join(status::STATUS_FILE)).unwrap();
+        assert!(json.contains(&format!("\"driftlog\":{{\"on\":false,\"path\":\"{}\",", path.display())), "{json}");
+        assert_eq!(ctl(&dir, "driftlog off"), "ok", "off again: nothing to close");
+        // A folder it can't make: refused, with why
+        fs::write(dir.join("blocked"), b"").unwrap();
+        shared.driftlog.lock().unwrap().dir = dir.join("blocked").join(driftlog::DIR_NAME);
+        let reply = ctl(&dir, "driftlog on");
+        assert!(reply.starts_with(&format!("err {DRIFTLOG_FAILED}: ")), "{reply}");
+        assert!(!eyecam::message_en::message_en(reply.strip_prefix("err ").unwrap()).contains("記録"), "{reply}");
+        daemon.finish();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Args as `--serve` has them, with status.json and everything else in `dir`.
     fn serve_args(dir: &Path) -> Args {
         Args {
@@ -2772,6 +2844,7 @@ mod tests {
             resample: None,
             calib_replay: None,
             preview: None,
+            driftlog: None,
             tune: eyecam::live::Tune::default(),
             wait_grab: 0.0,
             wait_lock: 300.0,

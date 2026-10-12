@@ -369,6 +369,8 @@ pub struct LiveOpts {
     /// Also write the panel's eye preview into this folder (its `preview` file), paced at the recording's own speed so
     /// a panel can show it while it runs (development: the pictures come from a recording on disk anyway).
     pub preview: Option<PathBuf>,
+    /// Also write the drift log (`driftlog`, as `driftlog on` does live) to this file; `wall_unix` stays empty.
+    pub driftlog: Option<PathBuf>,
 }
 
 pub const LIVE_HEADER: &str = "eye,eye_index,t_cam,label,step,ok_pupil,skin_up,aperture,lower,pupil_ratio,box_f,r,pitch,v_open,\
@@ -436,6 +438,13 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
     let mut preview = opts.preview.as_ref().map(|dir| crate::preview::Preview::new(dir.join(crate::preview::FILE_NAME)));
     // (the wall clock and the camera time the paced replay started at)
     let mut paced: Option<(std::time::Instant, f64)> = None;
+    let mut drift = match &opts.driftlog {
+        Some(path) => {
+            let file = File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            Some(crate::driftlog::DriftLog::new(path.clone(), BufWriter::new(file), crate::driftlog::CAP_BYTES))
+        }
+        None => None,
+    };
     for k in 0..n {
         for e in 0..2 {
             if k >= s.frames(e) {
@@ -460,6 +469,9 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
             last_t[e] = t;
             if let Some(p) = preview.as_mut() {
                 p.frame(true, e, &img, &o, t, crate::liveshm::clock_ns(libc::CLOCK_MONOTONIC));
+            }
+            if let Some(d) = drift.as_mut() {
+                d.push(e, &crate::driftlog::Probe::of(&engines[e], &o, &params[e], t, v_open), f64::NAN);
             }
             let (label, step) = s.label_at(t, live::STEP_DELAY);
             if let Some(l) = label {
@@ -524,6 +536,14 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
         }
     }
     w.flush().map_err(|e| e.to_string())?;
+    if let Some(mut d) = drift {
+        d.finish(f64::NAN);
+        let st = d.status(false);
+        if !st.error.is_empty() {
+            return Err(format!("{}: {}", st.path, st.error));
+        }
+        eprintln!("drift log: {} rows in {}", st.rows, st.path);
+    }
     if let Some(p) = &preview {
         eprintln!("preview: {} pictures, {:.0} us each (halving and writing)", p.pictures, p.us_per_picture());
     }

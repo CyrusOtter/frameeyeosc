@@ -139,6 +139,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
   "pupil_frames":[470.000,482.000],"normal_frames":[486.000,486.000],"pupil_x":[238.000,252.000],"pupil_y":[201.000,194.000],
   "window":[[186.000,346.000],[180.000,340.000]],"fps":[90.000,90.000]},
  "last_error":"","last_error_en":"","last_error_unix":0.000,
+ "driftlog":{"on":false,"path":"","rows":0,"bytes":0,"full":false,"error":""},
  "pid":1234,"updated_unix":1791100000.123}
 ```
 
@@ -185,6 +186,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `search_detail` | object / null | 直近に目の映像を探したときに見えたもの（パネルの診断用）。探すたびに書き換え、ロックしたあとも残る。まだ一度も見ていなければ `null`。`candidates`（変化したメモリの中で絵に見えたフレームの数）、`refresh_hz`（そのうち選んだバッファの候補が 1 秒に何回書き換わったかの中央値。選んだバッファの候補が 2 つ未満なら 0）、`slots`（見つかったリングのスロット数。ふつう 8）、`both_eyes`（両目のスロットがそろった）、`stopped_at`（どこで止まったか: `""` 見つかった〔両目〕/ `no_candidates` 絵に見える候補が 2 つ未満 / `split_buffers` 候補は 2 つ以上あるが、いちばん多いバッファでも 2 つ未満（ほかのバッファに散らばっている）/ `not_refreshing` 1 秒に 3 回以上書き換わる候補が 2 つ未満 / `few_slots` リングのスロットが 2 つ未満 / `one_eye` 片目のスロットだけ）、`changed_blocks`（その前に変化した 64 KiB のブロックの数。0 ならバッファに何も書かれていない）、`unix`（見た時刻） |
 | `last_calib` | object / null | 直近の `calib wear`（この起動でしたもの、なければ `~/eyecam/calib_*/calib_result.json` のいちばん新しい wear のもの。どちらも無ければ `null`）。`time`（ローカル時刻 `YYYY-MM-DD HH:MM:SS`）、`ok`、`failed_eye`（`calib_failed_eye` と同じ。`failed_eye` の無い古い calib_result.json は、失敗なら `LR`）、`message` / `message_en`、目ごとの `[左, 右]` で `pupil_frames`（普段の段で瞳が見えたフレーム）・`normal_frames`（普段の段のフレーム）・`pupil_x` / `pupil_y`（普段の段の瞳の位置の中央値、px）・`window`（瞳を探した枠の左右 `[[左目の左, 左目の右], [右目の左, 右目の右]]`）・`fps`（その校正のときのカメラの毎秒の枚数）。無い値は `null`。途中で止めた校正もここに入る（`ok` false、`message` は `途中で止めた`） |
 | `last_error`, `last_error_en`, `last_error_unix` | string / string / number | 直近に `state` が `error` になったときの `message`（とその英語）と時刻（UNIX 秒）。`state` が戻っても残る。まだ無ければ `""` と 0 |
+| `driftlog` | object | ドリフトの記録（下の「ドリフトの記録」）。`on`（記録中。`driftlog on` から `off` まで）、`path`（書いているファイル。`off` のあとは最後のファイル。まだ一度も無ければ `""`）、`rows`（書いた行数）、`bytes`（ファイルの大きさ）、`full`（50 MB に達したのでそれ以上書いていない。`on` のまま）、`error`（書けなくなった理由。ふつうは `""`）。このフィールドがない古い eyecam-rec もある |
 | `pid` | int | デーモンのプロセス ID |
 | `updated_unix` | number | 書いた時刻（UNIX 秒） |
 
@@ -208,6 +210,7 @@ unix stream ソケット（0600）。接続して 1 行（`\n` 終わり）送�
 | `live on` / `live off` | `ok`。ライブ処理（共有メモリ `live` の更新）のオン/オフ。既定はオン |
 | `preview on` / `preview off` | `ok`。パネルの目のプレビューの映像（下の「目のプレビュー」）。**どの state でもすぐ受け付けてすぐ返る**。`on` は 3 秒だけ効くので、映像を見ているあいだは 1 秒ごとに送り直す（送り直しが止まれば、フレームが来ていなくても 3 秒で止まる）。`off` ですぐ止まる。run フォルダが tmpfs でなければ `on` は `err 目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ` |
 | `set widen_sensitivity <0〜1>` | `ok` または `err widen_sensitivity は 0 から 1 の数で`。見開きの感度（下の「見開きの感度」）。**どの state でもすぐ受け付けてすぐ返る**（スライダーを動かしながら送ってよい）。すぐにライブの値に効き、`~/.config/eyecam/settings.json` に保存される（新しいファイルに書いて rename）。次に起動したときもその値。保存できなければ `err 保存できなかった: …` |
+| `driftlog on` / `driftlog off` | `on` は `ok <ファイルのパス>`（例 `ok /home/steamos/eyecam/drift/drift_2026-10-12_13-00-00.csv`）。ファイルが作れなければ `err ドリフトの記録を始められなかった: …`。`off` は `ok`（記録していなくても）。調査用のドリフトの記録（下の「ドリフトの記録」）。**どの state でもすぐ受け付けてすぐ返る**。`on` は毎回新しいファイルを作る（書いている途中のファイルは閉じる） |
 
 `<名前>` は `~/eyecam-src/protocol_<名前>.txt` のこと。英数字・`_`・`-` だけで 1〜32 文字（それ以外は `err プロトコル名に使えない文字がある`）。
 
@@ -218,7 +221,7 @@ unix stream ソケット（0600）。接続して 1 行（`\n` 終わり）送�
 | `searching` / `recording` | `err 録画中` | `ok` | `err 録画中` |
 | `calibrating` | `err 校正中` | `ok` | `err 校正中` |
 
-`set widen_sensitivity` と `preview on` / `preview off` は上の表に関係なく、どの state（`waiting_fds` も）でも答える。
+`set widen_sensitivity` と `preview on` / `preview off` と `driftlog on` / `driftlog off` は上の表に関係なく、どの state（`waiting_fds` も）でも答える。
 
 そのほかの返事: `err 知らないコマンド`、`err 応答がない`（10 秒以内に処理されなかった。ふつうは起きない）。
 
@@ -432,6 +435,64 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
 | 48 | — | （予約） | 0 |
 | 64 | u8[200×200] | `pixels` | 8 bit の灰色、上の行から。2×2 の平均（四捨五入） |
 
+### ドリフトの記録（調査用、`driftlog`）
+
+「長くかぶっているとまぶたがずれてくる」を調べるための記録。かぶりの最初に決めて動かさない値（瞳を探す枠の左端 `x_min` は
+かぶってから約 20 秒で決まる、閉じの判定が比べる開いた目の箱の明るさ）と、ゆっくり追従する値（基準線）を、瞳の位置や
+Valve の値と並べて 1 秒ごとに残す。ライブ処理がもう計算している値を読むだけで、目の値の計算は何も変わらない（録画を
+`--replay` で流した CSV が、この機能の前とバイト単位で同じ）。
+
+```sh
+echo 'driftlog on' | socat - UNIX-CONNECT:/run/user/1000/eyecam/ctl.sock    # ok /home/steamos/eyecam/drift/drift_….csv
+# … 長くかぶる …
+echo 'driftlog off' | socat - UNIX-CONNECT:/run/user/1000/eyecam/ctl.sock
+python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5 分ごとのまとめと、ずれた値の印
+```
+
+- 場所: `~/eyecam/drift/drift_YYYY-MM-DD_HH-MM-SS.csv`（`--out` の下の `drift/`。なければ作る。`on` のたびに新しいファイル。同じ秒に 2 回なら `_2`）
+- 書くのはライブ処理のスレッドで、フレームが来ている間だけ（かぶっていない間、`live off` の間は行が増えない）。バッファを通して書き、
+  `driftlog off` か eyecam-rec の終了（`systemctl --user stop eyecam` など）で残りを書いてファイルを閉じる。kill -9 では最後の 20 秒ほどが残らない
+- 大きさ: 両目で 1 秒に約 350 バイト（1 時間で約 1.3 MB）。1 ファイル 50 MB で書くのをやめる（status.json の `driftlog.full`）
+- 映像は書かない。数字だけ。ヘッドセットの中だけに残り、どこにも送らない。自動では消さないので、要らなくなったら消してね
+  （`rm -r ~/eyecam/drift`）
+
+1 行 = 1 つの目の、カメラの時計で 1 秒ぶんのフレーム（かぶり直しと、記録の終わりでは短くなる）。割合はそのフレームの中での割合、
+位置と大きさはフレームの中央値、基準になる値はその秒の最後のフレームのとき。値がないところは空。目は解剖学的な左右（`live` と同じ）。
+
+| 列 | 中身 |
+|---|---|
+| `wall_unix` | 行を書いた時刻（UNIX 秒、壁時計）。`--replay` では空 |
+| `t_raw` | その秒の最後のフレームの時刻（CLOCK_MONOTONIC_RAW の秒。録画の `t_cam`・Valve の `sample_time` と同じ時計） |
+| `eye` | `L` / `R` |
+| `wear` | この記録の中で何回目のかぶりか（0 から。映像が 10 秒止まってライブ処理がかぶり直しと判断するたびに 1 増える） |
+| `wear_s` | このかぶりの最初のフレームからの秒（ライブ処理の数え方） |
+| `frames` | その秒のフレーム数 |
+| `x_min`, `x_max` | 瞳を探す枠の左端（耳側）と右端（レンズ端）、px |
+| `y_min`, `y_max` | 瞳を探す枠の上と下（行。いまは 70 と 320 で固定） |
+| `x_min_src` | `x_min` の出どころ: `shade`（耳側の暗い部分が終わる所 − 10 px）/ `fixed`（暗い部分が 196 列より内まで来ているので試作の 186 のまま）/ `floor`（下限の 100） |
+| `x_min_set_s` | `x_min` と `x_max` を最後に計算し直したときの `wear_s`（かぶってから 20 秒まで 0.5 秒ごと。そのあとは動かない） |
+| `x_min_frames` | `x_min` と `x_max` を出した列の平均に入ったフレーム数（最大 40） |
+| `pupil_share` | 瞳が見つかったフレームの割合 |
+| `pupil_cx`, `pupil_cy`, `pupil_r` | 見つかった瞳の中心と半径（楕円の長い方の半径）の中央値、px（上下を直した 400×400 の映像） |
+| `iris_r` | 使っている虹彩の半径 R、px |
+| `edge_held_share` | 枠の左端で瞳を見失って、閉じたにせず開いたままにしたフレームの割合（`edge_held`） |
+| `closed_share` | 閉じたと出したフレームの割合 |
+| `box_f` | 虹彩の箱の明るさ（5 フレームの中央値）の中央値 |
+| `box_open`, `box_open_n` | 閉じの判定が比べる、開いた目の箱の明るさ（直近 60 秒の中央値）と、そのサンプル数（30 以上で使う） |
+| `box_ratio`, `box_ratio_max` | `box_f / box_open` の中央値と最大（1.3 を超えて瞳が 3 フレーム見えないと閉じた） |
+| `skin_px`, `ap_px` | 皮膚の線（瞳の中心から上まぶたの皮膚の線まで）とまぶたの間の開き、px（5 フレームの中央値の中央値） |
+| `base_skin_px`, `base_ap_px` | 自動の基準線: 皮膚の線と開き（`ap_n`）、px。覚えている途中はその時点の最頻値 |
+| `widen_step_px` | 見開きの幅（履歴の中央値 × いまの R）、px |
+| `ready` | 基準線ができている（1）か、覚えている途中（0） |
+| `lid`, `wide`, `squint` | 出した `eye_lid`・`eye_wide`・`eye_squint` の中央値 |
+| `valve_open`, `valve_pitch` | Valve のその目の開き具合と視線の上下（度）の中央値 |
+
+`tools/drift_report.py`（python3、標準ライブラリだけ）は、目ごと・かぶりごとに、`wear_s` で 5 分（`--bucket 秒` で変更）ずつ区切って、
+瞳が見つかった割合・瞳の位置・瞳の耳側の縁と `x_min` の差・`x_min`・`box_open`・Valve が 0.6 以上のときに閉じたと出した割合・
+枠の端で保持した割合・`ap_n`・皮膚の線を出し、最初と最後の区切りを比べて、瞳が 8 px 以上動いた・見つかる割合が 15 ポイント以上
+下がった・Valve が開いているのに閉じたと出す割合が 5 ポイント以上増えた・`box_open` や `ap_n` が 10% 以上変わった・瞳の耳側の縁が
+`x_min` から 16 px 未満、に印を付ける（半分に満たない区切りは比べない）。
+
 ### settings.json
 
 `~/.config/eyecam/settings.json`。なければ既定値。知らないキーは無視し、範囲外・型ちがいの値は既定値になる。
@@ -565,6 +626,8 @@ eyecam-rec --replay ~/eyecam/calib_2026-10-04_03-27-31 --calib wear --user-calib
 eyecam-rec --replay ~/eyecam/calib_2026-10-04_03-28-05 --calib user --user-calib calib_with_wear.json --out user.json
 # パネルの目のプレビューの映像を、録画の速さで流しながら RUNDIR/preview に書く（終わると消す。上の「目のプレビュー」）
 eyecam-rec --replay ~/eyecam/rec_B --limit 1800 --out x.csv --preview RUNDIR
+# ドリフトの記録も書く（下の「ドリフトの記録」。wall_unix は空）
+eyecam-rec --replay ~/eyecam/rec_B --out x.csv --driftlog drift_B.csv
 ```
 
 `eye_files=anatomical` がない古いセッション（eye_L.raw が右目）は自動で入れ替えて読む。画の位置で L/R を決めていたころの

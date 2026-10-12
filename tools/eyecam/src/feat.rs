@@ -199,16 +199,43 @@ const SHADE_MARGIN: f64 = 10.0;
 /// image, so does it, and the window follows. The prototype's X_MIN is the upper bound (the developer's recordings
 /// all give it).
 pub fn search_x_min(col_mean: &[f64]) -> f64 {
+    search_x_min_from(col_mean).0
+}
+
+/// Where `search_x_min`'s value came from (the drift log's `x_min_src`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum XMinFrom {
+    /// The shading reaches X_MIN + SHADE_MARGIN: the prototype's X_MIN.
+    Fixed,
+    /// The end of the shading, minus SHADE_MARGIN.
+    Shade,
+    /// The end of the shading was further out than X_MIN_LO allows: X_MIN_LO.
+    Floor,
+}
+
+impl XMinFrom {
+    pub fn name(self) -> &'static str {
+        match self {
+            XMinFrom::Fixed => "fixed",
+            XMinFrom::Shade => "shade",
+            XMinFrom::Floor => "floor",
+        }
+    }
+}
+
+/// `search_x_min` and where its value came from.
+pub fn search_x_min_from(col_mean: &[f64]) -> (f64, XMinFrom) {
     let bright = |x: usize| col_mean[x] >= SHADE_END_LEVEL;
     let top = (X_MIN + SHADE_MARGIN) as usize;
     if !(top..top + 4).all(bright) {
-        return X_MIN;
+        return (X_MIN, XMinFrom::Fixed);
     }
     let mut end = top;
     while end > 60 && bright(end - 1) {
         end -= 1;
     }
-    (end as f64 - SHADE_MARGIN).clamp(X_MIN_LO, X_MIN)
+    let x = end as f64 - SHADE_MARGIN;
+    if x < X_MIN_LO { (X_MIN_LO, XMinFrom::Floor) } else { (x.min(X_MIN), XMinFrom::Shade) }
 }
 
 /// Column means over rows 60..340 of one 400x400 image.
@@ -965,6 +992,12 @@ mod tests {
         beyond[60..100].fill(90.0);
         assert_eq!(search_x_min(&beyond), 140.0);
         assert_eq!(Search::live(20.0).x_min, X_MIN_LO);
+        // Where each came from (the drift log)
+        assert_eq!(search_x_min_from(&profile(198)), (X_MIN, XMinFrom::Fixed));
+        assert_eq!(search_x_min_from(&profile(196)), (X_MIN, XMinFrom::Shade));
+        assert_eq!(search_x_min_from(&profile(150)), (140.0, XMinFrom::Shade));
+        assert_eq!(search_x_min_from(&profile(40)), (X_MIN_LO, XMinFrom::Floor));
+        assert_eq!(search_x_min_from(&profile(230)), (X_MIN, XMinFrom::Fixed));
         // A pupil left of the prototype's window is found with the window moved left.
         let mut img = synthetic_eye(170.0, 200.0, 24.0);
         for y in 0..H {
