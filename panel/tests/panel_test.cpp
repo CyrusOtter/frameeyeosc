@@ -2188,7 +2188,8 @@ void testPreview(const FontSet& fonts) {
         // It opens the sheet over the tabs' content: its cross, three choices, two switches and freeze, inside the
         // card, apart from each other; the left column and every tab stay (none chosen: each closes it)
         CHECK(press(panel, PanelAction::PreviewOpen).action == PanelAction::None);
-        CHECK(panel.previewOpen() && panel.previewPictures());
+        // The pictures start off, so an eye never shows by accident
+        CHECK(panel.previewOpen() && !panel.previewPictures());
         panel.render(m);
         const std::vector<EyePanel::HitArea> own = previewButtons(panel);
         CHECK(own.size() == 7);
@@ -2215,8 +2216,19 @@ void testPreview(const FontSet& fonts) {
         // The button stays, now closing it
         CHECK(hits(panel, PanelAction::PreviewOpen).size() == 1);
 
-        // The pictures' switch (and only that) stops asking for them; the choices and the mirror keep it open
+        // The pictures' switch (and only that) asks for them and stops; the choices and the mirror keep it open
         CHECK(press(panel, PanelAction::PreviewCamera).action == PanelAction::None);
+        CHECK(panel.previewOpen() && panel.previewPictures());
+        panel.render(m);
+        press(panel, PanelAction::PreviewCamera);
+        CHECK(panel.previewOpen() && !panel.previewPictures());
+        panel.render(m);
+        press(panel, PanelAction::PreviewCamera);
+        CHECK(panel.previewPictures());
+        // Closed and opened again: off again
+        press(panel, PanelAction::PreviewClose);
+        panel.render(m);
+        press(panel, PanelAction::PreviewOpen);
         CHECK(panel.previewOpen() && !panel.previewPictures());
         panel.render(m);
         press(panel, PanelAction::PreviewCamera);

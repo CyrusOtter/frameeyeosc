@@ -1250,6 +1250,8 @@ void EyePanel::openAppsList() {
 void EyePanel::openPreview() {
     previewOpen_ = true;
     previewFrozen_ = false;
+    // The eye pictures start off each time, so an eye never shows by accident (in a screenshot or a stream)
+    previewCamera_ = false;
     previewFreezePending_ = false;
     // (over whatever shows; the light warning before a recording doesn't stay behind it)
     eyecamConfirm_.close();

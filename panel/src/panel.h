@@ -685,7 +685,7 @@ private:
     bool previewOpen_ = false;          ///< the eye preview is shown over the tabs' content
     eye_preview::Source previewSource_ = eye_preview::Source::Sent;  ///< ...which values drive its eyes
     bool previewMirror_ = true;         ///< ...as in a mirror (the right eye on the right; off: seen from the front)
-    bool previewCamera_ = true;         ///< ...with the eye cameras' pictures
+    bool previewCamera_ = false;        ///< ...with the eye cameras' pictures (off each time it opens)
     bool previewFrozen_ = false;        ///< ...stopped where it was
     bool previewFreezePending_ = false; ///< ...the values to keep are taken at the next draw
     eye_preview::View previewKept_;     ///< ...the values and pictures it stopped at
