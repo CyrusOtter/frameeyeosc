@@ -1551,6 +1551,30 @@ void testFitRunning(const FontSet& fonts) {
     // A fit running while another tab shows (re-centering when the headset was put on): that tab as usual
     panel.render(m);
     CHECK(hits(panel, PanelAction::FitStop).empty() && panel.hitAreas().size() > hits(panel, PanelAction::Tab).size());
+    // The eye preview open over the fit's tab as a fit starts (an automatic re-center): the left column (its button
+    // too) can't be pressed either; the tabs and the sheet's own buttons can
+    {
+        EyePanel over(fonts);
+        over.setTab(PanelTab::EyeFit);
+        PanelModel idle = modelWith(Lids::Valve, false);
+        over.render(idle);
+        press(over, PanelAction::PreviewOpen);
+        over.render(m);
+        CHECK(over.previewOpen() && hits(over, PanelAction::PreviewClose).size() == 1);
+        CHECK(hits(over, PanelAction::PreviewOpen).empty() && hits(over, PanelAction::Tab).size() >= 5);
+        for (const EyePanel::HitArea& area : over.hitAreas()) {
+            const PanelAction a = area.hit.action;
+            CHECK(a == PanelAction::Tab || a == PanelAction::PreviewClose || a == PanelAction::PreviewSource ||
+                  a == PanelAction::PreviewMirror || a == PanelAction::PreviewFreeze || a == PanelAction::PreviewCamera);
+            CHECK(a == PanelAction::Tab || area.x >= 416);
+        }
+        // Its own buttons still work (the fit goes on behind it)
+        press(over, PanelAction::PreviewMirror);
+        CHECK(over.previewOpen());
+        // The fit over: the left column again
+        over.render(idle);
+        CHECK(hits(over, PanelAction::PreviewOpen).size() == 1);
+    }
     // Stopped: back to the buttons, with why
     panel.setTab(PanelTab::EyeFit);
     m.fit.phase = gaze_fit::Phase::Failed;
@@ -2258,6 +2282,7 @@ void testPreview(const FontSet& fonts) {
         CHECK(panel.toRgba() != frozen);
 
         // Without the eye cameras in use: no pictures' switch and no "Camera" values to press, the rest as before
+        CHECK(panel.previewPictures());
         for (const int why : {0, 1, 2, 3}) {
             PanelModel without = m;
             if (why == 0) without.eyecam.visible = false;
@@ -2273,6 +2298,22 @@ void testPreview(const FontSet& fonts) {
             // (an eyecam-rec without the pictures still has the camera's values)
             CHECK(cameraValues == (why == 3));
             CHECK(hits(panel, PanelAction::PreviewMirror).size() == 1 && hits(panel, PanelAction::PreviewClose).size() == 1);
+            // The pictures' switch went off with them...
+            CHECK(panel.previewOpen() && !panel.previewPictures());
+            // ...and stays off once they can show again (no pictures by themselves when eyecam-rec comes back)
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::PreviewCamera).size() == 1 && !panel.previewPictures());
+            press(panel, PanelAction::PreviewCamera);
+            CHECK(panel.previewPictures());
+        }
+        // eyecam-rec refusing "preview on": the same
+        {
+            PanelModel refused = m;
+            refused.preview.refused = true;
+            panel.render(refused);
+            CHECK(hits(panel, PanelAction::PreviewCamera).empty() && !panel.previewPictures());
+            panel.render(m);
+            CHECK(!panel.previewPictures());
         }
         // Without frameeyeosc's samples, and with no pictures yet: drawn all the same
         PanelModel empty = m;

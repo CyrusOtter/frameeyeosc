@@ -263,6 +263,15 @@ void testReader() {
     other[0] = 'X';
     replaceFile(path, other);
     CHECK(reader.read(path, out, why) == ReadResult::Invalid && !why.empty());
+    // ...and let go of: not mapped and copied again while it is the same file (even put right in place), with the
+    // same why
+    const std::string first = why;
+    writeAt(path, 0, {'E', 'Y', 'P', 'V'});
+    why.clear();
+    CHECK(reader.read(path, out, why) == ReadResult::Invalid && why == first);
+    // Replaced by a good one: read
+    replaceFile(path, encodePictures(pictures, 200));
+    CHECK(reader.read(path, out, why) == ReadResult::Read);
     // Gone (the preview turned off): let go of
     ::unlink(path.c_str());
     CHECK(reader.read(path, out, why) == ReadResult::Missing);
@@ -326,6 +335,50 @@ void testAsker() {
     CHECK(asker.next(true, false, 12.1, command) && command == "preview on");
 }
 
+void testRefusal() {
+    View view;
+    // Refused (or no answer in time): shown, and why kept for kRefusedSec from the last refusal
+    CHECK(tookReply(view, false, 10.0) && view.refused);
+    CHECK(!refusalOver(view, 10.0 + kRefusedSec - 0.1) && view.refused);
+    CHECK(!tookReply(view, false, 12.0) && view.refused);
+    CHECK(!refusalOver(view, 12.0 + kRefusedSec - 0.1));
+    // Then forgotten (the switch can ask again), once
+    CHECK(refusalOver(view, 12.0 + kRefusedSec) && !view.refused);
+    CHECK(!refusalOver(view, 30.0));
+    // "ok": taken back at once
+    CHECK(tookReply(view, false, 40.0) && tookReply(view, true, 40.5) && !view.refused);
+    CHECK(!tookReply(view, true, 41.0));
+}
+
+void testPacer() {
+    DrawPacer pacer;
+    // Nothing new: nothing to draw
+    CHECK(!pacer.due(0.0));
+    pacer.changed();
+    CHECK(pacer.due(0.0));
+    pacer.drawn(0.0);
+    CHECK(!pacer.due(0.001));
+    // Samples at 90 a second while the loop runs at every display frame: drawn about 30 times a second
+    int draws = 0;
+    for (int k = 1; k <= 90; ++k) {
+        const double now = k / 90.0;
+        pacer.changed();
+        if (pacer.due(now)) {
+            pacer.drawn(now);
+            ++draws;
+        }
+    }
+    CHECK(draws >= 28 && draws <= 31);
+    // The loop's usual 33 ms passes: each draws (a little under 1/30 apart is enough)
+    pacer.drawn(10.0);
+    pacer.changed();
+    CHECK(pacer.due(10.0 + 0.0305));
+    // The last sample is drawn even with none after it
+    pacer.drawn(20.0);
+    pacer.changed();
+    CHECK(!pacer.due(20.01) && pacer.due(20.04));
+}
+
 void testFake() {
     View view;
     fake(view, 5000000000ull);
@@ -360,6 +413,8 @@ int main() {
     testFresh();
     testCameraState();
     testAsker();
+    testRefusal();
+    testPacer();
     testFake();
     if (gFailures == 0) std::printf("eye-preview-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

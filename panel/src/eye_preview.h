@@ -221,6 +221,8 @@ private:
     size_t size_ = 0;
     ino_t inode_ = 0;
     uint32_t lastSeq_ = 1;  ///< odd: nothing read yet
+    ino_t badInode_ = 0;    ///< a file found not to be a preview file (let go of; not read again until replaced)
+    std::string badWhy_;    ///< ...why
 };
 
 /**
@@ -288,11 +290,69 @@ struct View {
     bool hasPictures = false;    ///< the preview file was read
     Pictures pictures;           ///< ...as last read
     uint64_t nowNs = 0;          ///< CLOCK_MONOTONIC when drawn (the pictures' freshness)
-    bool refused = false;        ///< eyecam-rec refused "preview on"
+    bool refused = false;        ///< eyecam-rec refused "preview on" (or didn't answer it)...
+    double refusedAt = 0.0;      ///< ...last at this time (monotonic s)
 };
 
 /** Without a sample for this long (s), the drawn eyes say there is no eye data. */
 constexpr double kPacketStaleSec = 1.0;
+
+/**
+ * A refused "preview on" (an error, or no answer in time) shows why for this long (s); then the pictures' switch can be
+ * pressed again (it went off) to ask once more.
+ */
+constexpr double kRefusedSec = 5.0;
+
+/**
+ * Take eyecam-rec's answer to "preview on".
+ * @param view the sheet's values (refused, refusedAt)
+ * @param ok answered "ok"
+ * @param now monotonic seconds
+ * @return true if whether it is refused changed (draw again)
+ */
+bool tookReply(View& view, bool ok, double now);
+
+/**
+ * A refusal kRefusedSec old is forgotten (the switch can ask again).
+ * @param view the sheet's values
+ * @param now monotonic seconds
+ * @return true if it was (draw again)
+ */
+bool refusalOver(View& view, double now);
+
+/**
+ * The sheet is drawn for new values or pictures at most this often (s): about 30 a second, the panel's usual pace,
+ * also while the debug gaze dots run the loop at every display frame (each sample would draw it 90 times a second). A
+ * little under 1/30, so the loop's 33 ms passes each draw it.
+ */
+constexpr double kDrawSec = 0.03;
+
+/** When the sheet is drawn for what came in: at most every kDrawSec, and what came last is never left undrawn. */
+class DrawPacer {
+public:
+    /** New values or pictures came in. */
+    void changed() { pending_ = true; }
+
+    /**
+     * Whether to draw for them now.
+     * @param now monotonic seconds
+     * @return true if something came in and kDrawSec has passed since the last draw
+     */
+    bool due(double now) const { return pending_ && now - drawnAt_ >= kDrawSec; }
+
+    /**
+     * The panel was drawn (for this or anything else): what came in is on it.
+     * @param now monotonic seconds
+     */
+    void drawn(double now) {
+        pending_ = false;
+        drawnAt_ = now;
+    }
+
+private:
+    bool pending_ = false;
+    double drawnAt_ = -1e9;
+};
 
 /**
  * Made-up values and pictures for --fake-preview and the tests: both eyes open, the left one a little widened and from

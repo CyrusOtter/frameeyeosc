@@ -441,6 +441,50 @@ void testDriftLink() {
         h.in.stem = "eyes_2026-10-12_15-00-00";
         CHECK(h.step() == "driftlog on eyes_2026-10-12_15-00-00");
     }
+    {
+        // eyecam-rec restarting during a recording: once it had shown the recording's drift log on, the log off (or
+        // another panel file) sends "driftlog on" again at once
+        DriftRun d;
+        ready(d.in);
+        d.in.recording = true;
+        d.in.stem = stem;
+        d.in.now = 100.0;
+        CHECK(d.step() == "driftlog on " + stem);
+        CHECK(d.step().empty());  // (status.json not written since: not again)
+        d.in.driftlogOn = true;
+        d.in.driftlogPath = ours;
+        d.in.now = 101.0;
+        CHECK(d.step().empty() && d.step().empty());
+        d.in.eyecamRunning = false;
+        CHECK(d.step().empty());  // (gone: nothing to send to)
+        d.in.eyecamRunning = true;
+        d.in.driftlogOn = false;
+        d.in.driftlogPath.clear();
+        CHECK(d.step() == "driftlog on " + stem && d.link.on() == stem);
+        CHECK(d.step().empty());
+        // It shows <stem>_2 (the first file was there): this recording's
+        d.in.driftlogOn = true;
+        d.in.driftlogPath = "/home/steamos/eyecam/drift/" + stem + "_2.eyecam.csv";
+        CHECK(d.step().empty());
+        // Another recording's file: on again
+        d.in.driftlogPath = "/home/steamos/eyecam/drift/eyes_2026-10-12_15-00-00.eyecam.csv";
+        CHECK(d.step() == "driftlog on " + stem);
+        // Not shown after that (refused, or no answer): asked again only every kDriftRetrySec
+        d.in.driftlogOn = false;
+        d.in.now = 101.0 + recorder::kDriftRetrySec - 0.5;
+        CHECK(d.step().empty());
+        d.in.now = 101.0 + recorder::kDriftRetrySec;
+        CHECK(d.step(true).empty());  // (another command out)
+        CHECK(d.step() == "driftlog on " + stem);
+        CHECK(d.step().empty());
+        // One started by hand meanwhile is left alone, then and at the end
+        d.in.driftlogOn = true;
+        d.in.driftlogPath = byHand;
+        d.in.now += 100.0;
+        CHECK(d.step().empty());
+        d.in.recording = false;
+        CHECK(d.step().empty() && d.link.on().empty());
+    }
 }
 
 /**

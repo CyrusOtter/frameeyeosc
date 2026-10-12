@@ -262,9 +262,16 @@ ReadResult PictureReader::read(const std::string& path, Pictures& out, std::stri
     struct stat now {};
     if (::stat(path.c_str(), &now) != 0) {
         close();
+        badInode_ = 0;
         return ReadResult::Missing;
     }
     if (fd_ >= 0 && now.st_ino != inode_) close();
+    // Found not to be a preview file: not mapped and copied again until it is replaced
+    if (badInode_ != 0 && now.st_ino == badInode_) {
+        why = badWhy_;
+        return ReadResult::Invalid;
+    }
+    badInode_ = 0;
     if (fd_ < 0) {
         const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
         if (fd < 0) {
@@ -306,7 +313,12 @@ ReadResult PictureReader::read(const std::string& path, Pictures& out, std::stri
         std::atomic_thread_fence(std::memory_order_acquire);
         if (seq() != before) continue;
         Pictures pictures;
-        if (!parsePictures(copy.data(), copy.size(), pictures, why)) return ReadResult::Invalid;
+        if (!parsePictures(copy.data(), copy.size(), pictures, why)) {
+            badInode_ = inode_;
+            badWhy_ = why;
+            close();
+            return ReadResult::Invalid;
+        }
         lastSeq_ = before;
         out = std::move(pictures);
         return ReadResult::Read;
@@ -352,6 +364,19 @@ bool Asker::next(bool wanted, bool busy, double now, std::string& command) {
     if (!on_) return false;
     command = "preview off";
     on_ = false;
+    return true;
+}
+
+bool tookReply(View& view, bool ok, double now) {
+    const bool changed = view.refused == ok;
+    view.refused = !ok;
+    if (!ok) view.refusedAt = now;
+    return changed;
+}
+
+bool refusalOver(View& view, double now) {
+    if (!view.refused || now - view.refusedAt < kRefusedSec) return false;
+    view.refused = false;
     return true;
 }
 

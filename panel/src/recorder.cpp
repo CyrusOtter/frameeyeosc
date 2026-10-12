@@ -414,14 +414,25 @@ bool DriftLink::next(const DriftInputs& in, bool busy, std::string& command) {
     const bool seen = in.eyecamRunning && in.hasDriftlog;
     // A drift log started by hand is someone's own
     const bool byHand = seen && in.driftlogOn && !panelDriftFile(in.driftlogPath);
-    if (in.recording && !in.stem.empty() && in.stem != on_ && seen && in.camerasInUse && !byHand) {
-        command = "driftlog on " + in.stem;
-        on_ = in.stem;
-        checked_ = true;
-        return true;
+    if (in.recording && !in.stem.empty() && seen && in.camerasInUse && !byHand) {
+        // Its file is <stem>.eyecam.csv, or <stem>_2.eyecam.csv... (eyecam adds its own when that one is there)
+        const bool showsOurs = in.stem == on_ && in.driftlogOn && panelDriftFile(in.driftlogPath) &&
+                               baseName(in.driftlogPath).rfind(in.stem, 0) == 0;
+        if (showsOurs) shown_ = true;
+        // New, or gone since it showed (eyecam-rec restarted), or never shown for kDriftRetrySec (refused)
+        const bool again = in.stem == on_ && !showsOurs && (shown_ || in.now - sentAt_ >= kDriftRetrySec);
+        if (in.stem != on_ || again) {
+            command = "driftlog on " + in.stem;
+            on_ = in.stem;
+            checked_ = true;
+            shown_ = false;
+            sentAt_ = in.now;
+            return true;
+        }
     }
     if (!on_.empty() && (!in.recording || in.stem != on_)) {
         on_.clear();
+        shown_ = false;
         if (byHand) return false;
         command = "driftlog off";
         return true;

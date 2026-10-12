@@ -181,7 +181,11 @@ struct DriftInputs {
     bool hasDriftlog = false;    ///< its status.json has "driftlog" (an older eyecam-rec doesn't: nothing is sent)
     bool driftlogOn = false;     ///< ...it is on
     std::string driftlogPath;    ///< ...its file (or the last one)
+    double now = 0.0;            ///< monotonic seconds
 };
+
+/** A "driftlog on" that never showed in eyecam-rec's status (refused, or not answered) is sent again this often (s). */
+constexpr double kDriftRetrySec = 30.0;
 
 /**
  * eyecam's drift log (numbers only, one row per eye per second, in ~/eyecam/drift) alongside the eye log while the eye
@@ -189,7 +193,9 @@ struct DriftInputs {
  * eyecam-rec comes up during it), "driftlog off" once it ends, however it ends (stopped, failed, at its limit, the panel
  * exiting). A drift log started by hand (drift_….csv) is left alone: no "on" over it, no "off" for it. The first time
  * eyecam-rec is seen with no recording running, a panel's drift log still on (left by a panel that crashed during a
- * recording) is turned off. One command at a time: it waits while another is out.
+ * recording) is turned off. Once eyecam-rec showed the recording's drift log on, the log going off (or to another file
+ * that isn't one started by hand) during the recording, as when eyecam-rec restarts, sends "driftlog on" again at once;
+ * one that never showed is asked for again every kDriftRetrySec. One command at a time: it waits while another is out.
  */
 class DriftLink {
 public:
@@ -208,6 +214,8 @@ public:
 private:
     std::string on_;
     bool checked_ = false;  ///< eyecam-rec was seen with no recording (or the panel turned its log on)
+    bool shown_ = false;    ///< eyecam-rec's status showed on_'s drift log on since "driftlog on" last went out
+    double sentAt_ = 0.0;   ///< ...which was then
 };
 
 }  // namespace recorder

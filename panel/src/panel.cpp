@@ -768,6 +768,17 @@ std::vector<std::string> sentences(const std::string& text) {
 }
 
 /**
+ * Whether an action is one of the eye preview sheet's own buttons (its cross, choices, switches and freeze).
+ * @param action the action
+ * @return true if it is
+ */
+bool previewSheetAction(PanelAction action) {
+    return action == PanelAction::PreviewClose || action == PanelAction::PreviewSource ||
+           action == PanelAction::PreviewMirror || action == PanelAction::PreviewCamera ||
+           action == PanelAction::PreviewFreeze;
+}
+
+/**
  * Whether a fit is running (its targets are up).
  * @param fit the fit
  * @return true while it runs
@@ -888,9 +899,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
     if (hit.action != PanelAction::Quit) quitArmed_ = false;
     if (hit.action != PanelAction::ResetAll) resetArmed_ = false;
     // ...and closes the eye preview (a tab, the left column's notices): only its own buttons keep it
-    const bool previewButton = hit.action == PanelAction::PreviewOpen || hit.action == PanelAction::PreviewClose ||
-                               hit.action == PanelAction::PreviewSource || hit.action == PanelAction::PreviewMirror ||
-                               hit.action == PanelAction::PreviewCamera || hit.action == PanelAction::PreviewFreeze;
+    const bool previewButton = hit.action == PanelAction::PreviewOpen || previewSheetAction(hit.action);
     if (hit.action != PanelAction::None && !previewButton) previewOpen_ = false;
     switch (hit.action) {
         case PanelAction::PreviewOpen:
@@ -6781,7 +6790,9 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
     const bool cameraValues = eye_preview::cameraValuesAvailable(camera);
     // ("Camera" while the camera's values can't be had shows the values as sent)
     const Source source = previewSource_ == Source::Camera && !cameraValues ? Source::Sent : previewSource_;
-    const bool pictures = previewCamera_ && camera == CameraState::Available;
+    // The eye cameras can't give pictures: their switch goes off, to be pressed again once they can (as the loop does)
+    if (camera != CameraState::Available) previewCamera_ = false;
+    const bool pictures = previewCamera_;
     // A sheet over the content card (the tabs and the left column stay), like the other Frame apps' list
     drawCard(pen, kRightX, kContentY, kRight - kRightX, kContentH, 20, kCard, kBorder, 2);
     const double closeS = 48;
@@ -6819,8 +6830,8 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
                true);
     x += mirrorW + gap;
     const bool cameraUsable = camera == CameraState::Available;
-    drawToggle(pen, x, rowY, cameraW, rowH, t.previewPicture, {PanelAction::PreviewCamera, nullptr, 0},
-               previewCamera_ && cameraUsable, cameraUsable);
+    drawToggle(pen, x, rowY, cameraW, rowH, t.previewPicture, {PanelAction::PreviewCamera, nullptr, 0}, previewCamera_,
+               cameraUsable);
     x += cameraW + gap;
     drawIconButton(pen, x, rowY, freezeW, rowH, previewFrozen_ ? t.previewResume : t.previewFreeze,
                    {PanelAction::PreviewFreeze, nullptr, 0}, true, false, size,
@@ -6877,26 +6888,30 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
         const double chipSize = 14;
         const double lidW = pen.measure(lid, chipSize) + 22;
         const double pupilW = pen.measure(pupil, chipSize) + 22;
-        const double badgeW = e.camera ? cameraBadge(pen, t, 0, 0, false) : pen.measure(t.previewFromValve, 12, true) + 18;
+        // (where the eyelid came from: only for an eye with a sample)
+        const bool sampled = shown.valid && e.known;
+        const double badgeW = !sampled ? 0.0
+                              : e.camera ? cameraBadge(pen, t, 0, 0, false)
+                                         : pen.measure(t.previewFromValve, 12, true) + 18;
         const double chipGap = 8;
         const double chipsY = top + eyeH + 6;
-        double chipX = cx - (lidW + badgeW + pupilW + chipGap * 2) / 2;
+        double chipX = cx - (lidW + badgeW + pupilW + chipGap * (sampled ? 2 : 1)) / 2;
         const auto chip = [&](const char* text, double w) {
             fillRounded(pen, chipX, chipsY, w, chipsH, chipsH / 2, kControl);
             pen.text(chipX + 11, centerBaseline(chipsY, chipsH, chipSize), text, chipSize, kText);
             chipX += w + chipGap;
         };
         chip(lid, lidW);
-        if (shown.valid && e.camera) {
+        if (sampled && e.camera) {
             cameraBadge(pen, t, chipX, chipsY + chipsH / 2);
-        } else {
+        } else if (sampled) {
             const double h = 20;
             const double by = chipsY + (chipsH - h) / 2;
             fillRounded(pen, chipX, by, badgeW, h, h / 2, kControl);
             strokeRounded(pen, chipX, by, badgeW, h, h / 2, kBorder, 1);
             pen.text(chipX + 9, centerBaseline(by, h, 12), t.previewFromValve, 12, kTextMuted, true);
         }
-        chipX += badgeW + chipGap;
+        if (sampled) chipX += badgeW + chipGap;
         chip(pupil, pupilW);
         // The camera picture, with its temporal side toward the outside of the sheet (eyecam-rec gives both eyes with
         // it at the left: the one in the right column is flipped)
@@ -6966,8 +6981,9 @@ void EyePanel::render(const PanelModel& model) {
             case PanelTab::Eyecam: drawEyecam(pen, t, model, view); break;
         }
     }
-    // While a fit runs on its tab, the rest is dimmed and can't be pressed, except the tabs (leaving stops the fit)
-    if (tab_ == PanelTab::EyeFit && fitRunning(model.fit) && !previewOpen_) {
+    // While a fit runs on its tab, the rest is dimmed and can't be pressed, except the tabs (leaving stops the fit);
+    // also with the eye preview open over it (an automatic re-center starting), whose own buttons stay
+    if (tab_ == PanelTab::EyeFit && fitRunning(model.fit)) {
         pen.color(kBg, 0.72);
         cairo_rectangle(pen.cr, kStatusX, kStatusY, kStatusW, kStatusH);
         cairo_fill(pen.cr);
@@ -6975,7 +6991,10 @@ void EyePanel::render(const PanelModel& model) {
         cairo_rectangle(pen.cr, kRightX, kTabY, kRight - kRightX, kTabH);
         cairo_fill(pen.cr);
         for (Button& b : buttons_) {
-            if (b.hit.action != PanelAction::Tab && b.hit.action != PanelAction::FitStop) b.usable = false;
+            const PanelAction a = b.hit.action;
+            if (a != PanelAction::Tab && a != PanelAction::FitStop && !(previewOpen_ && previewSheetAction(a))) {
+                b.usable = false;
+            }
         }
     }
     if (promptOpen()) drawPrompt(pen, t);

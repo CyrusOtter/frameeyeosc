@@ -1504,6 +1504,7 @@ recorder::DriftInputs driftInputs(const recorder::View& recording, const PanelMo
     in.hasDriftlog = model.eyecam.status.hasDriftlog;
     in.driftlogOn = model.eyecam.status.driftlogOn;
     in.driftlogPath = model.eyecam.status.driftlogPath;
+    in.now = nowSeconds();
     return in;
 }
 
@@ -3457,6 +3458,7 @@ int runOverlay(const Options& options) {
     double lastPreviewSample = -1e9;
     std::string previewLogged;      // the last line logged about the pictures (each said once)
     bool previewOnSent = false;     // "preview on" went out (and no "off" since), for the log
+    eye_preview::DrawPacer previewPacer;  // the sheet drawn for its samples and pictures about 30 times a second
     double lastDotAt = 0.0;
     double dotIpd = gaze_fit::kDefaultIpdM;
     double dotDistance = 0.0;       // how far along the rays the dots are (gaze_debug_dots_distance_m), 0 until set
@@ -3847,7 +3849,7 @@ int runOverlay(const Options& options) {
                 model.preview.packet = packet;
                 model.preview.hasPacket = true;
                 lastPreviewSample = nowSeconds();
-                dirty = true;
+                previewPacer.changed();
             }
             if (got && wanted) {
                 lastDotAt = nowSeconds();
@@ -3876,7 +3878,8 @@ int runOverlay(const Options& options) {
 
         // The eye preview while its sheet shows (the dashboard open): the samples as they come (none for
         // kPacketStaleSec: none), eyecam-rec's pictures while they can show (asked for every kRenewSec, and "off" once
-        // they stop), drawn at the panel's usual pace while either comes in. Closed, it holds nothing
+        // they stop), drawn at the panel's usual pace while either comes in (eye_preview::DrawPacer: not at every
+        // sample while the debug dots run the loop at every display frame). Closed, it holds nothing
         {
             const double now = nowSeconds();
             if (previewing != previewShown) {
@@ -3892,8 +3895,16 @@ int runOverlay(const Options& options) {
                 model.preview.hasPacket = false;
                 dirty = true;
             }
+            // A refused "preview on" shows why for a while, then the switch can ask again
+            if (eye_preview::refusalOver(model.preview, now)) dirty = true;
             const eye_preview::CameraState camera = eye_preview::cameraState(
                 model.eyecam, SettingsView(model).flag(key::kCameraLids), model.preview.refused);
+            // The eye cameras can't give pictures (now): the switch goes off, and only pressing it again brings them
+            // back (not eyecam-rec coming back by itself)
+            if (camera != eye_preview::CameraState::Available && panel.previewPictures()) {
+                panel.stopPreviewPictures();
+                dirty = true;
+            }
             const bool pictures = previewing && panel.previewPictures() && camera == eye_preview::CameraState::Available;
             std::string command;
             if (previewAsker.next(pictures, previewControl.busy(), now, command)) {
@@ -3907,10 +3918,9 @@ int runOverlay(const Options& options) {
                 previewControl.send(socket, command, now);
             }
             if (previewControl.poll(now) || (previewControl.hasReply() && !previewControl.busy())) {
-                // ("preview on" refused: no pictures, said once; taken back by the next one that is answered "ok")
+                // ("preview on" refused, or not answered in time: no pictures, said once, why shown for kRefusedSec)
                 const eyecam::Reply& reply = previewControl.reply();
-                if (reply.command == "preview on" && model.preview.refused != !reply.ok) {
-                    model.preview.refused = !reply.ok;
+                if (reply.command == "preview on" && eye_preview::tookReply(model.preview, reply.ok, now)) {
                     if (!reply.ok) std::fprintf(stderr, "[preview] \"preview on\" refused: %s\n", reply.error.c_str());
                     dirty = true;
                 }
@@ -3922,7 +3932,7 @@ int runOverlay(const Options& options) {
                 if (read == eye_preview::ReadResult::Read) {
                     if (!model.preview.hasPictures) std::fprintf(stderr, "[preview] pictures from %s\n", path.c_str());
                     model.preview.hasPictures = true;
-                    dirty = true;
+                    previewPacer.changed();
                 }
                 const std::string line = read == eye_preview::ReadResult::Invalid ? why : std::string("read");
                 if (line != previewLogged) {
@@ -3936,6 +3946,7 @@ int runOverlay(const Options& options) {
                 previewReader.close();
                 dirty = true;
             }
+            if (previewPacer.due(now)) dirty = true;
             // (the pictures' age, at the draw)
             if (previewing) model.preview.nowNs = eye_preview::monotonicNs();
         }
@@ -4211,6 +4222,7 @@ int runOverlay(const Options& options) {
             vr.submitPanel(panel.toRgba().data());
             dirty = false;
             calmDrawn = calm;
+            previewPacer.drawn(nowSeconds());
             if (firstSubmit) {
                 firstSubmit = false;
                 vr.logOverlayState("after the first draw");
