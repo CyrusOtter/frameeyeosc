@@ -86,7 +86,7 @@ pub enum Msg {
     /// A raw frame of an anatomical eye (0 = L, 1 = R), 400x400 as stored; `upside_down`: its camera stores it upside
     /// down (the left eye's, see vision::UPSIDE_DOWN_EYE; decided by the camera, so --swap renaming the eyes does not
     /// move it, ring::Ring::upside_down). `pitch` and `open`: Valve's gaze pitch (degrees) and openness for that eye
-    /// (NaN without them; the openness only goes into the drift log).
+    /// (NaN without them; the openness is a hint for the extended pupil search and goes into the drift log).
     Frame { eye: usize, upside_down: bool, t_cam_ns: u64, pitch: f32, open: f32, data: Vec<u8> },
     /// Start collecting labelled samples for a calibration.
     Collect(CollectKind),
@@ -485,7 +485,7 @@ impl Worker {
             }
         }
         let started = Instant::now();
-        let mut o = self.engines[eye].process(img, pitch as f64, t, &self.params[eye]);
+        let mut o = self.engines[eye].process_open(img, pitch as f64, open as f64, t, &self.params[eye]);
         let processed = started.elapsed();
         // The panel's eye preview: this frame halved, with where the pupil was found and looked for, when one is due
         // (only while it is asked for; its own time, not live_ms)

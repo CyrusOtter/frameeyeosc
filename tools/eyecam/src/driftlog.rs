@@ -21,7 +21,7 @@ pub const CAP_BYTES: u64 = 50 << 20;
 pub const DIR_NAME: &str = "drift";
 
 pub const HEADER: &str = "wall_unix,t_raw,eye,wear,wear_s,frames,\
-x_min,x_max,y_min,y_max,x_min_src,x_min_set_s,x_min_frames,\
+x_min,x_max,y_min,y_max,x_min_src,x_min_set_s,x_min_frames,search_x_min,\
 pupil_share,pupil_cx,pupil_cy,pupil_r,iris_r,edge_held_share,\
 closed_share,box_f,box_open,box_open_n,box_ratio,box_ratio_max,\
 skin_px,ap_px,base_skin_px,base_ap_px,widen_step_px,ready,\
@@ -177,6 +177,7 @@ impl Second {
             s.x_min_from.name().to_string(),
             fmt(s.x_min_at - s.t_first, 1),
             s.x_min_frames.to_string(),
+            fmt(s.search_x_min, 0),
             fmt(self.pupil as f64 / n, 3),
             fmt(med(&self.cx), 1),
             fmt(med(&self.cy), 1),
@@ -438,6 +439,7 @@ mod tests {
             t_first,
             x_min: 180.0,
             xmax: 346.0,
+            search_x_min: 162.0,
             x_min_from: XMinFrom::Shade,
             x_min_at: t_first + 19.5,
             x_min_frames: 40,
@@ -528,7 +530,7 @@ mod tests {
         assert_eq!((get("wall_unix"), get("eye"), get("wear"), get("frames")), ("1700000001.000", "L", "0", "90"));
         assert_eq!((get("t_raw"), get("wear_s")), ("1000.989", "21.0"));
         assert_eq!((get("x_min"), get("x_max"), get("y_min"), get("y_max")), ("180", "346", "70", "320"));
-        assert_eq!((get("x_min_src"), get("x_min_set_s"), get("x_min_frames")), ("shade", "19.5", "40"));
+        assert_eq!((get("x_min_src"), get("x_min_set_s"), get("x_min_frames"), get("search_x_min")), ("shade", "19.5", "40", "162"));
         // 45 of 90 frames with the pupil at 240, 242, ..., 328: median 284
         assert_eq!((get("pupil_share"), get("pupil_cx"), get("pupil_cy"), get("pupil_r"), get("iris_r")), ("0.500", "284.0", "200.0", "20.0", "55.0"));
         // Frames 1, 31, 61 held at the edge; 9 closed (5, 15, ..., 85)
@@ -574,7 +576,7 @@ mod tests {
         log.push(0, &p, f64::NAN);
         log.finish(f64::NAN);
         let row = sink.lines()[1].clone();
-        assert_eq!(row, ",5.011,L,0,,1,180,346,70,320,shade,,40,0.000,,,,55.0,1.000,0.000,45.0,,2700,,,61.0,112.0,60.0,110.0,10.4,0,0.750,0.000,0.000,,-14.0");
+        assert_eq!(row, ",5.011,L,0,,1,180,346,70,320,shade,,40,162,0.000,,,,55.0,1.000,0.000,45.0,,2700,,,61.0,112.0,60.0,110.0,10.4,0,0.750,0.000,0.000,,-14.0");
     }
 
     #[test]

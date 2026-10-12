@@ -374,7 +374,7 @@ pub struct LiveOpts {
 }
 
 pub const LIVE_HEADER: &str = "eye,eye_index,t_cam,label,step,ok_pupil,skin_up,aperture,lower,pupil_ratio,box_f,r,pitch,v_open,\
-closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready,edge_held";
+closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready,edge_held,pupil_cx,pupil_cy,pupil_a,pupil_b,x_min,search_x_min,ext";
 
 /// The live engine over a session, both eyes in step, causally. Returns ms per processed frame.
 pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, String> {
@@ -395,6 +395,7 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
     let n = opts.limit.map_or(n, |l| l.min(n));
     let mut img = vec![0u8; FRAME];
     let pitch_of = |e: usize, t: f64| s.valve.nearest(t).map_or(f64::NAN, |j| s.valve.pitch[e][j]);
+    let open_of = |e: usize, t: f64| s.valve.nearest(t).map_or(f64::NAN, |j| s.valve.open[e][j]);
     if opts.prewarm {
         let mut warm = [EyeEngine::default(), EyeEngine::default()];
         'pass: for k in 0..n {
@@ -402,7 +403,7 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 if k < s.frames(e) {
                     s.read(e, k, &mut img).map_err(|err| err.to_string())?;
                     let t = s.t_cam[e].get(k).copied().unwrap_or(f64::NAN);
-                    warm[e].process(&img, pitch_of(e, t), t, &params[e]);
+                    warm[e].process_open(&img, pitch_of(e, t), open_of(e, t), t, &params[e]);
                 }
             }
             if warm.iter().all(EyeEngine::baseline_ready) {
@@ -463,7 +464,7 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
             let pitch = j.map_or(f64::NAN, |j| s.valve.pitch[e][j]);
             let v_open = j.map_or(f64::NAN, |j| s.valve.open[e][j]);
             let t0 = std::time::Instant::now();
-            let o = engines[e].process(&img, pitch, t, &params[e]);
+            let o = engines[e].process_open(&img, pitch, v_open, t, &params[e]);
             busy += t0.elapsed();
             processed += 1;
             last_t[e] = t;
@@ -514,6 +515,21 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 f(o.f.lower_frac),
                 (engines[e].baseline_ready() as u8).to_string(),
                 (o.edge_held as u8).to_string(),
+                f(o.f.pupil_cx),
+                f(o.f.pupil_cy),
+                f(o.f.pupil_a),
+                f(o.f.pupil_b),
+                f(o.x_min),
+                f(o.search_x_min),
+                // 1: the pupil came from the extended search; 2: it found one the engine dropped
+                (if o.f.diag.extended && o.f.ok_pupil {
+                    1
+                } else if o.f.diag.extended || o.f.diag.ext_refused {
+                    2
+                } else {
+                    0
+                })
+                .to_string(),
             ];
             writeln!(w, "{}", row.join(",")).map_err(|e| e.to_string())?;
         }
@@ -612,8 +628,10 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
                 continue;
             }
             s.read(e, k, &mut img).map_err(|err| err.to_string())?;
-            let pitch = s.valve.nearest(t).map_or(f64::NAN, |j| s.valve.pitch[e][j]);
-            let o = engines[e].process(&img, pitch, t, &params[e]);
+            let j = s.valve.nearest(t);
+            let pitch = j.map_or(f64::NAN, |j| s.valve.pitch[e][j]);
+            let open = j.map_or(f64::NAN, |j| s.valve.open[e][j]);
+            let o = engines[e].process_open(&img, pitch, open, t, &params[e]);
             if let (Some(l), _) = s.label_at(t, live::STEP_DELAY) {
                 samples[e].push(Sample::from_out(Label::parse(l), &o, t));
             }

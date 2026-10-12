@@ -39,23 +39,79 @@ const MAX_CANDIDATES: usize = 3;
 const EDGE_LEFT_SHARE: f64 = 0.4;
 /// The second search without the prior only looks at blobs at least this far (px) from it.
 const RETRY_MIN_JUMP: f64 = 40.0;
+/// A pupil from the extended search (`Search::find_x_min`) must have its small-x (temporal) edge left of `x_min` +
+/// this many px: one further in is for the search inside `x_min` to find, and is not taken from the extended one (the
+/// same distance as `live::EDGE_LOST_PX`).
+pub const EXT_EDGE_PX: f64 = 16.0;
+/// The largest pupil semi-axis (px) the extended search looks for (`refine_pupil` takes up to 60).
+const EXT_MAX_A: f64 = 60.0;
+
+/// What a pupil from the extended search must be like to be taken (the live engine fills it in from what it knows of
+/// the open eye; see live::EXT_MAX_PX). A pupil it refuses is not found: the lids and the box are measured where the
+/// last pupil was, as on any frame without one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExtCheck {
+    /// The smallest share of its rays that reach its edge, and the smallest b/a.
+    pub min_vis: f64,
+    pub min_ba: f64,
+    /// Its semi-axis, px, and the darkest its inside may be (`Pupil::inner`).
+    pub a: (f64, f64),
+    pub inner_max: f64,
+    /// Within this many px (third) of this point (the last pupil while its track is fresh), if given.
+    pub near: Option<(f64, f64, f64)>,
+    /// Valve's openness says the eye is closing: the extended search does not run.
+    pub closing: bool,
+}
+
+impl ExtCheck {
+    /// Any pupil the search finds.
+    pub const ANY: ExtCheck = ExtCheck {
+        min_vis: 0.0,
+        min_ba: 0.0,
+        a: (0.0, f64::INFINITY),
+        inner_max: f64::INFINITY,
+        near: None,
+        closing: false,
+    };
+
+    pub fn accepts(&self, p: &Pupil) -> bool {
+        p.vis >= self.min_vis
+            && p.b / p.a >= self.min_ba
+            && (self.a.0..=self.a.1).contains(&p.a)
+            && p.inner <= self.inner_max
+            && self.near.is_none_or(|(x, y, d)| (p.cx - x).hypot(p.cy - y) <= d)
+    }
+}
 
 /// How the pupil is searched for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Search {
-    /// Left edge of the search window (and of the lid and box regions).
+    /// Left edge of the search window, and of the lid and box regions (they never reach left of it).
     pub x_min: f64,
+    /// Left edge of the extended search (at most `x_min`): when the search inside `x_min` finds no pupil, the blobs
+    /// are looked for once more from here, and only a pupil reaching into the edge zone is taken (EXT_EDGE_PX). The
+    /// lids, the iris box and everything else stay at `x_min`. Equal to `x_min`: no extended search.
+    pub find_x_min: f64,
+    /// What a pupil from the extended search must be like.
+    pub ext: ExtCheck,
     /// The prototype's rules (`--compat`): left edge fixed at X_MIN, blobs touching it dropped, only the best blob
     /// refined, no second try without the prior.
     pub legacy: bool,
 }
 
 impl Search {
-    pub const LEGACY: Search = Search { x_min: X_MIN, legacy: true };
+    pub const LEGACY: Search = Search { x_min: X_MIN, find_x_min: X_MIN, ext: ExtCheck::ANY, legacy: true };
 
     /// The live rules with this left edge.
     pub fn live(x_min: f64) -> Search {
-        Search { x_min: x_min.clamp(X_MIN_LO, X_MIN), legacy: false }
+        Search::live_ext(x_min, x_min, ExtCheck::ANY)
+    }
+
+    /// The live rules with this left edge and the extended search from `find_x_min` (within [X_MIN_LO, x_min]).
+    pub fn live_ext(x_min: f64, find_x_min: f64, ext: ExtCheck) -> Search {
+        let x_min = x_min.clamp(X_MIN_LO, X_MIN);
+        let find_x_min = if find_x_min.is_finite() { find_x_min.clamp(X_MIN_LO, x_min) } else { x_min };
+        Search { x_min, find_x_min, ext, legacy: false }
     }
 }
 
@@ -86,6 +142,15 @@ pub struct Diag {
     pub gated: bool,
     /// The engine forgot its search prior on this frame (too many frames without a pupil).
     pub prior_reset: bool,
+    /// A blob cut by the window's left edge refined into an ellipse but was refused for its missing left edge
+    /// (shading, or a pupil the window cuts).
+    pub left_refused: bool,
+    /// The search inside `x_min` found nothing and the extended one ran (`Search::find_x_min`) ...
+    pub ext_tried: bool,
+    /// ... and the pupil came from it ...
+    pub extended: bool,
+    /// ... or it found one `Search::ext` refused (not like the open pupil, or off its track).
+    pub ext_refused: bool,
 }
 
 impl Default for Diag {
@@ -100,6 +165,10 @@ impl Default for Diag {
             left_edge: false,
             gated: false,
             prior_reset: false,
+            left_refused: false,
+            ext_tried: false,
+            extended: false,
+            ext_refused: false,
         }
     }
 }
@@ -310,23 +379,28 @@ impl Extractor {
     ) -> (Features, Option<Pupil>) {
         let mut f = Features::default();
         let search = self.search;
-        let (open_x0, opf_x0) = if search.legacy {
-            (OPEN_X0, OPF_X0)
+        let ext = !search.legacy && search.find_x_min < search.x_min;
+        // The first pass's rays stop at the columns it always had (`refine_pupil`), also when the opening is worked
+        // out further left for the extended search: the columns from x_min - OPEN_BEFORE + 8 on are the same either
+        // way, so the search inside x_min, the lids and the box come out as without the extended search.
+        let (open_x0, opf_x0, first_opf_x0) = if search.legacy {
+            (OPEN_X0, OPF_X0, OPF_X0)
         } else {
             let x0 = (search.x_min as usize).saturating_sub(OPEN_BEFORE);
-            (x0, x0 + 8)
+            let x0_ext = (search.find_x_min as usize).saturating_sub(OPEN_BEFORE);
+            (x0_ext, x0_ext + 8, x0 + 8)
         };
         vision::open9_cols(img, W, H, open_x0, W, &mut self.morph, &mut self.op);
         vision::gauss_u8(&self.op, W, H, &self.k1, Rect { x0: opf_x0, y0: 0, x1: W, y1: H }, &mut self.gauss, &mut self.opf);
-        self.opf_x0 = opf_x0;
+        self.opf_x0 = first_opf_x0;
         f.diag.x_min = search.x_min;
         let p = if search.legacy {
-            self.find_pupil_blob(xmax, prev, &mut f.diag);
+            self.find_pupil_blob(search.x_min, xmax, prev, &mut f.diag);
             let blob = self.cands.first().copied();
             blob.and_then(|b| self.refine_pupil(b.c, b.r, xmax)).map(|x| x.0)
         } else {
-            self.find_pupil_blob(xmax, prev, &mut f.diag);
-            let mut p = self.refine_candidates(xmax, None, &mut f.diag);
+            self.find_pupil_blob(search.x_min, xmax, prev, &mut f.diag);
+            let mut p = self.refine_candidates(xmax, None, None, &mut f.diag);
             if p.is_none()
                 && let Some(pv) = prev
             {
@@ -334,8 +408,23 @@ impl Extractor {
                 // else (near the prior this would only find the same blob at another threshold: lids half over the
                 // pupil, as in a squint, which the prototype does not count as a pupil either).
                 f.diag.retried = true;
-                self.find_pupil_blob(xmax, None, &mut f.diag);
-                p = self.refine_candidates(xmax, Some(pv), &mut f.diag);
+                self.find_pupil_blob(search.x_min, xmax, None, &mut f.diag);
+                p = self.refine_candidates(xmax, Some(pv), None, &mut f.diag);
+            }
+            if p.is_none() && ext && !search.ext.closing {
+                // Nothing inside x_min: once more from the extended edge, for a pupil the window's edge cuts (its
+                // blob merged with the shading at the edge, or too little of it inside). What this pass saw stays
+                // out of the diagnosis (the calibration report describes the search inside x_min).
+                self.opf_x0 = opf_x0;
+                f.diag.ext_tried = true;
+                // Only as far right as such a pupil reaches (its small-x edge left of x_min + EXT_EDGE_PX, its
+                // semi-axis at most the check's): the blobs further in were the first pass's to take or leave.
+                let x_hi = (search.x_min + EXT_EDGE_PX + 2.0 * search.ext.a.1.min(EXT_MAX_A) + 4.0).min(xmax);
+                let mut d = Diag::default();
+                self.find_pupil_blob(search.find_x_min, x_hi, prev, &mut d);
+                p = self.refine_candidates(xmax, None, Some((search.x_min + EXT_EDGE_PX, search.ext)), &mut d);
+                f.diag.extended = p.is_some();
+                f.diag.ext_refused = d.ext_refused;
             }
             p
         };
@@ -380,12 +469,11 @@ impl Extractor {
         (f, Some(p))
     }
 
-    /// Dark compact blobs in the opened, blurred image, best first, into `self.cands`. The prototype's rules keep
-    /// only the best one and drop blobs that touch the window's left edge; the live ones keep up to MAX_CANDIDATES
-    /// and keep blobs cut by the left edge (`refine_candidates` decides).
-    fn find_pupil_blob(&mut self, xmax: f64, prev: Option<(f64, f64)>, diag: &mut Diag) {
+    /// Dark compact blobs in the opened, blurred image from column `xs` to `xmax`, best first, into `self.cands`. The
+    /// prototype's rules keep only the best one and drop blobs that touch the window's left edge; the live ones keep up
+    /// to MAX_CANDIDATES and keep blobs cut by the left edge (`refine_candidates` decides).
+    fn find_pupil_blob(&mut self, xs: f64, xmax: f64, prev: Option<(f64, f64)>, diag: &mut Diag) {
         let legacy = self.search.legacy;
-        let xs = self.search.x_min;
         let (x0, y0, x1, y1) = (xs as usize, SEARCH_Y0, (pint(xmax).clamp(xs as isize + 1, W as isize)) as usize, SEARCH_Y1);
         let (sw, sh) = (x1 - x0, y1 - y0);
         let opf = &self.opf;
@@ -477,20 +565,40 @@ impl Extractor {
     /// Refine the candidates in order; the first that gives a pupil wins. A blob cut by the window's left edge also
     /// needs the pupil's edge on the rays pointing left (outside the window), and no pupil may be centred past the
     /// lens edge (an arc of dark lens band fitted as an ellipse). Blobs within RETRY_MIN_JUMP of `away_from` are
-    /// skipped.
-    fn refine_candidates(&mut self, xmax: f64, away_from: Option<(f64, f64)>, diag: &mut Diag) -> Option<Pupil> {
+    /// skipped. With `edge_zone` (the extended search), only a pupil whose small-x edge is left of its x counts, and
+    /// only if its check accepts it.
+    fn refine_candidates(
+        &mut self,
+        xmax: f64,
+        away_from: Option<(f64, f64)>,
+        edge_zone: Option<(f64, ExtCheck)>,
+        diag: &mut Diag,
+    ) -> Option<Pupil> {
         for i in 0..self.cands.len() {
             let c = self.cands[i];
             if away_from.is_some_and(|(x, y)| (c.c.0 - x).hypot(c.c.1 - y) < RETRY_MIN_JUMP) {
                 continue;
             }
-            if let Some((p, left_share)) = self.refine_pupil(c.c, c.r, xmax)
-                && (!c.left || left_share >= EDGE_LEFT_SHARE)
-                && p.cx < xmax
-            {
-                diag.left_edge = c.left;
-                return Some(p);
+            let Some((p, left_share)) = self.refine_pupil(c.c, c.r, xmax) else { continue };
+            let left_ok = !c.left || left_share >= EDGE_LEFT_SHARE;
+            if !left_ok {
+                diag.left_refused = true;
+                continue;
             }
+            let before_lens = p.cx < xmax;
+            if !before_lens {
+                continue;
+            }
+            match edge_zone {
+                Some((z, _)) if p.cx - p.a >= z => continue,
+                Some((_, check)) if !check.accepts(&p) => {
+                    diag.ext_refused = true;
+                    continue;
+                }
+                _ => {}
+            }
+            diag.left_edge = c.left;
+            return Some(p);
         }
         None
     }
@@ -980,6 +1088,67 @@ mod tests {
     }
 
     #[test]
+    fn the_extended_search_finds_a_pupil_past_the_window_edge_and_measures_the_rest_at_x_min() {
+        // The pupil spans x 138..182, all of it left of the window's edge at 186.
+        let img = synthetic_eye(160.0, 200.0, 22.0);
+        let mut ex = Extractor { search: Search::live(186.0), ..Extractor::default() };
+        let (f, p) = ex.extract(&img, 347.0, Some((165.0, 200.0)), Some(55.0), None);
+        assert!(p.is_none() && !f.diag.ext_tried, "no extended search with find_x_min = x_min: {:?}", f.diag);
+        // From 162: found (the blob cut by 162, its left edge on the rays pointing left)
+        ex.search = Search::live_ext(186.0, 162.0, ExtCheck::ANY);
+        let (f, p) = ex.extract(&img, 347.0, Some((165.0, 200.0)), Some(55.0), None);
+        let p = p.expect("pupil");
+        assert!((p.cx - 160.0).abs() < 1.5 && (p.a - 22.0).abs() < 1.5, "{p:?}");
+        assert!(f.ok_pupil && f.diag.ext_tried && f.diag.extended && f.diag.x_min == 186.0, "{:?}", f.diag);
+        // The lids and the box are measured as for the same pupil lost there: from x_min, not from 162
+        let mut lost = Extractor { search: Search::live(186.0), ..Extractor::default() };
+        let (g, _) = lost.extract(&img, 347.0, None, Some(55.0), Some(&p));
+        assert!(!g.ok_pupil && g.box_mean.is_finite());
+        assert_eq!((f.box_mean, f.upper_skin_y, f.lower_y), (g.box_mean, g.upper_skin_y, g.lower_y));
+        // Refused by the check (too big for the open pupil): not found, and measured where the last pupil was
+        let check = ExtCheck { a: (30.0, 40.0), ..ExtCheck::ANY };
+        ex.search = Search::live_ext(186.0, 162.0, check);
+        let (f, p2) = ex.extract(&img, 347.0, Some((165.0, 200.0)), Some(55.0), Some(&p));
+        assert!(p2.is_none() && !f.diag.extended && f.diag.ext_refused, "{:?}", f.diag);
+        assert_eq!(f.box_mean, g.box_mean);
+        // Off its track, or Valve says the eye is closing: not found either (no extended search at all for the latter)
+        ex.search = Search::live_ext(186.0, 162.0, ExtCheck { near: Some((250.0, 200.0, 40.0)), ..ExtCheck::ANY });
+        assert!(ex.extract(&img, 347.0, None, Some(55.0), None).1.is_none());
+        ex.search = Search::live_ext(186.0, 162.0, ExtCheck { closing: true, ..ExtCheck::ANY });
+        let (f, p2) = ex.extract(&img, 347.0, None, Some(55.0), None);
+        assert!(p2.is_none() && !f.diag.ext_tried);
+        // A pupil the window finds itself is the first pass's, as before
+        let inside = synthetic_eye(250.0, 200.0, 22.0);
+        ex.search = Search::live_ext(186.0, 162.0, ExtCheck::ANY);
+        let (f, p) = ex.extract(&inside, 347.0, None, None, None);
+        assert!(p.is_some() && !f.diag.ext_tried && !f.diag.extended);
+        // The extended edge is never right of x_min, nor left of X_MIN_LO
+        assert_eq!(Search::live_ext(186.0, 200.0, ExtCheck::ANY).find_x_min, 186.0);
+        assert_eq!(Search::live_ext(110.0, 80.0, ExtCheck::ANY).find_x_min, X_MIN_LO);
+    }
+
+    #[test]
+    fn the_extended_search_leaves_the_first_pass_as_it_was() {
+        // Shading left of 186 with a bulge into the window, and a pupil the first pass finds: the same pupil and the same
+        // features whether the extended search is on or not (it only runs when the first pass finds nothing).
+        let mut img = synthetic_eye(275.0, 195.0, 22.0);
+        shade(&mut img);
+        let mut a = Extractor { search: Search::live(186.0), ..Extractor::default() };
+        let mut b = Extractor { search: Search::live_ext(186.0, 162.0, ExtCheck::ANY), ..Extractor::default() };
+        let (fa, pa) = a.extract(&img, 347.0, None, None, None);
+        let (fb, pb) = b.extract(&img, 347.0, None, None, None);
+        assert_eq!(format!("{fa:?} {pa:?}"), format!("{fb:?} {pb:?}"));
+        // The shading alone is not a pupil for the extended search either
+        let mut img = vec![120u8; W * H];
+        for v in img.iter_mut().skip(350).step_by(W) {
+            *v = 4;
+        }
+        shade(&mut img);
+        let (f, p) = b.extract(&img, 347.0, None, None, None);
+        assert!(p.is_none() && f.diag.ext_tried && !f.diag.extended, "{:?}", f.diag);
+    }
+
+    #[test]
     fn the_search_window_follows_the_temporal_shading() {
         let profile = |end: usize| (0..W).map(|x| if x < end { 8.0 } else { 80.0 }).collect::<Vec<f64>>();
         assert_eq!(search_x_min(&profile(198)), X_MIN, "the developer's recordings: the prototype's edge");
@@ -1036,7 +1205,7 @@ mod bench {
             let b = Instant::now();
             vision::gauss_u8(&ex.op, W, H, &ex.k1, Rect { x0: OPF_X0, y0: 0, x1: W, y1: H }, &mut ex.gauss, &mut ex.opf);
             let c = Instant::now();
-            ex.find_pupil_blob(346.0, prev, &mut Diag::default());
+            ex.find_pupil_blob(ex.search.x_min, 346.0, prev, &mut Diag::default());
             let d = Instant::now();
             let p = ex.cands.first().copied().and_then(|b| ex.refine_pupil(b.c, b.r, 346.0));
             let e = Instant::now();

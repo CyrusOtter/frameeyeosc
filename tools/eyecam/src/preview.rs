@@ -69,7 +69,8 @@ impl Marks {
         let seen = f.ok_pupil && f.pupil_cx.is_finite() && f.pupil_cy.is_finite() && f.pupil_a.is_finite();
         Self {
             pupil: seen.then(|| ((f.pupil_cx / 2.0) as f32, (f.pupil_cy / 2.0) as f32, (f.pupil_a / 2.0) as f32)),
-            window: [o.x_min, WINDOW_Y.0, o.xmax, WINDOW_Y.1].map(|v| (v / 2.0) as f32),
+            // The left edge as far as the pupil was looked for: the extended search's when it reaches past x_min.
+            window: [o.search_x_min, WINDOW_Y.0, o.xmax, WINDOW_Y.1].map(|v| (v / 2.0) as f32),
             closed: o.closed,
         }
     }
@@ -332,6 +333,7 @@ mod tests {
         o.f = Features { ok_pupil: seen, pupil_cx: 240.0, pupil_cy: 190.0, pupil_a: 21.0, ..Features::default() };
         o.closed = closed;
         o.x_min = 186.0;
+        o.search_x_min = 186.0;
         o.xmax = 346.0;
         o
     }
@@ -375,6 +377,10 @@ mod tests {
         assert_eq!((seen.time_ns, seen.count, seen.flags), ([6_000, 7_000], [1, 2], [CLOSED, PUPIL_FOUND]));
         assert_eq!(seen.marks[1], [120.0, 95.0, 10.5, 93.0, 35.0, 173.0, 160.0]);
         assert!(seen.marks[0][0].is_nan() && seen.marks[0][3] == 93.0);
+        // The window's left edge is where the pupil was looked for: the extended search's when it reaches further
+        let mut ext = out(true, false);
+        ext.search_x_min = 162.0;
+        assert_eq!(Marks::of(&ext).window, [81.0, 35.0, 173.0, 160.0]);
         let mut half = vec![0u8; SIDE * SIDE];
         halve(&f, &mut half);
         assert_eq!(seen.pictures[0], half);

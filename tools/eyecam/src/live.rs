@@ -64,6 +64,51 @@ const EDGE_LOST_PX: f64 = 16.0;
 /// measure 0.3-0.8 (99% below 1.03 on 2026-10-03/08, below 1.2 on 10-09), the eyes falsely closed looking outward
 /// 1.06-1.59 (95% above 1.27).
 const EDGE_OPEN_AP: f64 = 1.2;
+/// The extended pupil search (`feat::Search::find_x_min`, `search_x_min` in the drift log): how far (px) its left edge
+/// may go past `x_min` toward the ear. `x_min` is where the temporal shading ends minus 10 px, fixed in the first 20 s of
+/// a wear; lying down darkens the frame, so it moves in while the pupil moves out (2026-10-12 guided recordings, the
+/// right eye's pupil found in 0.66 of the open steps sitting, 0.39 on the back and 0.09 on the right side; on the side
+/// its temporal edge sat a few px past x_min for the whole minute). Moving x_min itself 10 px further out (shading
+/// end - 20) found it lying down (0.78 / 0.65) but lost blinks sitting (1042 -> 1002 short closes over the free
+/// recordings, one eye 69 -> 48, and a new 7 s false close): x_min also bounds the iris box, the lids and the edge
+/// hold, and a box with shading in it no longer brightens enough over a closed lid. So x_min stays, and only the
+/// pupil search reaches further, and only when the search inside x_min finds nothing. Replays (2026-10-12): the right
+/// eye's pupil in 0.73 / 0.70 / 0.65 of the open steps sitting / on the back / on the side, the side's close steps
+/// read closed 0.99 (0 before) and its 6 s false close gone; the 7 free recordings (3 min sitting each) caught 320 of
+/// Valve's 341 closes (321 before) with 504 short closes where Valve closed too (506), false closes 21.3 s (23.7, none
+/// new); the 10 wear calibrations found the pupil in as many normal-step frames or more (one eye 276 -> 465 of 486)
+/// with the same fitted levels (within 0.008). The pupils it found had their temporal edge up to 16 px past x_min
+/// (medians 13 on the side, 8 on the back); where the shading reaches the pupil itself (the iris around it in the
+/// dark), no edge finds it, and the edge hold keeps the eye open.
+pub const EXT_MAX_PX: f64 = 24.0;
+/// The extended search's edge keeps this many px (`feat::EXT_EDGE_PX`) left of a pupil found near it, and opens to
+/// EXT_MAX_PX when the pupil is lost with its last small-x edge within this of it (or when the search inside x_min
+/// refused a blob cut by its edge that refined into an ellipse: the first pupil of a wear may never be seen inside).
+const EXT_NEAR_PX: f64 = feat::EXT_EDGE_PX;
+/// It comes back toward x_min this fast (px/s) while the pupil is seen with its small-x edge EXT_NEAR_PX or more
+/// inside x_min (24 px in 6 s): a glance back in does not close it at once.
+const EXT_BACK_PX_S: f64 = 4.0;
+/// A pupil from the extended search is taken only when it looks like the open eye's pupil: at least this share of
+/// its rays reached its edge, this round (b/a), 0.6-1.3 x the open pupil's size (the crease check takes 0.45, for a
+/// pupil in bright light at 0.55-0.65 x; stricter here, where the shading's blobs are as dark), at most EXT_DARKER
+/// levels lighter inside
+/// (before the open pupil is known, the first 30 samples of a wear: a semi-axis within EXT_A_PX); and while Valve's
+/// openness for the eye is known, it is at least EXT_VALVE_OPEN. Without Valve's openness, it must be within
+/// EXT_TRACK_PX of the last pupil when that was seen within EXT_TRACK_S. Both guard against what a blink leaves near
+/// where the pupil was: the pupil half under the closing lid, lashes. The extended search runs on every frame without
+/// a pupil while it is open, and such a "pupil" moves the place the iris box is measured at to the shaded edge, where a
+/// closed lid no longer reads bright enough: before the Valve check, 2026-10-09 16:37 lost a 0.4 s close (Valve's
+/// openness 0) to a pupil found at 0.26, and the 10-09 user calibration a blink's start to one found at 0.
+/// The track alone was too strict and too weak at once: a glance back from looking down (10-12 10:02, 70 px in a
+/// frame) was refused for 1.4 s and read closed, and it does not tell a lid-cut pupil from the pupil.
+const EXT_MIN_VIS: f64 = 0.5;
+const EXT_MIN_BA: f64 = 0.5;
+const EXT_SIZE: (f64, f64) = (0.6, 1.3);
+const EXT_DARKER: f64 = 10.0;
+const EXT_TRACK_S: f64 = 1.0;
+const EXT_TRACK_PX: f64 = 40.0;
+const EXT_A_PX: (f64, f64) = (8.0, 45.0);
+const EXT_VALVE_OPEN: f64 = 0.6;
 /// The lid features are causal medians over this long (5 frames at 90 fps; an odd number, at least 3).
 const MEDIAN_S: f64 = 5.0 / FPS;
 /// The long-run medians (iris radius, the open eye's box level, pupil size and darkness, typical pitch) take a
@@ -189,12 +234,14 @@ pub struct Tune {
     pub gaze_drop: bool,
     /// Not closed while the pupil is lost at the window's (temporal) edge (see EDGE_LOST_PX).
     pub edge_hold: bool,
+    /// Look for a pupil the window's left edge cuts past it (see EXT_MAX_PX).
+    pub ext_search: bool,
 }
 
 impl Default for Tune {
     fn default() -> Self {
         let (wide_start, wide_width) = wide_curve(DEFAULT_WIDEN_SENSITIVITY);
-        Self { wide_start, wide_width, track: true, gaze_drop: true, edge_hold: true }
+        Self { wide_start, wide_width, track: true, gaze_drop: true, edge_hold: true, ext_search: true }
     }
 }
 
@@ -232,8 +279,10 @@ pub struct Out {
     pub r: f64,
     pub pitch: f64,
     pub xmax: f64,
-    /// The pupil search's left edge (`feat::search_x_min`).
+    /// The pupil search's left edge (`feat::search_x_min`): also the lid and iris-box regions' and the edge hold's.
     pub x_min: f64,
+    /// The extended pupil search's left edge for this frame (`x_min` when it is not extended; see EXT_MAX_PX).
+    pub search_x_min: f64,
     /// px from the last pupil seen's small-x (temporal) edge to `x_min` (NaN before the first pupil).
     pub edge_gap: f64,
     /// No pupil, the last one at the window's (temporal) edge: not closed, the eyelid values held (see EDGE_LOST_PX).
@@ -258,6 +307,8 @@ pub struct WearState {
     /// The pupil search window: x from `x_min` to `xmax`, rows feat::SEARCH_Y0..SEARCH_Y1.
     pub x_min: f64,
     pub xmax: f64,
+    /// The extended pupil search's left edge after the last frame (EXT_MAX_PX).
+    pub search_x_min: f64,
     pub x_min_from: feat::XMinFrom,
     /// The frame time (s) x_min and xmax were last worked out on, and from how many frames' column means (they stop
     /// after 40, about 20 s into a wear).
@@ -400,6 +451,9 @@ pub struct EyeEngine {
     /// Where x_min came from, and the time (s) of the frame it was last worked out on (the drift log).
     x_min_from: feat::XMinFrom,
     x_min_at: f64,
+    /// The extended pupil search's left edge (EXT_MAX_PX), and the time (s) the last pupil was seen.
+    find_x_min: f64,
+    prev_p_t: f64,
     r_est: LongMedian,
     skin: Win,
     ap: Win,
@@ -548,6 +602,8 @@ impl Default for EyeEngine {
             x_min: feat::X_MIN,
             x_min_from: feat::XMinFrom::Fixed,
             x_min_at: f64::NAN,
+            find_x_min: feat::X_MIN,
+            prev_p_t: f64::NAN,
             // 30 s for R, 60 s for the open box level, 20 s for the open pupil.
             r_est: LongMedian::new(30.0),
             skin: Win::new(),
@@ -615,6 +671,26 @@ impl EyeEngine {
         self.prev = None;
         self.prev_p = None;
         self.nopupil = 0;
+        self.find_x_min = self.x_min;
+    }
+
+    /// What a pupil from the extended search (`feat::Search::find_x_min`) must be like on a frame at `t` (see
+    /// EXT_MIN_VIS). `valve_open`: Valve's openness for this eye (NaN without it). Once the open pupil is known these
+    /// are stricter than the closed-lid crease check, which then never drops such a pupil (and its box: the lids and
+    /// the box of a pupil the check refuses are measured where the last pupil was).
+    fn ext_check(&self, t: f64, valve_open: f64) -> feat::ExtCheck {
+        let known = self.a_open.len() >= 30;
+        feat::ExtCheck {
+            min_vis: EXT_MIN_VIS,
+            min_ba: EXT_MIN_BA,
+            a: if known { (EXT_SIZE.0 * self.a_open.value, EXT_SIZE.1 * self.a_open.value) } else { EXT_A_PX },
+            inner_max: if known { self.inner_open.value + EXT_DARKER } else { f64::INFINITY },
+            near: self
+                .prev_p
+                .filter(|_| !valve_open.is_finite() && t - self.prev_p_t < EXT_TRACK_S)
+                .map(|q| (q.cx, q.cy, EXT_TRACK_PX)),
+            closing: valve_open < EXT_VALVE_OPEN,
+        }
     }
 
     /// What the engine holds for this wear (read only; the drift log).
@@ -623,6 +699,7 @@ impl EyeEngine {
             t_first: self.t_first,
             x_min: self.x_min,
             xmax: self.xmax,
+            search_x_min: self.find_x_min,
             x_min_from: self.x_min_from,
             x_min_at: self.x_min_at,
             x_min_frames: self.cm_n,
@@ -671,6 +748,12 @@ impl EyeEngine {
 
     /// Process one upright frame. `pitch`: Valve gaze pitch of this eye (degrees) or NaN; `t`: frame time (s).
     pub fn process(&mut self, img: &[u8], pitch: f64, t: f64, params: &Params) -> Out {
+        self.process_open(img, pitch, f64::NAN, t, params)
+    }
+
+    /// `process` with Valve's openness for this eye (0..1, NaN without it): only a hint for the extended pupil search
+    /// (EXT_VALVE_OPEN), nothing else uses it.
+    pub fn process_open(&mut self, img: &[u8], pitch: f64, valve_open: f64, t: f64, params: &Params) -> Out {
         self.frame_no += 1;
         self.rate.push(t);
         let fps = self.rate.fps();
@@ -693,7 +776,11 @@ impl EyeEngine {
             (self.x_min, self.x_min_from) = feat::search_x_min_from(&m);
             self.x_min_at = t;
         }
-        self.ex.search = feat::Search::live(self.x_min);
+        // The extended search's edge: within EXT_MAX_PX past x_min (and not past X_MIN_LO), x_min itself when off.
+        let ext_lo = if params.tune.ext_search { (self.x_min - EXT_MAX_PX).max(feat::X_MIN_LO) } else { self.x_min };
+        self.find_x_min = self.find_x_min.clamp(ext_lo.min(self.x_min), self.x_min);
+        let search_x_min = self.find_x_min;
+        self.ex.search = feat::Search::live_ext(self.x_min, search_x_min, self.ext_check(t, valve_open));
         let r_ready = self.r_est.len() >= 10;
         let r_ref = r_ready.then_some(self.r_est.value);
         let no_prior = self.prev.is_none();
@@ -718,9 +805,24 @@ impl EyeEngine {
             (f.pupil_cx, f.pupil_cy, f.pupil_a, f.pupil_b, f.pupil_vis) = (f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN);
             (f.iris_r, f.iris_n) = (f64::NAN, 0);
         }
+        // The extended search's edge follows the pupil: EXT_NEAR_PX left of one found near it, all the way out when it
+        // is lost near it (or a blob cut by x_min looked like an ellipse), slowly back while it is well inside x_min.
+        let lost_near = self.prev_p.is_some_and(|q| q.cx - q.a - self.find_x_min < EXT_NEAR_PX);
+        match p {
+            Some(pp) if pp.cx - pp.a - self.find_x_min < EXT_NEAR_PX => {
+                self.find_x_min = (pp.cx - pp.a - EXT_NEAR_PX).max(ext_lo).min(self.find_x_min);
+            }
+            Some(pp) if pp.cx - pp.a >= self.x_min + EXT_NEAR_PX => {
+                self.find_x_min = (self.find_x_min + EXT_BACK_PX_S / fps).min(self.x_min);
+            }
+            Some(_) => {}
+            None if lost_near || f.diag.left_refused => self.find_x_min = ext_lo.min(self.x_min),
+            None => {}
+        }
         if let Some(pp) = p {
             self.prev = Some((pp.cx, pp.cy));
             self.prev_p = Some(pp);
+            self.prev_p_t = t;
             if !box_bright && sampled {
                 self.a_open.push(pp.a, long_hz);
                 self.inner_open.push(pp.inner, long_hz);
@@ -902,6 +1004,7 @@ impl EyeEngine {
             pitch,
             xmax: self.xmax,
             x_min: self.x_min,
+            search_x_min,
             edge_gap,
             edge_held,
             b_n,
@@ -2720,6 +2823,61 @@ mod tests {
         let (mut e, p, t) = seen_at(edge, Tune { edge_hold: false, ..Tune::default() });
         let (closed, o) = closes(&mut e, &p, t, &lost);
         assert!(closed && !o.edge_held, "{o:?}");
+    }
+
+    #[test]
+    fn the_extended_search_follows_a_pupil_past_the_window_edge() {
+        // The window's edge fixed at 186 (as if the shading ended at 196); the lid frames have no shading of their own.
+        let run = |tune: Tune| {
+            let p = Params { tune, ..Params::default() };
+            let mut e = EyeEngine::default();
+            let mut t = 0.0;
+            let mut out = Vec::new();
+            let mut feed = |e: &mut EyeEngine, at: Option<(f64, f64)>, open: f64, n: usize, out: &mut Vec<Out>| {
+                for _ in 0..n {
+                    out.push(e.process_open(&lid_frame(at, true), f64::NAN, open, t, &p));
+                    if e.frame_no == 1 {
+                        (e.cm_n, e.x_min, e.find_x_min) = (40, 186.0, 186.0);
+                    }
+                    t += 1.0 / FPS;
+                }
+            };
+            // Ahead for a second: the extended edge stays at x_min
+            feed(&mut e, Some((250.0, 200.0)), 1.0, 90, &mut out);
+            let ahead = *out.last().unwrap();
+            // Out toward the ear: the window still finds it cut by its edge (175..225), and the extended edge moves out
+            feed(&mut e, Some((200.0, 200.0)), 1.0, 10, &mut out);
+            let near = *out.last().unwrap();
+            // Further out (135..185, left of the window): only the extended search can find it
+            feed(&mut e, Some((160.0, 200.0)), 1.0, 10, &mut out);
+            let past = *out.last().unwrap();
+            // ... not while Valve says the eye is closing
+            feed(&mut e, Some((160.0, 200.0)), 0.2, 1, &mut out);
+            let closing = *out.last().unwrap();
+            // Lost out there: held at the edge, not closed
+            feed(&mut e, None, 1.0, 10, &mut out);
+            let lost = out[out.len() - 10..].to_vec();
+            // Back ahead for 2 s, then 6 s more
+            feed(&mut e, Some((250.0, 200.0)), 1.0, 180, &mut out);
+            let back2 = *out.last().unwrap();
+            feed(&mut e, Some((250.0, 200.0)), 1.0, 540, &mut out);
+            (ahead, near, past, closing, lost, back2, *out.last().unwrap(), e.wear_state())
+        };
+        let (ahead, near, past, closing, lost, back2, back8, state) = run(Tune::default());
+        assert!(ahead.f.ok_pupil && (ahead.x_min, ahead.search_x_min) == (186.0, 186.0), "{ahead:?}");
+        assert!(near.f.ok_pupil && !near.f.diag.extended && near.f.diag.left_edge, "{:?}", near.f.diag);
+        assert_eq!(near.search_x_min, 186.0 - EXT_MAX_PX, "its small-x edge (175) less EXT_NEAR_PX, capped");
+        assert!(past.f.ok_pupil && past.f.diag.extended && !past.closed, "{:?}", past.f.diag);
+        assert!((past.f.pupil_cx - 160.0).abs() < 1.5 && past.x_min == 186.0, "{past:?}");
+        assert!(!closing.f.ok_pupil && !closing.f.diag.ext_tried, "{:?}", closing.f.diag);
+        assert!(lost.iter().all(|o| !o.closed && !o.f.ok_pupil) && lost[9].edge_held && lost[9].edge_gap < 0.0, "{:?}", lost[9]);
+        // Back: EXT_BACK_PX_S toward x_min, then there
+        assert!((back2.search_x_min - (162.0 + 2.0 * EXT_BACK_PX_S)).abs() < 0.5, "{}", back2.search_x_min);
+        assert_eq!((back8.search_x_min, state.search_x_min, state.x_min), (186.0, 186.0, 186.0));
+        // Without it (--no-ext-search): the pupil out there is not found, the edge never moves
+        let (_, near, past, _, _, _, _, _) = run(Tune { ext_search: false, ..Tune::default() });
+        assert!(near.f.ok_pupil && near.search_x_min == 186.0);
+        assert!(!past.f.ok_pupil && past.search_x_min == 186.0 && !past.f.diag.ext_tried, "{:?}", past.f.diag);
     }
 
     #[test]
