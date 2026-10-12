@@ -3,6 +3,7 @@
 
 use crate::live::{self, CalibFile, EyeEngine, Label, Params, Sample, UserParams};
 use crate::liveshm::{self, LiveWriter};
+use crate::preview::{self, Preview};
 use crate::vision::{H, W};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -134,6 +135,10 @@ pub struct Shared {
     pub cam_at: [AtomicU64; 2],
     /// The last `calib wear` (status.json `last_calib`): this run's, else the newest one saved under the data folder.
     pub last_calib: Mutex<Option<crate::status::LastCalib>>,
+    /// The panel's eye preview is asked for until then (CLOCK_MONOTONIC ns; 0: off), set from ctl.sock (`preview on`
+    /// renews it for preview::HOLD), and whether its file is there now (status.json `preview`).
+    pub preview_until: AtomicU64,
+    pub preview_on: AtomicBool,
 }
 
 impl Default for Shared {
@@ -155,6 +160,8 @@ impl Default for Shared {
             cam_fps: [AtomicU32::new(f32::NAN.to_bits()), AtomicU32::new(f32::NAN.to_bits())],
             cam_at: [AtomicU64::new(f64::NEG_INFINITY.to_bits()), AtomicU64::new(f64::NEG_INFINITY.to_bits())],
             last_calib: Mutex::new(None),
+            preview_until: AtomicU64::new(0),
+            preview_on: AtomicBool::new(false),
         }
     }
 }
@@ -166,6 +173,17 @@ impl Shared {
 
     pub fn set_widen_sensitivity(&self, v: f64) {
         self.widen_sensitivity.store(v.to_bits(), Ordering::Relaxed);
+    }
+
+    /// `preview on` (for preview::HOLD from `now_ns`, CLOCK_MONOTONIC) or `preview off`.
+    pub fn set_preview(&self, on: bool, now_ns: u64) {
+        let until = if on { now_ns + preview::HOLD.as_nanos() as u64 } else { 0 };
+        self.preview_until.store(until, Ordering::Relaxed);
+    }
+
+    /// Whether the panel's eye preview is asked for at `now_ns` (CLOCK_MONOTONIC).
+    pub fn preview_wanted(&self, now_ns: u64) -> bool {
+        now_ns < self.preview_until.load(Ordering::Relaxed)
     }
 
     /// The eye's recent pupil share (0..1), NaN when not known.
@@ -360,6 +378,8 @@ struct Worker {
     log_n: u64,
     log_us: u64,
     log_since: Instant,
+    /// The panel's eye preview: each eye's picture while it is asked for.
+    preview: Preview,
 }
 
 impl Worker {
@@ -456,10 +476,18 @@ impl Worker {
         }
         let started = Instant::now();
         let mut o = self.engines[eye].process(img, pitch as f64, t, &self.params[eye]);
+        let processed = started.elapsed();
+        // The panel's eye preview: this frame halved, with where the pupil was found and looked for, when one is due
+        // (only while it is asked for; its own time, not live_ms)
+        let wanted = self.shared.preview_wanted(liveshm::clock_ns(libc::CLOCK_MONOTONIC));
+        let t_mono_now = (t_cam_ns as i64 + self.mono_minus_raw).max(0) as u64;
+        self.preview.frame(wanted, eye, img, &o, t, t_mono_now);
+        self.shared.preview_on.store(self.preview.is_on(), Ordering::Relaxed);
+        let started = Instant::now();
         self.check_pupils(eye, t, &mut o);
         let share = self.pupil_seen[eye].push(t, o.f.ok_pupil);
         self.shared.pupil_share[eye].store((share as f32).to_bits(), Ordering::Relaxed);
-        self.busy += started.elapsed();
+        self.busy += processed + started.elapsed();
         self.busy_n += 1;
         self.frames[eye] += 1;
         if self.collect.is_some() {
@@ -695,6 +723,11 @@ impl Worker {
     }
 
     fn housekeeping(&mut self) {
+        // The preview off once it is no longer asked for, frames or not (a panel that stopped renewing it)
+        if !self.shared.preview_wanted(liveshm::clock_ns(libc::CLOCK_MONOTONIC)) {
+            self.preview.keep(false);
+            self.shared.preview_on.store(false, Ordering::Relaxed);
+        }
         for e in 0..2 {
             if self.last_seen[e].is_some_and(|t| t.elapsed() > Duration::from_secs_f64(STALE_AFTER)) {
                 self.last_seen[e] = None;
@@ -717,6 +750,13 @@ impl Worker {
                         self.pupil_pairs,
                         self.pupil_offset.value(self.engines[0].fps())
                     );
+                    if self.preview.is_on() {
+                        eprintln!(
+                            "live: preview on, {} pictures so far, {:.0} us each",
+                            self.preview.pictures,
+                            self.preview.us_per_picture()
+                        );
+                    }
                 }
                 self.log_n = 0;
                 self.log_us = 0;
@@ -738,6 +778,11 @@ pub fn spawn(
     shared: Arc<Shared>,
 ) -> Result<(mpsc::SyncSender<Msg>, std::thread::JoinHandle<()>), String> {
     let writer = LiveWriter::create(&run_dir.join("live"))?;
+    // A preview file left by a run that was killed: its pictures go now
+    let preview_path = run_dir.join(preview::FILE_NAME);
+    if std::fs::remove_file(&preview_path).is_ok() {
+        eprintln!("eyecam-rec: removed the eye preview left by an earlier run");
+    }
     let (tx, rx) = mpsc::sync_channel::<Msg>(16);
     let mut calib_file = load_calib(&calib);
     if calib_file.history.is_empty()
@@ -824,6 +869,7 @@ pub fn spawn(
                 log_n: 0,
                 log_us: 0,
                 log_since: Instant::now(),
+                preview: Preview::new(preview_path),
             };
             w.apply_calib();
             w.publish_state();
@@ -932,6 +978,84 @@ mod tests {
         assert!((shared.cam_fps(1, 52.0) - 15.0).abs() < 1e-3, "{}", shared.cam_fps(1, 52.0));
         assert!(shared.cam_fps(1, 53.0).is_nan(), "frames stopped");
         assert!(shared.cam_fps(0, 52.0).is_nan(), "no frames from that camera");
+    }
+
+    #[test]
+    fn the_preview_is_on_only_while_renewed() {
+        let shared = Shared::default();
+        let s = 1_000_000_000u64;
+        assert!(!shared.preview_wanted(5 * s), "off at start");
+        shared.set_preview(true, 5 * s);
+        assert!(shared.preview_wanted(5 * s) && shared.preview_wanted(8 * s - 1));
+        assert!(!shared.preview_wanted(8 * s), "off by itself preview::HOLD after the last `on`");
+        shared.set_preview(true, 7 * s);
+        assert!(shared.preview_wanted(9 * s), "renewed");
+        shared.set_preview(false, 7 * s);
+        assert!(!shared.preview_wanted(7 * s), "`preview off` at once");
+    }
+
+    /// The worker end to end on made-up frames (no eye in them): the preview's file appears while it is asked for,
+    /// holds both eyes' pictures, and goes once it is not renewed, frames or not.
+    #[test]
+    fn the_worker_writes_the_preview_while_asked() {
+        let dir = std::env::temp_dir().join(format!("eyecam-worker-preview-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // One left by a run that was killed goes at start
+        let path = dir.join(preview::FILE_NAME);
+        std::fs::write(&path, b"old").unwrap();
+        let shared = Arc::new(Shared::default());
+        let (tx, handle) = spawn(&dir, dir.join("calib.json"), None, shared.clone()).unwrap();
+        tx.send(Msg::Buffers(true)).unwrap();
+        let wait = |gone: bool| {
+            for _ in 0..100 {
+                if path.exists() != gone {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(wait(true), "the old file removed");
+        let frame: Vec<u8> = (0..W * H).map(|i| (40 + (i % W) / 4 + (i / W) / 8) as u8).collect();
+        let send = |k: u64| {
+            for eye in 0..2 {
+                let data = frame.clone();
+                tx.send(Msg::Frame { eye, upside_down: eye == 0, t_cam_ns: 50_000_000_000 + k * 11_111_111, pitch: f32::NAN, data }).unwrap();
+            }
+        };
+        // Not asked: frames, but no file
+        for k in 0..30 {
+            send(k);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!path.exists());
+        // Asked (as `preview on` does): both eyes' pictures, the left one turned upright like the engine's frame
+        shared.set_preview(true, liveshm::clock_ns(libc::CLOCK_MONOTONIC));
+        for k in 30..120 {
+            send(k);
+        }
+        assert!(wait(false), "the file made");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(shared.preview_on.load(Ordering::Relaxed));
+        let seen = preview::parse(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(seen.on && seen.count.iter().all(|&n| (10..=20).contains(&n)), "{:?}", seen.count);
+        let mut upright = vec![0u8; W * H];
+        for y in 0..H {
+            upright[y * W..(y + 1) * W].copy_from_slice(&frame[(H - 1 - y) * W..(H - y) * W]);
+        }
+        let mut half = vec![0u8; preview::SIDE * preview::SIDE];
+        preview::halve(&upright, &mut half);
+        assert_eq!(seen.pictures[0], half, "the left camera's frame upright");
+        preview::halve(&frame, &mut half);
+        assert_eq!(seen.pictures[1], half);
+        // Not renewed: off by itself (here 0.1 s from now), without any more frames
+        shared.set_preview(true, liveshm::clock_ns(libc::CLOCK_MONOTONIC) + 100_000_000 - preview::HOLD.as_nanos() as u64);
+        assert!(wait(true), "removed once it ran out");
+        assert!(!shared.preview_on.load(Ordering::Relaxed));
+        tx.send(Msg::Shutdown).unwrap();
+        handle.join().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

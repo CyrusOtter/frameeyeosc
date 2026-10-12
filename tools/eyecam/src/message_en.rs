@@ -39,6 +39,7 @@ const EXACT: &[(&str, &str)] = &[
     ("自動でバッファを取りに行ってる…", "Getting the buffers automatically…"),
     ("視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度", "Couldn't get the gaze direction from Valve. Check that frameeyeosc is running and try again"),
     ("視線と目の開きの関係が求められなかった（もう一度）", "Couldn't work out how gaze changes the eye opening (try again)"),
+    ("目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ", "The eye preview is only written to a folder in memory (tmpfs)"),
 ];
 
 /// Per-eye calibration failures, after "左目" / "右目" / "両目" (the details in [...] follow).
@@ -256,6 +257,7 @@ mod tests {
             "（fake）両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]",
             "アイトラッカーが終了した。パネルの「目のカメラ」タブで、目のカメラの道具を入れてね",
             "バッファが更新されなくなった",
+            "目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ",
             "校正の計算が終わらなかった",
             "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）",
             "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[12/486、90 必要]",

@@ -212,7 +212,7 @@ pub struct Params {
 }
 
 /// One frame's result for one eye.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Out {
     pub f: Features,
     pub valid: bool,

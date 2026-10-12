@@ -8,6 +8,7 @@ pub mod live;
 pub mod liveshm;
 pub mod livesvc;
 pub mod mem;
+pub mod preview;
 pub mod message_en;
 pub mod proto;
 pub mod replay;

@@ -202,6 +202,8 @@ pub struct Status {
     pub live: bool,
     /// Live processing time per frame (one eye), ms, averaged over the last second.
     pub live_ms: f64,
+    /// The panel's eye preview is on (`preview on` within the last few seconds, and its file is there).
+    pub preview: bool,
     /// Per eye, the share of the last 2 s of frames in which the pupil was found (as the calibration counts them);
     /// NaN (null in the JSON) when live processing is off or the eye's frames stopped.
     pub pupil: [f64; 2],
@@ -253,6 +255,7 @@ impl Default for Status {
             calib_failed_eye: "",
             live: false,
             live_ms: 0.0,
+            preview: false,
             pupil: [f64::NAN; 2],
             cam_fps: [f64::NAN; 2],
             prox_min: 20.0,
@@ -292,7 +295,7 @@ impl Status {
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"search\":{},\"last_session_aborted\":{},\"calib_state\":{},\
-\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"pid\":{pid},\"updated_unix\":{}}}",
+\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
             json_str(&crate::message_en::message_en(&self.message)),
@@ -325,6 +328,7 @@ impl Status {
             json_str(self.calib_failed_eye),
             self.live,
             num(self.live_ms),
+            self.preview,
             num_or_null(self.pupil[0]),
             num_or_null(self.pupil[1]),
             num_or_null(self.cam_fps[0]),
@@ -382,6 +386,8 @@ pub enum Command {
     Live(bool),
     /// `set widen_sensitivity <0..1>`: answered by the control thread itself, in every state.
     SetWidenSensitivity(f64),
+    /// `preview on` / `preview off`: the panel's eye preview, answered by the control thread itself, in every state.
+    Preview(bool),
 }
 
 /// Parse one control line. Protocol names are 1-32 of [A-Za-z0-9_-], so they can never name a path.
@@ -403,6 +409,8 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         (Some("calib"), Some("user")) => Command::Calib(CalibKind::User),
         (Some("live"), Some("on")) => Command::Live(true),
         (Some("live"), Some("off")) => Command::Live(false),
+        (Some("preview"), Some("on")) => Command::Preview(true),
+        (Some("preview"), Some("off")) => Command::Preview(false),
         (Some("set"), Some("widen_sensitivity")) => {
             let v = words.next().and_then(|w| w.parse::<f64>().ok()).filter(|v| (0.0..=1.0).contains(v));
             Command::SetWidenSensitivity(v.ok_or("widen_sensitivity は 0 から 1 の数で")?)
@@ -429,6 +437,11 @@ mod tests {
         assert_eq!(parse_command("calib user"), Ok(Command::Calib(CalibKind::User)));
         assert_eq!(parse_command("live off"), Ok(Command::Live(false)));
         assert!(parse_command("calib").is_err() && parse_command("live maybe").is_err());
+        assert_eq!(parse_command("preview on\n"), Ok(Command::Preview(true)));
+        assert_eq!(parse_command("preview off"), Ok(Command::Preview(false)));
+        for bad in ["preview", "preview maybe", "preview on now"] {
+            assert!(parse_command(bad).is_err(), "{bad}");
+        }
         assert_eq!(parse_command("set widen_sensitivity 0.25"), Ok(Command::SetWidenSensitivity(0.25)));
         for bad in ["set widen_sensitivity", "set widen_sensitivity 1.5", "set widen_sensitivity x", "set widen_sensitivity 0.5 1", "set foo 1"] {
             assert!(parse_command(bad).is_err(), "{bad}");
@@ -462,6 +475,8 @@ mod tests {
         assert!(json.contains("\"widen_sensitivity\":0.500,\"dev\":false,\"setup_done\":false,"));
         assert!(Status { dev: true, ..Status::default() }.to_json(1.5, 7).contains(",\"dev\":true,"));
         assert!(json.contains("\"last_calib_widen\":\"\",\"calib_failed_eye\":\"\","));
+        assert!(json.contains(",\"live_ms\":0.000,\"preview\":false,\"pupil_l\":"), "{json}");
+        assert!(Status { preview: true, ..Status::default() }.to_json(1.5, 7).contains(",\"preview\":true,"));
         assert!(json.contains(",\"pupil_l\":null,\"pupil_r\":null,\"cam_fps\":[null,null],"), "{json}");
         let slow = Status { cam_fps: [15.0, 14.9], ..Status::default() }.to_json(1.5, 7);
         assert!(slow.contains(",\"cam_fps\":[15.000,14.900],") && crate::json::parse(&slow).is_ok(), "{slow}");

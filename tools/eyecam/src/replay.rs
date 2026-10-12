@@ -366,6 +366,9 @@ pub struct LiveOpts {
     pub prewarm: bool,
     pub tune: crate::live::Tune,
     pub limit: Option<usize>,
+    /// Also write the panel's eye preview into this folder (its `preview` file), paced at the recording's own speed so
+    /// a panel can show it while it runs (development: the pictures come from a recording on disk anyway).
+    pub preview: Option<PathBuf>,
 }
 
 pub const LIVE_HEADER: &str = "eye,eye_index,t_cam,label,step,ok_pupil,skin_up,aperture,lower,pupil_ratio,box_f,r,pitch,v_open,\
@@ -430,6 +433,9 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
     let mut processed = 0usize;
     let mut last_t = [f64::NEG_INFINITY; 2];
     let f = |v: f64| if v.is_finite() { format!("{v:.4}") } else { String::new() };
+    let mut preview = opts.preview.as_ref().map(|dir| crate::preview::Preview::new(dir.join(crate::preview::FILE_NAME)));
+    // (the wall clock and the camera time the paced replay started at)
+    let mut paced: Option<(std::time::Instant, f64)> = None;
     for k in 0..n {
         for e in 0..2 {
             if k >= s.frames(e) {
@@ -437,6 +443,13 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
             }
             s.read(e, k, &mut img).map_err(|err| err.to_string())?;
             let t = s.t_cam[e].get(k).copied().unwrap_or(f64::NAN);
+            if preview.is_some() && t.is_finite() {
+                let (start, t0) = *paced.get_or_insert((std::time::Instant::now(), t));
+                let ahead = (t - t0) - start.elapsed().as_secs_f64();
+                if ahead > 0.0 {
+                    std::thread::sleep(std::time::Duration::from_secs_f64(ahead.min(1.0)));
+                }
+            }
             let j = s.valve.nearest(t);
             let pitch = j.map_or(f64::NAN, |j| s.valve.pitch[e][j]);
             let v_open = j.map_or(f64::NAN, |j| s.valve.open[e][j]);
@@ -445,6 +458,9 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
             busy += t0.elapsed();
             processed += 1;
             last_t[e] = t;
+            if let Some(p) = preview.as_mut() {
+                p.frame(true, e, &img, &o, t, crate::liveshm::clock_ns(libc::CLOCK_MONOTONIC));
+            }
             let (label, step) = s.label_at(t, live::STEP_DELAY);
             if let Some(l) = label {
                 let smp = Sample::from_out(Label::parse(l), &o, t);
@@ -508,6 +524,11 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
         }
     }
     w.flush().map_err(|e| e.to_string())?;
+    if let Some(p) = &preview {
+        eprintln!("preview: {} pictures, {:.0} us each (halving and writing)", p.pictures, p.us_per_picture());
+    }
+    // (its file removed now)
+    drop(preview);
     if let Some(path) = &opts.fit_user {
         let (wear, _) = live::fit_wear(&all, [live::DEFAULT_WIDEN_STEP; 2])?;
         let old = opts.calib.as_ref().and_then(|c| c.user);

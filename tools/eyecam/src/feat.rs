@@ -21,6 +21,10 @@ pub const MARGIN_OFF: f64 = 7.0;
 pub const X_MIN: f64 = 186.0;
 /// The live search's left edge adapts per wear (`search_x_min`) within these bounds.
 pub const X_MIN_LO: f64 = 100.0;
+/// The rows the pupil is looked for in (from, to; the window's x runs from the left edge to the lens edge). The panel's
+/// eye preview draws the window too (preview.rs).
+pub const SEARCH_Y0: usize = 70;
+pub const SEARCH_Y1: usize = 320;
 /// The prototype's opening is computed from this column on (exact from 8 columns further), the blurred image from
 /// OPF_X0. The leftmost samples ever taken are the iris rays on the temporal side, 95 px left of a pupil that is right
 /// of X_MIN. The live search starts them `OPEN_BEFORE` columns left of its own left edge instead (room for a pupil
@@ -355,7 +359,7 @@ impl Extractor {
     fn find_pupil_blob(&mut self, xmax: f64, prev: Option<(f64, f64)>, diag: &mut Diag) {
         let legacy = self.search.legacy;
         let xs = self.search.x_min;
-        let (x0, y0, x1, y1) = (xs as usize, 70usize, (pint(xmax).clamp(xs as isize + 1, W as isize)) as usize, 320usize);
+        let (x0, y0, x1, y1) = (xs as usize, SEARCH_Y0, (pint(xmax).clamp(xs as isize + 1, W as isize)) as usize, SEARCH_Y1);
         let (sw, sh) = (x1 - x0, y1 - y0);
         let opf = &self.opf;
         let at = |x: usize, y: usize| opf[(y0 + y) * W + x0 + x];

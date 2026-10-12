@@ -12,6 +12,7 @@ use eyecam::mem::Arena;
 use eyecam::ring::{self, Clock, FRAME_BYTES, HEADER_BYTES, HEIGHT, Ring, STRIDE, WIDTH};
 use eyecam::shm::{self, Sample, Shm};
 use eyecam::livesvc::{self, CollectKind, Msg};
+use eyecam::preview;
 use eyecam::settings::{self, Settings};
 use eyecam::status::{self, CalibKind, Command, Status};
 use eyecam::{now_raw, proto};
@@ -43,6 +44,9 @@ const SCAN_EVERY_NOT_WORN: f64 = 2.0;
 // Assumed frame rate per eye when estimating disk use.
 const EST_FPS: f64 = 90.0;
 const MIN_FREE: u64 = 1 << 30;
+
+/// The reply to `preview on` when the run folder isn't in memory: the eye pictures are never put on a disk.
+const PREVIEW_NOT_TMPFS: &str = "目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ";
 
 /// What waiting_fds says while the buffers can't be fetched automatically: the camera tool (eyecam-grab with
 /// cap_sys_ptrace) is put in by the panel's first-time setup. Once it is in, the automatic grab's messages replace this.
@@ -83,6 +87,8 @@ struct Args {
     resample: Option<f64>,
     /// --calib: replay the session as this calibration and write its calib_result.json to --out.
     calib_replay: Option<eyecam::replay::CalibRun>,
+    /// --preview: with --replay, also write the panel's eye preview into this folder.
+    preview: Option<PathBuf>,
     tune: eyecam::live::Tune,
     wait_grab: f64,
     wait_lock: f64,
@@ -121,6 +127,8 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --no-edge-hold     with --replay: a pupil lost at the window's (temporal) edge may count as closed (the old rule; evaluation)
   --wide-curve S,W   with --replay: EyeWide = (rise - S * step) / (W * step) (evaluation)
   --widen-sensitivity X  with --replay: the curve for widen sensitivity X in 0..1 (default 0.5, as live)
+  --preview DIR      with --replay: also write the panel's eye preview (DIR/preview, as `preview on` does live), the
+                     replay paced at the recording's own speed so a panel pointed at DIR can show it (development)
   --seconds N        how long to record once frames are found (default 120, or the cue protocol's length)
   --out DIR          where session directories go (default ~/eyecam)
   --cues FILE        play a beep cue protocol (lines `seconds label`, see protocol_widen.txt) and log cues.csv
@@ -157,6 +165,7 @@ fn parse_args() -> Result<Args> {
         prewarm: false,
         resample: None,
         calib_replay: None,
+        preview: None,
         tune: eyecam::live::Tune::default(),
         wait_grab: 600.0,
         wait_lock: 300.0,
@@ -199,6 +208,7 @@ fn parse_args() -> Result<Args> {
                     _ => return Err("--calib must be wear or user".into()),
                 })
             }
+            "--preview" => args.preview = Some(PathBuf::from(value("--preview")?)),
             "--no-track" => args.tune.track = false,
             "--no-gaze-drop" => args.tune.gaze_drop = false,
             "--no-edge-hold" => args.tune.edge_hold = false,
@@ -312,6 +322,7 @@ fn run() -> Result<()> {
             prewarm: args.prewarm,
             tune: args.tune,
             limit: args.limit,
+            preview: args.preview.clone(),
         };
         let ms = eyecam::replay::write_live(&session, &args.out, &opts)?;
         eprintln!("live replay: {ms:.3} ms per frame (one eye) on this core");
@@ -444,6 +455,8 @@ struct StatusFile {
     live: Option<Arc<livesvc::Shared>>,
     /// settings.json, for `dev` (edited by hand, so it is followed while running).
     settings: Mutex<settings::Watch>,
+    /// The run folder is on tmpfs, so the panel's eye preview may put its pictures there (preview::on_tmpfs).
+    preview_ok: bool,
 }
 
 impl StatusFile {
@@ -458,6 +471,7 @@ impl StatusFile {
                 s.recalib_suggested = l.recalib_suggested.load(Ordering::Relaxed);
                 s.live = l.live_on.load(Ordering::Relaxed);
                 s.live_ms = l.us_per_frame.load(Ordering::Relaxed) as f64 / 1000.0;
+                s.preview = l.preview_on.load(Ordering::Relaxed);
                 let ready = l.baseline_ready.load(Ordering::Relaxed);
                 s.baseline = if ready { "ready" } else { "warming" };
                 s.warmup_remaining_s = if ready { 0.0 } else { l.warmup_ms.load(Ordering::Relaxed) as f64 / 1000.0 };
@@ -517,6 +531,7 @@ impl Daemon {
             write_lock: Mutex::new(()),
             live,
             settings: Mutex::new(settings::Watch::new(settings::path())),
+            preview_ok: preview::on_tmpfs(dir),
         });
         let listener = bind_private(&dir.join(status::CTL_FILE), "another eyecam-rec --serve is already running")?;
         listener.0.set_nonblocking(true)?;
@@ -617,6 +632,19 @@ fn set_widen_sensitivity(v: f64, status: &Mutex<Status>, file: &StatusFile) -> S
     "ok".into()
 }
 
+/// `preview on` / `preview off`: the panel's eye preview, done here in every state (the live worker makes the pictures
+/// while frames come, and stops by itself preview::HOLD after the last `on`). Refused where the run folder isn't on
+/// tmpfs. The fake daemon (no live engine) says ok and makes none.
+fn set_preview(on: bool, file: &StatusFile) -> String {
+    if let Some(l) = &file.live {
+        if on && !file.preview_ok {
+            return format!("err {PREVIEW_NOT_TMPFS}");
+        }
+        l.set_preview(on, eyecam::liveshm::clock_ns(libc::CLOCK_MONOTONIC));
+    }
+    "ok".into()
+}
+
 /// The reply to one connection (None: not the user, so it gets nothing).
 fn ctl_reply(stream: &UnixStream, status: &Mutex<Status>, file: &StatusFile, tx: &mpsc::Sender<Request>) -> Option<String> {
     if peer_cred(stream).ok()?.uid != proto::USER_UID {
@@ -635,6 +663,7 @@ fn ctl_reply(stream: &UnixStream, status: &Mutex<Status>, file: &StatusFile, tx:
             status.lock().unwrap().to_json(unix_now(), std::process::id())
         }
         Ok(Command::SetWidenSensitivity(v)) => set_widen_sensitivity(v, status, file),
+        Ok(Command::Preview(on)) => set_preview(on, file),
         Ok(command) => {
             let (reply, rx) = mpsc::channel();
             if tx.send(Request { command, reply }).is_err() {
@@ -910,7 +939,7 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                     continue;
                 }
                 // Answered by the control thread; never sent here.
-                Command::SetWidenSensitivity(_) => {
+                Command::SetWidenSensitivity(_) | Command::Preview(_) => {
                     answer(req, "ok");
                     continue;
                 }
@@ -2674,6 +2703,50 @@ mod tests {
         assert!(ms > 0.1, "{json}");
     }
 
+    /// One command on a run folder's ctl.sock, as the panel sends it: its reply line.
+    fn ctl(dir: &Path, command: &str) -> String {
+        let mut stream = UnixStream::connect(dir.join(status::CTL_FILE)).unwrap();
+        stream.write_all(format!("{command}\n").as_bytes()).unwrap();
+        let mut reply = String::new();
+        BufReader::new(stream).read_line(&mut reply).unwrap();
+        reply.trim_end().to_string()
+    }
+
+    /// `preview on` / `preview off` are answered in every state (here waiting_fds) and set what the live worker
+    /// follows; status.json says whether the pictures are there. Refused where the run folder isn't on tmpfs.
+    #[test]
+    fn the_preview_is_asked_for_on_ctl_sock_and_only_on_tmpfs() {
+        if unsafe { libc::getuid() } != proto::USER_UID {
+            eprintln!("skipped: ctl.sock answers only uid {}", proto::USER_UID);
+            return;
+        }
+        let now = || eyecam::liveshm::clock_ns(libc::CLOCK_MONOTONIC);
+        let memory = Path::new("/dev/shm").join(format!("eyecam-preview-ctl-{}", std::process::id()));
+        let disk = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(".eyecam-preview-ctl-{}", std::process::id()));
+        for (dir, tmpfs) in [(&memory, true), (&disk, false)] {
+            let _ = fs::remove_dir_all(dir);
+            let shared = Arc::new(livesvc::Shared::default());
+            let daemon = Daemon::start(dir, Some(shared.clone())).unwrap();
+            if tmpfs {
+                assert_eq!(ctl(dir, "preview on"), "ok");
+                assert!(shared.preview_wanted(now()));
+                assert!(!shared.preview_wanted(now() + preview::HOLD.as_nanos() as u64), "only for preview::HOLD");
+                assert_eq!(ctl(dir, "preview off"), "ok");
+                assert!(!shared.preview_wanted(now()));
+            } else {
+                assert_eq!(ctl(dir, "preview on"), format!("err {PREVIEW_NOT_TMPFS}"));
+                assert!(!shared.preview_wanted(now()));
+                assert_eq!(ctl(dir, "preview off"), "ok");
+            }
+            assert_eq!(ctl(dir, "preview maybe"), "err 知らないコマンド");
+            // (no worker here: the pictures are never there)
+            let json = fs::read_to_string(dir.join(status::STATUS_FILE)).unwrap();
+            assert!(json.contains(",\"preview\":false,"), "{json}");
+            daemon.finish();
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
     /// Args as `--serve` has them, with status.json and everything else in `dir`.
     fn serve_args(dir: &Path) -> Args {
         Args {
@@ -2698,6 +2771,7 @@ mod tests {
             prewarm: false,
             resample: None,
             calib_replay: None,
+            preview: None,
             tune: eyecam::live::Tune::default(),
             wait_grab: 0.0,
             wait_lock: 300.0,
