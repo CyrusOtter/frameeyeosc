@@ -793,9 +793,10 @@ fn report(input: &Path, samples: &[EyeData], skipped: usize, settings: &Settings
 /// values, fresh and with a baseline, how often each eye's eyelid and squint came from them, how often its eyelid
 /// overrode the eye server's (the eye seen open while the eye server read it closing, seen closed, widened below the
 /// eye server's relaxed open, narrowed on the camera while the eye server's reading jumped to 1.000, or raised to the
-/// camera's where the eye server read the open eye lower), and how often each eye went out visibly widened (LID_WIDE)
-/// with them (`with`) and without them (`without`, camera_lids off).
-fn camera_lines(cameras: &[Option<Live>], with: &[Sample], without: &[Sample]) -> String {
+/// camera's where the eye server read the open eye lower), for how long its "closed" was taken as open because the eye
+/// server read the eye open and was sure of it (Sample::closed_overruled; time by the samples' own, `samples`), and how
+/// often each eye went out visibly widened (LID_WIDE) with them (`with`) and without them (`without`, camera_lids off).
+fn camera_lines(cameras: &[Option<Live>], samples: &[EyeData], with: &[Sample], without: &[Sample]) -> String {
     let n = cameras.len().max(1) as f64;
     let share = |count: usize| count as f64 * 100.0 / n;
     let read: Vec<&Live> = cameras.iter().flatten().collect();
@@ -806,6 +807,17 @@ fn camera_lines(cameras: &[Option<Live>], with: &[Sample], without: &[Sample]) -
         let [left, right] = [0, 1].map(|eye| share(with.iter().filter(|sample| sample.lid_from[eye] == from).count()));
         format!("{left:.1}% / {right:.1}%")
     };
+    // Each sample counts for the time since the one before it (a sample after a gap, or the first, for NOMINAL_DT)
+    let overruled = [0, 1].map(|eye| {
+        let mut seconds = 0.0;
+        for (i, sample) in with.iter().enumerate() {
+            if sample.closed_overruled[eye] {
+                let since = i.checked_sub(1).map(|before| samples[i].sample_time - samples[before].sample_time);
+                seconds += since.filter(|since| (0.0..MAX_GAP).contains(since)).unwrap_or(f64::from(NOMINAL_DT));
+            }
+        }
+        seconds
+    });
     let wide = |sent: &[Sample]| {
         let [left, right] = [0, 1].map(|eye| share(sent.iter().filter(|sample| sample.lids[eye] >= LID_WIDE).count()));
         format!("{left:.1}% / {right:.1}%")
@@ -816,6 +828,7 @@ fn camera_lines(cameras: &[Option<Live>], with: &[Sample], without: &[Sample]) -
          eyelid and squint from it (L / R)          {:.1}% / {:.1}%\n  \
          eyelid from it over the eye server's (L / R): seen open {}, seen closed {}, widened {}, at 1.000 {}, \
          raised to it {}\n  \
+         its closed taken as open, the eye server sure (L / R)  {:.1} s / {:.1} s\n  \
          sent widened, VRCFT {LID_WIDE} or more (L / R)    {} with it, {} without it\n",
         share(read.len()),
         fresh[0],
@@ -827,6 +840,8 @@ fn camera_lines(cameras: &[Option<Live>], with: &[Sample], without: &[Sample]) -
         from(LidFrom::CameraWidened),
         from(LidFrom::CameraAtCeiling),
         from(LidFrom::CameraRaised),
+        overruled[0],
+        overruled[1],
         wide(with),
         wide(without),
     )
@@ -883,7 +898,7 @@ pub fn run(input: &Path, output: Option<&Path>, settings: &Settings, calibration
             camera_lids: false,
             ..settings.clone()
         };
-        camera_lines(&cameras, &after, &replay(&samples, &cameras, &off, calibration.clone()))
+        camera_lines(&cameras, &samples, &after, &replay(&samples, &cameras, &off, calibration.clone()))
     });
     let (before, after) = (metrics(&samples, &before), metrics(&samples, &after));
     print!("{}", report(input, &samples, all.len() - samples.len(), settings, &before, &after));
@@ -1124,7 +1139,7 @@ mod tests {
         let widened = sent.iter().filter(|sample| sample.lids[0] >= LID_WIDE).count();
         // (the camera's eyelid taken once it has kept coming for CAMERA_GAP_HOLD, 18 samples)
         assert!((400..432).contains(&widened), "{widened}");
-        let lines = camera_lines(&cameras, &sent, &without);
+        let lines = camera_lines(&cameras, &samples, &sent, &without);
         assert!(lines.contains("values with 33.3% of the samples; fresh (L / R) 33.3% / 33.3%"), "{lines}");
         assert!(lines.contains("eyelid and squint from it (L / R)          33.3% / 33.3%"), "{lines}");
         // Here the eye server reads the eyes as open as can be and the camera sees them widened, so the camera's
@@ -1132,6 +1147,7 @@ mod tests {
         let overrides = "eyelid from it over the eye server's (L / R): seen open 0.0% / 0.0%, seen closed 0.0% / 0.0%, \
                          widened 0.0% / 0.0%, at 1.000 0.0% / 0.0%";
         assert!(lines.contains(overrides), "{lines}");
+        assert!(lines.contains("its closed taken as open, the eye server sure (L / R)  0.0 s / 0.0 s"), "{lines}");
         let share = format!("{:.1}%", widened as f64 * 100.0 / 1350.0);
         assert!(lines.contains(&format!("{share} / {share} with it, 0.0% / 0.0% without it")), "{lines}");
         let path = std::env::temp_dir().join(format!("frameeyeosc-camera-processed-{}.csv", std::process::id()));
