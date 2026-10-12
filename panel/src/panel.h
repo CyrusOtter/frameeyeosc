@@ -122,7 +122,7 @@ enum class PanelAction {
                        ///< the caller follows previewOpen)
     PreviewClose,      ///< the sheet's cross (handled inside)
     PreviewSource,     ///< which values drive the drawn eyes: arg = eye_preview::Source (handled inside)
-    PreviewMirror,     ///< show the eyes as in a mirror, or as the user sees them (handled inside)
+    PreviewMirror,     ///< show the eyes as in a mirror, or as seen from the front (handled inside)
     PreviewCamera,     ///< the eye cameras' pictures on / off (handled inside; the caller follows previewPictures)
     PreviewFreeze,     ///< stop the drawing where it is, or let it move again (handled inside)
 };
@@ -684,7 +684,7 @@ private:
     bool appsScrollable_ = false;       ///< the last draw showed it scrolled (it didn't fit)
     bool previewOpen_ = false;          ///< the eye preview is shown over the tabs' content
     eye_preview::Source previewSource_ = eye_preview::Source::Sent;  ///< ...which values drive its eyes
-    bool previewMirror_ = true;         ///< ...as in a mirror (the right eye on the left)
+    bool previewMirror_ = true;         ///< ...as in a mirror (the right eye on the right; off: seen from the front)
     bool previewCamera_ = true;         ///< ...with the eye cameras' pictures
     bool previewFrozen_ = false;        ///< ...stopped where it was
     bool previewFreezePending_ = false; ///< ...the values to keep are taken at the next draw
@@ -756,13 +756,13 @@ private:
      * @param y top
      * @param w width
      * @param h height
-     * @param mirror as in a mirror (its gaze sideways turned round)
+     * @param turned its gaze sideways turned round (seen from the front)
      */
     void drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, double x, double y, double w, double h,
-                        bool mirror);
+                        bool turned);
 
     /**
-     * One eye's camera picture, upright with its temporal side out (flipped as the drawn eye is), the search window
+     * One eye's camera picture, upright with its temporal side toward the sheet's outside, the search window
      * and the found pupil on it, and "Read as closed"; "waiting" while there is none.
      * @param pen drawing tools
      * @param t texts

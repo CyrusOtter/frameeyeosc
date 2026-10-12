@@ -120,6 +120,23 @@ void testGeometry() {
     CHECK(near(gazeShare(1.0, true), 1.0) && near(gazeShare(NAN, false), 0.0));
 }
 
+void testViews() {
+    // In a mirror: the left eye on the left, the right on the right, the irises moving the way the user looks
+    CHECK(drawnColumn(0, true) == 0 && drawnColumn(1, true) == 1 && !gazeTurned(true));
+    // Seen from the front: the right eye on the left, sideways turned round
+    CHECK(drawnColumn(0, false) == 1 && drawnColumn(1, false) == 0 && gazeTurned(false));
+    // The pictures' ear side (at the left as eyecam-rec gives them) toward the outside of the sheet in both views: the
+    // picture in the right column flipped. So each eye's picture flips between the views (mirror images)
+    for (const bool mirror : {true, false}) {
+        for (int eye = 0; eye < 2; ++eye) {
+            const bool earLeft = !pictureFlipped(eye, mirror);
+            CHECK(earLeft == (drawnColumn(eye, mirror) == 0));
+            CHECK(pictureFlipped(eye, mirror) != pictureFlipped(eye, !mirror));
+        }
+    }
+    CHECK(!pictureFlipped(0, true) && pictureFlipped(1, true) && pictureFlipped(0, false) && !pictureFlipped(1, false));
+}
+
 /**
  * Made-up pictures of a side: a gradient (not an eye), the left eye's pupil found, the right one's not and closed.
  * @param side their side
@@ -337,6 +354,7 @@ void testFake() {
 int main() {
     testShown();
     testGeometry();
+    testViews();
     testFile();
     testReader();
     testFresh();

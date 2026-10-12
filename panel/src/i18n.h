@@ -63,7 +63,7 @@ struct UiText {
     const char* previewSourceSent;      ///< which values drive the drawn eyes: as sent...
     const char* previewSourceRaw;       ///< ...as read (Valve's openness, the gaze before smoothing)...
     const char* previewSourceCamera;    ///< ...the eye camera's own
-    const char* previewMirror;          ///< the switch that shows the eyes as in a mirror (the right eye on the left)
+    const char* previewMirror;          ///< the switch that shows the eyes as in a mirror (off: seen from the front)
     const char* previewPicture;         ///< the switch for the eye cameras' pictures
     const char* previewFreeze;          ///< stop the drawing where it is
     const char* previewResume;          ///< ...and let it move again

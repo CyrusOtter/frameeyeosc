@@ -6610,7 +6610,7 @@ void EyePanel::drawToggle(const Pen& pen, double x, double y, double w, double h
 }
 
 void EyePanel::drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, double x, double y, double w,
-                              double h, bool mirror) {
+                              double h, bool turned) {
     cairo_t* cr = pen.cr;
     // Without a value: relaxed open, faded
     if (!eye.known) cairo_push_group(cr);
@@ -6643,7 +6643,8 @@ void EyePanel::drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, 
     pen.color(kEyeLid);
     cairo_fill(cr);
     if (upper < lower - 0.5) {
-        // The open part: the white, the iris where the eye looks (turned round in a mirror) and its pupil
+        // The open part: the white, the iris where the eye looks (sideways turned round when seen from the front) and
+        // its pupil
         cairo_save(cr);
         cairo_new_path(cr);
         cairo_move_to(cr, lx, cy);
@@ -6655,7 +6656,7 @@ void EyePanel::drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, 
         cairo_paint(cr);
         const double iris = h * 0.27;
         const double sideways = eye_preview::gazeShare(eye.gazeX, false) * w * 0.22;
-        const double ix = x + w / 2 + (mirror ? -sideways : sideways);
+        const double ix = x + w / 2 + (turned ? -sideways : sideways);
         const double iy = cy - 4 - eye_preview::gazeShare(eye.gazeY, true) * h * 0.16;
         drawDot(cr, ix, iy, iris, kEyeIris);
         drawRing(cr, ix, iy, iris - 1.5, 3, kEyeIrisRim);
@@ -6833,7 +6834,7 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
     }
 
     // Both eyes, each with its chips, and under them its camera picture; without the pictures, in the middle of the
-    // space. In a mirror the right eye is on the left
+    // space. In a mirror the right eye is on the right, seen from the front on the left (eye_preview::drawnColumn)
     const double eyeW = 255;
     const double eyeH = 170;
     const double chipsH = 28;
@@ -6845,11 +6846,11 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
     const eye_preview::Shown shown = pv.hasPacket ? eye_preview::shown(pv.packet, source) : eye_preview::Shown {};
     const double half = (kInnerRight - kInnerX) / 2;
     for (int at = 0; at < 2; ++at) {
-        const int eye = previewMirror_ ? 1 - at : at;
+        const int eye = eye_preview::drawnColumn(0, previewMirror_) == at ? 0 : 1;
         const eye_preview::EyeShown& e = shown.eyes[eye];
         const double cx = kInnerX + half * (at + 0.5);
         const double ex = cx - eyeW / 2;
-        drawPreviewEye(pen, e, ex, top, eyeW, eyeH, previewMirror_);
+        drawPreviewEye(pen, e, ex, top, eyeW, eyeH, eye_preview::gazeTurned(previewMirror_));
         // Which eye, in the box's top corner on the outer side
         const char* name = eye == 0 ? t.leftEye : t.rightEye;
         pen.text(at == 0 ? ex : ex + eyeW, top + 16, name, 15, kTextMuted, true, at != 0);
@@ -6890,13 +6891,13 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
         }
         chipX += badgeW + chipGap;
         chip(pupil, pupilW);
-        // The camera picture, with its temporal side out like the drawn eye's (eyecam-rec gives both eyes with it at
-        // the left: the left eye's is turned round as seen by the user, the right eye's in a mirror)
+        // The camera picture, with its temporal side toward the outside of the sheet (eyecam-rec gives both eyes with
+        // it at the left: the one in the right column is flipped)
         if (pictures) {
             const eye_preview::Picture& picture = pv.pictures.eyes[eye];
             const bool fresh = pv.hasPictures && eye_preview::pictureFresh(picture, pv.nowNs);
             drawPreviewPicture(pen, t, picture, fresh, cx - pictureSide / 2, chipsY + chipsH + 10, pictureSide,
-                               (eye == 1) != previewMirror_);
+                               eye_preview::pictureFlipped(eye, previewMirror_));
         }
     }
 

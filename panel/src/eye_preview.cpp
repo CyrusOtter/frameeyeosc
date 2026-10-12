@@ -148,6 +148,18 @@ double gazeShare(double gaze, bool vertical) {
     return std::clamp(orElse(gaze, 0.0) * 45.0 / (vertical ? 30.0 : 35.0), -1.0, 1.0);
 }
 
+int drawnColumn(int eye, bool mirror) {
+    return mirror ? eye : 1 - eye;
+}
+
+bool gazeTurned(bool mirror) {
+    return !mirror;
+}
+
+bool pictureFlipped(int eye, bool mirror) {
+    return drawnColumn(eye, mirror) == 1;
+}
+
 bool parsePictures(const uint8_t* data, size_t size, Pictures& out, std::string& why) {
     if (size < kHeaderSize) {
         why = "too short for the header (" + std::to_string(size) + " bytes)";

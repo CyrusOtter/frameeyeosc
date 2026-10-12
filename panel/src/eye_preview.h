@@ -96,6 +96,34 @@ double pupilRadius(double irisRadius, double mm);
  */
 double gazeShare(double gaze, bool vertical);
 
+/**
+ * Which column of the sheet an eye is drawn in. In a mirror ("Mirror" on) the user's left eye is on the left and the
+ * right eye on the right, as they see themselves in a mirror; seen from the front (off: as someone facing them, or the
+ * avatar from the front) the right eye is on the left.
+ * @param eye 0 left, 1 right (anatomical)
+ * @param mirror as in a mirror
+ * @return 0 the left column, 1 the right one
+ */
+int drawnColumn(int eye, bool mirror);
+
+/**
+ * Whether the drawn irises move the other way to the gaze sideways: not in a mirror (looking to one's right moves them
+ * right), seen from the front they do.
+ * @param mirror as in a mirror
+ * @return true if turned round
+ */
+bool gazeTurned(bool mirror);
+
+/**
+ * Whether an eye's camera picture is flipped left to right, so its temporal (ear) side is toward the outside of the
+ * sheet in both views: eyecam-rec gives both eyes with that side at the left, so the picture in the right column is
+ * flipped. (The two views thus show mirror images of each other, as the drawn eyes do.)
+ * @param eye 0 left, 1 right (anatomical)
+ * @param mirror as in a mirror
+ * @return true if flipped
+ */
+bool pictureFlipped(int eye, bool mirror);
+
 // ---- eyecam-rec's preview file (tools/eyecam/src/preview.rs) ----
 
 /** Its name in eyecam-rec's folder. */
