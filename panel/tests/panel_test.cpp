@@ -7,7 +7,8 @@
 // one open, all of them scrolled: kept within the list, ▲ / ▼, only what shows can be pressed) and the failure screens'
 // bar, the Eye fit tab while a fit runs (only "Stop" and the tabs), the icons in texts (measured and drawn in their
 // own boxes, never starting a line, cut whole), and the other Frame apps (the row at the bottom of "Version" and its
-// count, the list's rows by state, the confirmation's command and buttons, scrolling). Built with
+// count, the list's rows by state, the confirmation's command and buttons, scrolling), and the eye preview (its button
+// in the left column, alone or beside a notice; its sheet's buttons, what closes it, freeze, without the cameras). Built with
 // the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
@@ -284,6 +285,8 @@ void testPupilBitsRow(const FontSet& fonts) {
  */
 bool hasWayOut(const EyePanel& panel) {
     for (const EyePanel::HitArea& area : panel.hitAreas()) {
+        // (the eye preview's button in the left column is always there: not a way out of the tab)
+        if (area.hit.action == PanelAction::PreviewOpen) continue;
         if (area.hit.action != PanelAction::Tab || area.y > 100) return true;
     }
     return false;
@@ -495,7 +498,8 @@ void testDiagPage(const FontSet& fonts) {
             CHECK(hits(panel, PanelAction::DiagOpen).empty());
             CHECK(hits(panel, PanelAction::HistoryOpen).empty());
             for (const EyePanel::HitArea& area : panel.hitAreas()) {
-                CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::DiagClose);
+                CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::DiagClose ||
+                      area.hit.action == PanelAction::PreviewOpen);
             }
             // "Back" returns to "Having trouble"; another tab closes it too
             CHECK(press(panel, PanelAction::DiagClose).action == PanelAction::None);
@@ -763,9 +767,11 @@ void testLidsPages(const FontSet& fonts) {
                     }
                     const bool calibration = fine && !camerasBoth;
                     CHECK(hits(panel, PanelAction::SetBool, key::kLidCalibration).size() == (calibration ? 2u : 0u));
-                    // Every button besides the tab row: inside the card, from the sub-tabs down
+                    // Every button besides the tab row (and the eye preview's in the left column): inside the card,
+                    // from the sub-tabs down
                     for (const EyePanel::HitArea& area : panel.hitAreas()) {
                         if (area.hit.action == PanelAction::Tab && area.y < 100) continue;
+                        if (area.hit.action == PanelAction::PreviewOpen) continue;
                         CHECK(area.x >= 400 && area.y >= 110 && area.y + area.h <= 676);
                     }
                     CHECK(belowCard(panel) == plain);
@@ -840,6 +846,7 @@ void testGazePages(const FontSet& fonts) {
                     // Every button besides the tab row: inside the card, from the sub-tabs down; nothing below it
                     for (const EyePanel::HitArea& area : panel.hitAreas()) {
                         if (area.hit.action == PanelAction::Tab && area.y < 100) continue;
+                        if (area.hit.action == PanelAction::PreviewOpen) continue;  // (the left column's)
                         CHECK(area.x >= 400 && area.y >= 110 && area.y + area.h <= 676 && area.x + area.w <= 1176);
                         if (area.hit.action == PanelAction::Step) CHECK(area.w >= 44 && area.h >= 44);
                     }
@@ -979,7 +986,8 @@ void testSubTabs(const FontSet& fonts) {
         CHECK(panel.advPage() == AdvPage::Files);
         panel.render(m);
         for (const EyePanel::HitArea& area : panel.hitAreas()) {
-            CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::AdvancedPage);
+            CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::AdvancedPage ||
+                  area.hit.action == PanelAction::PreviewOpen);
         }
         // Remembered while another tab shows, and shown again when the tab is chosen again
         pressTab(panel, PanelTab::Basic);
@@ -1156,7 +1164,8 @@ void testRecords(const FontSet& fonts) {
         m.records.files = {{"report.txt", 4000}, {"logs.txt", 86000}, {"summary.json", 2000}};
         panel.render(m);
         for (const EyePanel::HitArea& area : panel.hitAreas()) {
-            CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::RecordBack);
+            CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::RecordBack ||
+                  area.hit.action == PanelAction::PreviewOpen);
         }
         CHECK(!panel.wantsScroll() && !panel.advPageShown());
         // ...gone meanwhile: still a way back
@@ -2130,6 +2139,178 @@ void testApps(const FontSet& fonts) {
     }
 }
 
+/**
+ * Whether two areas overlap.
+ * @param a one
+ * @param b the other
+ * @return true if they share some of their inside
+ */
+bool overlaps(const EyePanel::HitArea& a, const EyePanel::HitArea& b) {
+    // (by more than half a pixel: a segmented control's choices meet edge to edge)
+    return a.x + 0.5 < b.x + b.w && b.x + 0.5 < a.x + a.w && a.y + 0.5 < b.y + b.h && b.y + 0.5 < a.y + a.h;
+}
+
+/**
+ * The eye preview's own buttons (the cross, the choices, the switches, freeze) as last drawn.
+ * @param panel the panel
+ * @return them
+ */
+std::vector<EyePanel::HitArea> previewButtons(const EyePanel& panel) {
+    std::vector<EyePanel::HitArea> found;
+    for (const EyePanel::HitArea& area : panel.hitAreas()) {
+        const PanelAction a = area.hit.action;
+        if (a == PanelAction::PreviewClose || a == PanelAction::PreviewSource || a == PanelAction::PreviewMirror ||
+            a == PanelAction::PreviewCamera || a == PanelAction::PreviewFreeze) {
+            found.push_back(area);
+        }
+    }
+    return found;
+}
+
+void testPreview(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        EyePanel panel(fonts);
+        PanelModel m = modelWith(Lids::Both);
+        m.language = language;
+        m.update.state = frame_updater::UpdateState::UpToDate;
+        m.eyecam.status.hasPreview = true;
+        eye_preview::fake(m.preview, eye_preview::monotonicNs());
+        // The button at the bottom of the left column: wide, inside the column, under the gaze
+        panel.render(m);
+        std::vector<EyePanel::HitArea> button = hits(panel, PanelAction::PreviewOpen);
+        CHECK(button.size() == 1);
+        if (button.size() == 1) {
+            CHECK(button[0].x >= 44 && button[0].x + button[0].w <= 376 && button[0].w >= 300);
+            CHECK(button[0].y >= 616 && button[0].y + button[0].h <= 670);
+        }
+        CHECK(!panel.previewOpen());
+
+        // It opens the sheet over the tabs' content: its cross, three choices, two switches and freeze, inside the
+        // card, apart from each other; the left column and every tab stay (none chosen: each closes it)
+        CHECK(press(panel, PanelAction::PreviewOpen).action == PanelAction::None);
+        CHECK(panel.previewOpen() && panel.previewPictures());
+        panel.render(m);
+        const std::vector<EyePanel::HitArea> own = previewButtons(panel);
+        CHECK(own.size() == 7);
+        CHECK(hits(panel, PanelAction::PreviewClose).size() == 1 && hits(panel, PanelAction::PreviewSource).size() == 3);
+        CHECK(hits(panel, PanelAction::PreviewMirror).size() == 1 && hits(panel, PanelAction::PreviewCamera).size() == 1);
+        CHECK(hits(panel, PanelAction::PreviewFreeze).size() == 1);
+        for (size_t i = 0; i < own.size(); ++i) {
+            const EyePanel::HitArea& a = own[i];
+            CHECK(a.x >= 438 && a.x + a.w <= 1154 + 0.5 && a.y >= 96 && a.y + a.h <= 676);
+            for (size_t j = i + 1; j < own.size(); ++j) CHECK(!overlaps(a, own[j]));
+        }
+        int tabs = 0;
+        for (const EyePanel::HitArea& area : hits(panel, PanelAction::Tab)) tabs += area.y < 100 ? 1 : 0;
+        CHECK(tabs == 7);
+        // Nothing of the tab below it can be pressed
+        for (const EyePanel::HitArea& area : panel.hitAreas()) {
+            const bool sheet = area.x >= 416 && area.y >= 96;
+            const PanelAction a = area.hit.action;
+            const bool ownButton = a == PanelAction::PreviewClose || a == PanelAction::PreviewSource ||
+                                   a == PanelAction::PreviewMirror || a == PanelAction::PreviewCamera ||
+                                   a == PanelAction::PreviewFreeze;
+            if (sheet) CHECK(ownButton);
+        }
+        // The button stays, now closing it
+        CHECK(hits(panel, PanelAction::PreviewOpen).size() == 1);
+
+        // The pictures' switch (and only that) stops asking for them; the choices and the mirror keep it open
+        CHECK(press(panel, PanelAction::PreviewCamera).action == PanelAction::None);
+        CHECK(panel.previewOpen() && !panel.previewPictures());
+        panel.render(m);
+        press(panel, PanelAction::PreviewCamera);
+        CHECK(panel.previewPictures());
+        panel.render(m);
+        pressArg(panel, PanelAction::PreviewSource, static_cast<int>(eye_preview::Source::Raw));
+        panel.render(m);
+        press(panel, PanelAction::PreviewMirror);
+        panel.render(m);
+        CHECK(panel.previewOpen());
+
+        // Freeze: what shows stays as it was while the values move on; "Resume" lets it move again
+        panel.render(m);
+        press(panel, PanelAction::PreviewFreeze);
+        panel.pointerLeave();
+        panel.render(m);
+        const std::vector<uint8_t> frozen = panel.toRgba();
+        PanelModel moved = m;
+        moved.preview.packet.eyes[1].lid = 0.1f;
+        moved.preview.packet.eyes[1].opennessScaled = 0.1f;
+        moved.preview.packet.rawGaze[2] = -0.5f;
+        panel.render(moved);
+        CHECK(panel.toRgba() == frozen);
+        press(panel, PanelAction::PreviewFreeze);
+        panel.pointerLeave();
+        panel.render(moved);
+        CHECK(panel.toRgba() != frozen);
+
+        // Without the eye cameras in use: no pictures' switch and no "Camera" values to press, the rest as before
+        for (const int why : {0, 1, 2, 3}) {
+            PanelModel without = m;
+            if (why == 0) without.eyecam.visible = false;
+            if (why == 1) without.eyecam.status.setupDone = false;
+            if (why == 2) without.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
+            if (why == 3) without.eyecam.status.hasPreview = false;
+            panel.render(without);
+            CHECK(hits(panel, PanelAction::PreviewCamera).empty());
+            bool cameraValues = false;
+            for (const EyePanel::HitArea& area : hits(panel, PanelAction::PreviewSource)) {
+                cameraValues |= area.hit.arg == static_cast<int>(eye_preview::Source::Camera);
+            }
+            // (an eyecam-rec without the pictures still has the camera's values)
+            CHECK(cameraValues == (why == 3));
+            CHECK(hits(panel, PanelAction::PreviewMirror).size() == 1 && hits(panel, PanelAction::PreviewClose).size() == 1);
+        }
+        // Without frameeyeosc's samples, and with no pictures yet: drawn all the same
+        PanelModel empty = m;
+        empty.preview = eye_preview::View();
+        panel.render(empty);
+        CHECK(previewButtons(panel).size() == 7);
+
+        // Its cross closes it; so does its button pressed again, and any tab
+        press(panel, PanelAction::PreviewClose);
+        CHECK(!panel.previewOpen());
+        panel.render(m);
+        press(panel, PanelAction::PreviewOpen);
+        panel.render(m);
+        press(panel, PanelAction::PreviewOpen);
+        CHECK(!panel.previewOpen());
+        panel.render(m);
+        press(panel, PanelAction::PreviewOpen);
+        panel.render(m);
+        pressTab(panel, PanelTab::Gaze);
+        CHECK(!panel.previewOpen() && panel.tab() == PanelTab::Gaze);
+        // ...and the tab it was opened over, pressed while it shows
+        panel.render(m);
+        press(panel, PanelAction::PreviewOpen);
+        panel.render(m);
+        pressTab(panel, PanelTab::Gaze);
+        CHECK(!panel.previewOpen() && panel.tab() == PanelTab::Gaze);
+
+        // A notice or a message at the bottom of the left column: the button a square at the right of it, both there
+        for (const int which : {0, 1, 2}) {
+            PanelModel shared = m;
+            if (which == 0) {
+                shared.update.state = frame_updater::UpdateState::Available;
+                shared.update.latest = "0.7.8";
+            }
+            if (which == 1) shared.panelError = "rename failed: Read-only file system";
+            if (which == 2) shared.eyecam.status.setupDone = false;
+            panel.render(shared);
+            button = hits(panel, PanelAction::PreviewOpen);
+            CHECK(button.size() == 1);
+            if (button.size() != 1) continue;
+            CHECK(button[0].w == 44 && button[0].h == 44 && button[0].x + button[0].w <= 376 + 0.5);
+            CHECK(button[0].y + button[0].h <= 670 + 0.5);
+            for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                if (area.x < 416 && area.hit.action != PanelAction::PreviewOpen) CHECK(!overlaps(area, button[0]));
+            }
+            if (which == 0) CHECK(hits(panel, PanelAction::AdvancedPage).size() == 1);
+        }
+    }
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -2162,6 +2343,7 @@ int main() {
     testCameraRows(fonts);
     testIconText(fonts);
     testApps(fonts);
+    testPreview(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

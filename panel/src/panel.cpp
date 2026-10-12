@@ -887,7 +887,38 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
     // Pressing anything else cancels a pending confirmation
     if (hit.action != PanelAction::Quit) quitArmed_ = false;
     if (hit.action != PanelAction::ResetAll) resetArmed_ = false;
+    // ...and closes the eye preview (a tab, the left column's notices): only its own buttons keep it
+    const bool previewButton = hit.action == PanelAction::PreviewOpen || hit.action == PanelAction::PreviewClose ||
+                               hit.action == PanelAction::PreviewSource || hit.action == PanelAction::PreviewMirror ||
+                               hit.action == PanelAction::PreviewCamera || hit.action == PanelAction::PreviewFreeze;
+    if (hit.action != PanelAction::None && !previewButton) previewOpen_ = false;
     switch (hit.action) {
+        case PanelAction::PreviewOpen:
+            // (pressed again while it is open: it closes)
+            if (previewOpen_) {
+                previewOpen_ = false;
+            } else {
+                openPreview();
+            }
+            return {};
+        case PanelAction::PreviewClose:
+            previewOpen_ = false;
+            return {};
+        case PanelAction::PreviewSource:
+            if (hit.arg < 0 || hit.arg > static_cast<int>(eye_preview::Source::Camera)) return {};
+            previewSource_ = static_cast<eye_preview::Source>(hit.arg);
+            return {};
+        case PanelAction::PreviewMirror:
+            previewMirror_ = !previewMirror_;
+            return {};
+        case PanelAction::PreviewCamera:
+            previewCamera_ = !previewCamera_;
+            return {};
+        case PanelAction::PreviewFreeze:
+            // Stopped at what the next draw shows (the model isn't at hand here)
+            previewFrozen_ = !previewFrozen_;
+            previewFreezePending_ = previewFrozen_;
+            return {};
         case PanelAction::Tab:
             setTab(static_cast<PanelTab>(hit.arg));
             closeAppsList();
@@ -1214,6 +1245,22 @@ void EyePanel::openAppsList() {
     appsConfirmOpen_ = false;
     appsLaunchResult_ = frame_apps::LaunchResult::Started;
     appsScroll_ = 0.0;
+}
+
+void EyePanel::openPreview() {
+    previewOpen_ = true;
+    previewFrozen_ = false;
+    previewFreezePending_ = false;
+    // (over whatever shows; the light warning before a recording doesn't stay behind it)
+    eyecamConfirm_.close();
+}
+
+void EyePanel::setPreviewOptions(eye_preview::Source source, bool mirror, bool camera, bool frozen) {
+    previewSource_ = source;
+    previewMirror_ = mirror;
+    previewCamera_ = camera;
+    previewFrozen_ = frozen;
+    previewFreezePending_ = frozen;
 }
 
 void EyePanel::openAppsConfirm(const std::string& key) {
@@ -1762,13 +1809,27 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     } else if (s.running && !s.configError.empty()) {
         message = std::string(t.errorPrefix) + s.configError;
     }
+    // The eye preview's button at the very bottom: wide with its label on its own, or a square with the eye alone at
+    // the right of the message or notice there (they make room for it)
+    const frame_updater::UpdateState update = m.update.state;
+    const bool notice = update == frame_updater::UpdateState::Available ||
+                        update == frame_updater::UpdateState::Installing ||
+                        update == frame_updater::UpdateState::Installed;
+    const bool shared = !message.empty() || setupCard || notice;
+    const double square = 44;
+    const double right = shared ? x1 - square - 8 : x1;
     if (!message.empty()) {
-        const std::vector<std::string> lines = wrapText(pen, message, 15, true, x1 - x0, 2);
+        const std::vector<std::string> lines = wrapText(pen, message, 15, true, right - x0, 2);
         for (size_t i = 0; i < lines.size(); ++i) pen.text(x0, 636 + i * 22, lines[i], 15, kDanger, true);
     } else if (setupCard) {
-        drawSetupNotice(pen, t, m, setup, x0, x1);
+        drawSetupNotice(pen, t, m, setup, x0, right);
     } else {
-        drawUpdateNotice(pen, t, m.update, x0, x1);
+        drawUpdateNotice(pen, t, m.update, x0, right);
+    }
+    if (shared) {
+        drawPreviewButton(pen, t, x1 - square, 670 - square, square, square, false);
+    } else {
+        drawPreviewButton(pen, t, x0, 626, x1 - x0, 44, true);
     }
 }
 
@@ -1912,7 +1973,8 @@ void EyePanel::drawTabs(const Pen& pen, const UiText& t) {
     for (int i = 0; i < count; ++i) {
         const double w = pen.measure(labels[i], size, true) + pad * 2 + extra;
         const PanelHit hit {PanelAction::Tab, nullptr, static_cast<int>(tabs[i])};
-        const bool selected = tab_ == tabs[i];
+        // (none while the eye preview is over the content: any of them closes it)
+        const bool selected = tab_ == tabs[i] && !previewOpen_;
         const int pointer = pointerState(hit);
         if (selected) {
             // The chosen tab: accent fill, bold text and a notch pointing at the content
@@ -3802,6 +3864,26 @@ void EyePanel::drawAppLine(const Pen& pen, const UiText& t, Language language, c
     pen.text(textX, y + h / 2 + 18, ellipsize(pen, entry.app.desc(lang), 13, false, textW, false), 13, kTextMuted);
 }
 
+void EyePanel::drawSheetClose(const Pen& pen, const PanelHit& hit, double x, double y, double s) {
+    cairo_t* cr = pen.cr;
+    const int pointer = pointerState(hit);
+    fillRounded(pen, x, y, s, s, 14, pointer == 2 ? kAccentPressed : (pointer == 1 ? kControlHover : kControl));
+    strokeRounded(pen, x, y, s, s, 14, kBorder, 2);
+    cairo_save(cr);
+    pen.color(pointer == 2 ? kOnAccent : kText);
+    cairo_set_line_width(cr, 2.5);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    const double cx = x + s / 2;
+    const double cy = y + s / 2;
+    cairo_move_to(cr, cx - 8, cy - 8);
+    cairo_line_to(cr, cx + 8, cy + 8);
+    cairo_move_to(cr, cx + 8, cy - 8);
+    cairo_line_to(cr, cx - 8, cy + 8);
+    cairo_stroke(cr);
+    cairo_restore(cr);
+    addButton(hit, x, y, s, s);
+}
+
 void EyePanel::drawAppsList(const Pen& pen, const UiText& t, const PanelModel& m) {
     cairo_t* cr = pen.cr;
     const std::vector<frame_apps::Entry>& apps = m.apps.entries;
@@ -3811,27 +3893,7 @@ void EyePanel::drawAppsList(const Pen& pen, const UiText& t, const PanelModel& m
     // The title and what is done where, and the cross at the right
     const double closeS = 52;
     const double closeX = kInnerRight - closeS;
-    const double closeY = kAppsHeadY + 2;
-    {
-        const PanelHit hit {PanelAction::AppsClose, nullptr, 0};
-        const int pointer = pointerState(hit);
-        fillRounded(pen, closeX, closeY, closeS, closeS, 14,
-                    pointer == 2 ? kAccentPressed : (pointer == 1 ? kControlHover : kControl));
-        strokeRounded(pen, closeX, closeY, closeS, closeS, 14, kBorder, 2);
-        cairo_save(cr);
-        pen.color(pointer == 2 ? kOnAccent : kText);
-        cairo_set_line_width(cr, 2.5);
-        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-        const double cx = closeX + closeS / 2;
-        const double cy = closeY + closeS / 2;
-        cairo_move_to(cr, cx - 8, cy - 8);
-        cairo_line_to(cr, cx + 8, cy + 8);
-        cairo_move_to(cr, cx + 8, cy - 8);
-        cairo_line_to(cr, cx - 8, cy + 8);
-        cairo_stroke(cr);
-        cairo_restore(cr);
-        addButton(hit, closeX, closeY, closeS, closeS);
-    }
+    drawSheetClose(pen, {PanelAction::AppsClose, nullptr, 0}, closeX, kAppsHeadY + 2, closeS);
     const double headW = closeX - 16 - kInnerX;
     pen.text(kInnerX, kAppsHeadY + 26, t.appsAllTitle, fitSize(pen, t.appsAllTitle, 22, 16, headW, true), kText, true);
     pen.text(kInnerX, kAppsHeadY + 50, ellipsize(pen, t.appsListSub, 14, false, headW, false), 14, kTextMuted);
@@ -5389,6 +5451,10 @@ void EyePanel::drawIconButton(const Pen& pen, double x, double y, double w, doub
     const double left = x + (w - contentW) / 2;
     if (icon == ButtonIcon::Terminal) drawTerminalIcon(pen, left, y + h / 2, color);
     if (icon == ButtonIcon::Play) drawPlayIcon(pen, left + 2, y + h / 2, color);
+    if (icon == ButtonIcon::Pause) {
+        fillRounded(pen, left + 3, y + h / 2 - 7, 4, 14, 1, color);
+        fillRounded(pen, left + 11, y + h / 2 - 7, 4, 14, 1, color);
+    }
     pen.text(left + iconW, centerBaseline(y, h, size), label, size, color, true);
     addButton(hit, x, y, w, h, usable);
 }
@@ -6503,6 +6569,352 @@ void EyePanel::drawEyecamConfirm(const Pen& pen, const UiText& t, const eyecam::
                {PanelAction::EyecamChoose, nullptr, static_cast<int>(StartChoice::Cancel)}, true, false, 24);
 }
 
+void EyePanel::drawPreviewButton(const Pen& pen, const UiText& t, double x, double y, double w, double h, bool label) {
+    const PanelHit hit {PanelAction::PreviewOpen, nullptr, 0};
+    const int pointer = pointerState(hit);
+    // Open: the accent tint (pressed again, it closes)
+    const double r = label ? h / 2 : 14;
+    fillRounded(pen, x, y, w, h, r, previewOpen_ ? kAccentTint : (pointer > 0 ? kControlHover : kControl));
+    strokeRounded(pen, x, y, w, h, r, kAccent, 2);
+    if (label) {
+        const double size = fitSize(pen, t.previewButton, 17, 12, w - 70, true);
+        const double contentW = 30 + pen.measure(t.previewButton, size, true);
+        const double left = x + (w - contentW) / 2;
+        drawEyeIcon(pen, left + 11, y + h / 2, kAccent);
+        pen.text(left + 30, centerBaseline(y, h, size), t.previewButton, size, kText, true);
+    } else {
+        drawEyeIcon(pen, x + w / 2, y + h / 2, kAccent);
+    }
+    addButton(hit, x, y, w, h);
+}
+
+void EyePanel::drawToggle(const Pen& pen, double x, double y, double w, double h, const std::string& label,
+                          const PanelHit& hit, bool on, bool usable) {
+    const int pointer = usable ? pointerState(hit) : 0;
+    const Color edge = on ? kAccent : (usable ? kBorder : kDivider);
+    fillRounded(pen, x, y, w, h, h / 2, on ? kAccentTint : (pointer > 0 ? kControlHover : kControl));
+    strokeRounded(pen, x, y, w, h, h / 2, edge, 2);
+    // A box, filled with a check while on (never the color alone)
+    const double box = 18;
+    const double bx = x + 16;
+    const double by = y + (h - box) / 2;
+    if (on) {
+        fillRounded(pen, bx, by, box, box, 5, kAccent);
+        drawCheck(pen.cr, bx + box / 2, by + box / 2, 14, kOnAccent);
+    } else {
+        strokeRounded(pen, bx, by, box, box, 5, edge, 2);
+    }
+    const double size = fitSize(pen, label, 16, 11, w - (bx + box + 8 - x) - 14, on);
+    pen.text(bx + box + 8, centerBaseline(y, h, size), label, size, usable ? kText : kTextDisabled, on);
+    addButton(hit, x, y, w, h, usable);
+}
+
+void EyePanel::drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, double x, double y, double w,
+                              double h, bool mirror) {
+    cairo_t* cr = pen.cr;
+    // Without a value: relaxed open, faded
+    if (!eye.known) cairo_push_group(cr);
+    // The corners, and the control points of the almond's top (as wide as the lids open) and bottom
+    const double lx = x + 10;
+    const double rx = x + w - 10;
+    const double cy = y + h * 0.55;
+    const double c1 = x + w * 0.3;
+    const double c2 = x + w * 0.7;
+    const double top = y - h * 0.12;
+    const double bottom = cy + h * 0.45;
+    // The lids: the upper one down from the top to its eyelid (to the bottom when closed), the lower one up for a squint
+    const double upper = bottom - eye_preview::upperLidOpen(eye.lid) * (bottom - top);
+    const double lower = bottom - eye_preview::lowerLidRise(eye.squint) * (bottom - cy);
+    const auto curve = [&](double control, bool forward) {
+        if (forward) {
+            cairo_curve_to(cr, c1, control, c2, control, rx, cy);
+        } else {
+            cairo_curve_to(cr, c2, control, c1, control, lx, cy);
+        }
+    };
+    const auto almond = [&]() {
+        cairo_new_path(cr);
+        cairo_move_to(cr, lx, cy);
+        curve(top, true);
+        curve(bottom, false);
+        cairo_close_path(cr);
+    };
+    almond();
+    pen.color(kEyeLid);
+    cairo_fill(cr);
+    if (upper < lower - 0.5) {
+        // The open part: the white, the iris where the eye looks (turned round in a mirror) and its pupil
+        cairo_save(cr);
+        cairo_new_path(cr);
+        cairo_move_to(cr, lx, cy);
+        curve(upper, true);
+        curve(lower, false);
+        cairo_close_path(cr);
+        cairo_clip(cr);
+        pen.color(kEyeWhite);
+        cairo_paint(cr);
+        const double iris = h * 0.27;
+        const double sideways = eye_preview::gazeShare(eye.gazeX, false) * w * 0.22;
+        const double ix = x + w / 2 + (mirror ? -sideways : sideways);
+        const double iy = cy - 4 - eye_preview::gazeShare(eye.gazeY, true) * h * 0.16;
+        drawDot(cr, ix, iy, iris, kEyeIris);
+        drawRing(cr, ix, iy, iris - 1.5, 3, kEyeIrisRim);
+        drawDot(cr, ix, iy, eye_preview::pupilRadius(iris, eye.pupilMm), kEyeDark);
+        // (a highlight, so it reads as an eye)
+        cairo_set_source_rgba(cr, 1, 1, 1, 0.85);
+        cairo_new_sub_path(cr);
+        cairo_arc(cr, ix + iris * 0.32, iy - iris * 0.36, iris * 0.11, 0, 2 * M_PI);
+        cairo_fill(cr);
+        cairo_restore(cr);
+        // The lids' edges: the upper one dark like lashes, the lower one thin
+        pen.color(kEyeDark);
+        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+        cairo_set_line_width(cr, 4);
+        cairo_new_path(cr);
+        cairo_move_to(cr, lx, cy);
+        curve(upper, true);
+        cairo_stroke(cr);
+        cairo_set_line_width(cr, 1.5);
+        cairo_new_path(cr);
+        cairo_move_to(cr, rx, cy);
+        curve(lower, false);
+        cairo_stroke(cr);
+    } else {
+        // Closed: the lids meet
+        pen.color(kEyeDark);
+        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+        cairo_set_line_width(cr, 4);
+        cairo_new_path(cr);
+        cairo_move_to(cr, rx, cy);
+        curve(lower, false);
+        cairo_stroke(cr);
+    }
+    almond();
+    pen.color(kBorder);
+    cairo_set_line_width(cr, 1.5);
+    cairo_stroke(cr);
+    if (!eye.known) fadeGroup(pen);
+}
+
+void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
+                                  double x, double y, double side, bool flip) {
+    cairo_t* cr = pen.cr;
+    const double r = 12;
+    fillRounded(pen, x, y, side, side, r, kBg);
+    const int n = picture.side;
+    if (!fresh || n <= 0 || picture.pixels.size() != static_cast<size_t>(n) * n) {
+        const std::vector<std::string> lines = wrapText(pen, t.previewWaitingPicture, 14, false, side - 20, 2);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            textCentered(pen, x + side / 2, y + side / 2 + 5 + (i - (lines.size() - 1) / 2.0) * 20, lines[i], 14,
+                         kTextMuted, false);
+        }
+        strokeRounded(pen, x, y, side, side, r, kBorder, 1.5);
+        return;
+    }
+    // The grey picture as an RGB image (only in memory, for this draw), scaled into the box and mirrored as asked
+    const int stride = cairo_format_stride_for_width(CAIRO_FORMAT_RGB24, n);
+    std::vector<uint8_t> rgb(static_cast<size_t>(stride) * n);
+    for (int row = 0; row < n; ++row) {
+        uint32_t* out = reinterpret_cast<uint32_t*>(rgb.data() + static_cast<size_t>(row) * stride);
+        const uint8_t* in = picture.pixels.data() + static_cast<size_t>(row) * n;
+        for (int col = 0; col < n; ++col) out[col] = in[col] * 0x010101u;
+    }
+    cairo_surface_t* image = cairo_image_surface_create_for_data(rgb.data(), CAIRO_FORMAT_RGB24, n, n, stride);
+    const double scale = side / n;
+    cairo_save(cr);
+    pen.roundedRect(x, y, side, side, r);
+    cairo_clip(cr);
+    cairo_save(cr);
+    cairo_translate(cr, flip ? x + side : x, y);
+    cairo_scale(cr, flip ? -scale : scale, scale);
+    cairo_set_source_surface(cr, image, 0, 0);
+    cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
+    cairo_paint(cr);
+    cairo_restore(cr);
+    cairo_surface_destroy(image);
+    // The marks, in the picture's own coordinates (mirrored with it)
+    const auto px = [&](double v) { return flip ? x + side - v * scale : x + v * scale; };
+    const auto py = [&](double v) { return y + v * scale; };
+    const double* win = picture.window;
+    if (std::isfinite(win[0]) && std::isfinite(win[1]) && std::isfinite(win[2]) && std::isfinite(win[3])) {
+        const double left = std::min(px(win[0]), px(win[2]));
+        const double right = std::max(px(win[0]), px(win[2]));
+        const double dash[2] = {6, 4};
+        cairo_set_dash(cr, dash, 2, 0);
+        pen.color(kPreviewWindow);
+        cairo_set_line_width(cr, 2);
+        cairo_rectangle(cr, left, py(win[1]), right - left, py(win[3]) - py(win[1]));
+        cairo_stroke(cr);
+        cairo_set_dash(cr, nullptr, 0, 0);
+    }
+    if (picture.pupil) drawRing(cr, px(picture.pupilX), py(picture.pupilY), picture.pupilR * scale, 2.5, kPreviewPupil);
+    if (picture.closed) {
+        const double size = 13;
+        const double w = pen.measure(t.previewClosed, size, true) + 18;
+        pen.color(kBg, 0.85);
+        pen.roundedRect(x + 8, y + 8, w, 24, 12);
+        cairo_fill(cr);
+        pen.text(x + 17, centerBaseline(y + 8, 24, size), t.previewClosed, size, kText, true);
+    }
+    cairo_restore(cr);
+    strokeRounded(pen, x, y, side, side, r, kBorder, 1.5);
+}
+
+void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m) {
+    using eye_preview::CameraState;
+    using eye_preview::Source;
+    // Stopped: what the first draw after "Freeze" showed, kept until "Resume"
+    if (previewFreezePending_) {
+        previewKept_ = m.preview;
+        previewFreezePending_ = false;
+    }
+    const eye_preview::View& pv = previewFrozen_ ? previewKept_ : m.preview;
+    const CameraState camera = eye_preview::cameraState(m.eyecam, SettingsView(m).flag(key::kCameraLids), pv.refused);
+    const bool cameraValues = eye_preview::cameraValuesAvailable(camera);
+    // ("Camera" while the camera's values can't be had shows the values as sent)
+    const Source source = previewSource_ == Source::Camera && !cameraValues ? Source::Sent : previewSource_;
+    const bool pictures = previewCamera_ && camera == CameraState::Available;
+    // A sheet over the content card (the tabs and the left column stay), like the other Frame apps' list
+    drawCard(pen, kRightX, kContentY, kRight - kRightX, kContentH, 20, kCard, kBorder, 2);
+    const double closeS = 48;
+    const double closeX = kInnerRight - closeS;
+    const double headY = kContentY + 14;
+    drawSheetClose(pen, {PanelAction::PreviewClose, nullptr, 0}, closeX, headY, closeS);
+    pen.text(kInnerX, headY + 33, t.previewButton, fitSize(pen, t.previewButton, 24, 16, closeX - 16 - kInnerX, true),
+             kText, true);
+
+    // The controls: which values, the mirror, the pictures, freeze (one text size, the largest at which the switches
+    // leave the choices room)
+    const double rowY = headY + closeS + 14;
+    const double rowH = 44;
+    const double gap = 12;
+    double size = 16;
+    double mirrorW = 0;
+    double cameraW = 0;
+    double freezeW = 0;
+    double choicesW = 0;
+    for (; size >= 12; size -= 1) {
+        mirrorW = pen.measure(t.previewMirror, size, true) + 58;
+        cameraW = pen.measure(t.previewPicture, size, true) + 58;
+        freezeW = std::max(pen.measure(t.previewFreeze, size, true), pen.measure(t.previewResume, size, true)) + 64;
+        choicesW = kInnerRight - kInnerX - mirrorW - cameraW - freezeW - gap * 3;
+        if (choicesW >= 270) break;
+    }
+    const std::vector<Option> sources = {
+        {t.previewSourceSent, {PanelAction::PreviewSource, nullptr, static_cast<int>(Source::Sent)}, true},
+        {t.previewSourceRaw, {PanelAction::PreviewSource, nullptr, static_cast<int>(Source::Raw)}, true},
+        {t.previewSourceCamera, {PanelAction::PreviewSource, nullptr, static_cast<int>(Source::Camera)}, cameraValues},
+    };
+    drawSegmented(pen, kInnerX, rowY, choicesW, rowH, sources, static_cast<int>(source), size);
+    double x = kInnerX + choicesW + gap;
+    drawToggle(pen, x, rowY, mirrorW, rowH, t.previewMirror, {PanelAction::PreviewMirror, nullptr, 0}, previewMirror_,
+               true);
+    x += mirrorW + gap;
+    const bool cameraUsable = camera == CameraState::Available;
+    drawToggle(pen, x, rowY, cameraW, rowH, t.previewPicture, {PanelAction::PreviewCamera, nullptr, 0},
+               previewCamera_ && cameraUsable, cameraUsable);
+    x += cameraW + gap;
+    drawIconButton(pen, x, rowY, freezeW, rowH, previewFrozen_ ? t.previewResume : t.previewFreeze,
+                   {PanelAction::PreviewFreeze, nullptr, 0}, true, false, size,
+                   previewFrozen_ ? ButtonIcon::Play : ButtonIcon::Pause);
+    // Why the pictures (and the camera's values) can't show, under the switches
+    const char* why = nullptr;
+    switch (camera) {
+        case CameraState::Available: break;
+        case CameraState::NotRunning: why = t.previewCamNotRunning; break;
+        case CameraState::NotSetUp: why = t.previewCamNotSetUp; break;
+        case CameraState::NotInUse: why = t.previewCamNotInUse; break;
+        case CameraState::Old: why = t.previewCamOld; break;
+        case CameraState::Refused: why = t.previewCamRefused; break;
+    }
+    if (why != nullptr) {
+        const double whySize = fitSize(pen, why, 14, 11, kInnerRight - kInnerX, false);
+        pen.text(kInnerRight, rowY + rowH + 22, why, whySize, kTextMuted, false, true);
+    }
+
+    // Both eyes, each with its chips, and under them its camera picture; without the pictures, in the middle of the
+    // space. In a mirror the right eye is on the left
+    const double eyeW = 255;
+    const double eyeH = 170;
+    const double chipsH = 28;
+    const double pictureSide = 176;
+    const double footer = kContentY + kContentH - 36;
+    const double areaTop = rowY + rowH + (why != nullptr ? 34 : 12);
+    const double blockH = eyeH + 6 + chipsH + (pictures ? 10 + pictureSide : 0);
+    const double top = pictures ? areaTop : areaTop + std::max(0.0, (footer - 22 - areaTop - blockH) / 2);
+    const eye_preview::Shown shown = pv.hasPacket ? eye_preview::shown(pv.packet, source) : eye_preview::Shown {};
+    const double half = (kInnerRight - kInnerX) / 2;
+    for (int at = 0; at < 2; ++at) {
+        const int eye = previewMirror_ ? 1 - at : at;
+        const eye_preview::EyeShown& e = shown.eyes[eye];
+        const double cx = kInnerX + half * (at + 0.5);
+        const double ex = cx - eyeW / 2;
+        drawPreviewEye(pen, e, ex, top, eyeW, eyeH, previewMirror_);
+        // Which eye, in the box's top corner on the outer side
+        const char* name = eye == 0 ? t.leftEye : t.rightEye;
+        pen.text(at == 0 ? ex : ex + eyeW, top + 16, name, 15, kTextMuted, true, at != 0);
+        // Its chips: the eyelid, where it came from, the pupil
+        char lid[64];
+        if (shown.valid && std::isfinite(e.lidValue)) {
+            std::snprintf(lid, sizeof(lid), t.previewLidFormat, e.lidValue);
+        } else {
+            std::snprintf(lid, sizeof(lid), "%s", t.previewLidNone);
+        }
+        char pupil[64];
+        if (shown.valid && std::isfinite(e.pupilMm)) {
+            std::snprintf(pupil, sizeof(pupil), t.previewPupilFormat, e.pupilMm);
+        } else {
+            std::snprintf(pupil, sizeof(pupil), "%s", t.previewPupilNone);
+        }
+        const double chipSize = 14;
+        const double lidW = pen.measure(lid, chipSize) + 22;
+        const double pupilW = pen.measure(pupil, chipSize) + 22;
+        const double badgeW = e.camera ? cameraBadge(pen, t, 0, 0, false) : pen.measure(t.previewFromValve, 12, true) + 18;
+        const double chipGap = 8;
+        const double chipsY = top + eyeH + 6;
+        double chipX = cx - (lidW + badgeW + pupilW + chipGap * 2) / 2;
+        const auto chip = [&](const char* text, double w) {
+            fillRounded(pen, chipX, chipsY, w, chipsH, chipsH / 2, kControl);
+            pen.text(chipX + 11, centerBaseline(chipsY, chipsH, chipSize), text, chipSize, kText);
+            chipX += w + chipGap;
+        };
+        chip(lid, lidW);
+        if (shown.valid && e.camera) {
+            cameraBadge(pen, t, chipX, chipsY + chipsH / 2);
+        } else {
+            const double h = 20;
+            const double by = chipsY + (chipsH - h) / 2;
+            fillRounded(pen, chipX, by, badgeW, h, h / 2, kControl);
+            strokeRounded(pen, chipX, by, badgeW, h, h / 2, kBorder, 1);
+            pen.text(chipX + 9, centerBaseline(by, h, 12), t.previewFromValve, 12, kTextMuted, true);
+        }
+        chipX += badgeW + chipGap;
+        chip(pupil, pupilW);
+        // The camera picture, with its temporal side out like the drawn eye's (eyecam-rec gives both eyes with it at
+        // the left: the left eye's is turned round as seen by the user, the right eye's in a mirror)
+        if (pictures) {
+            const eye_preview::Picture& picture = pv.pictures.eyes[eye];
+            const bool fresh = pv.hasPictures && eye_preview::pictureFresh(picture, pv.nowNs);
+            drawPreviewPicture(pen, t, picture, fresh, cx - pictureSide / 2, chipsY + chipsH + 10, pictureSide,
+                               (eye == 1) != previewMirror_);
+        }
+    }
+
+    // The footer: the gaze (as the user looks: + right, + up), and what the pictures show or what the drawing is for
+    std::string gaze = t.noEyeData;
+    if (shown.valid) {
+        // (no "-0")
+        const double sideways = std::round(shown.gazeX * 45.0) + 0.0;
+        const double upDown = std::round(shown.gazeY * 45.0) + 0.0;
+        char text[128];
+        std::snprintf(text, sizeof(text), t.previewGazeFormat, sideways, upDown);
+        gaze = text;
+    }
+    pen.text(kInnerX, footer, gaze, fitSize(pen, gaze, 15, 11, kInnerRight - kInnerX, true), kText, true);
+    const char* note = pictures ? t.previewNotePicture : t.previewNoteShape;
+    pen.text(kInnerX, footer + 22, note, fitSize(pen, note, 14, 10, kInnerRight - kInnerX, false), kTextMuted);
+}
+
 void EyePanel::render(const PanelModel& model) {
     const Pen pen {cr_, &fonts_};
     const UiText& t = uiText(model.language);
@@ -6533,17 +6945,21 @@ void EyePanel::render(const PanelModel& model) {
     drawStatus(pen, t, model);
     drawTabs(pen, t);
     drawCard(pen, kRightX, kContentY, kRight - kRightX, kContentH, 20, kCard, kDivider, 1);
-    switch (tab_) {
-        case PanelTab::Basic: drawBasic(pen, t, model, view); break;
-        case PanelTab::Output: drawOutput(pen, t, model, view); break;
-        case PanelTab::Gaze: drawGaze(pen, t, model, view); break;
-        case PanelTab::EyeFit: drawEyeFit(pen, t, model, view); break;
-        case PanelTab::Lids: drawLids(pen, t, model, view); break;
-        case PanelTab::Advanced: drawAdvanced(pen, t, model, view); break;
-        case PanelTab::Eyecam: drawEyecam(pen, t, model, view); break;
+    if (previewOpen_) {
+        drawPreview(pen, t, model);
+    } else {
+        switch (tab_) {
+            case PanelTab::Basic: drawBasic(pen, t, model, view); break;
+            case PanelTab::Output: drawOutput(pen, t, model, view); break;
+            case PanelTab::Gaze: drawGaze(pen, t, model, view); break;
+            case PanelTab::EyeFit: drawEyeFit(pen, t, model, view); break;
+            case PanelTab::Lids: drawLids(pen, t, model, view); break;
+            case PanelTab::Advanced: drawAdvanced(pen, t, model, view); break;
+            case PanelTab::Eyecam: drawEyecam(pen, t, model, view); break;
+        }
     }
     // While a fit runs on its tab, the rest is dimmed and can't be pressed, except the tabs (leaving stops the fit)
-    if (tab_ == PanelTab::EyeFit && fitRunning(model.fit)) {
+    if (tab_ == PanelTab::EyeFit && fitRunning(model.fit) && !previewOpen_) {
         pen.color(kBg, 0.72);
         cairo_rectangle(pen.cr, kStatusX, kStatusY, kStatusW, kStatusH);
         cairo_fill(pen.cr);

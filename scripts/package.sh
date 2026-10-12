@@ -22,6 +22,7 @@ cmake -G Ninja -S panel -B panel/build -DCMAKE_BUILD_TYPE=Release
 ninja -C panel/build
 panel/build/gaze-fit-test
 panel/build/gaze-dots-test
+panel/build/eye-preview-test
 panel/build/sounds-test
 panel/build/text-test
 panel/build/auto-recenter-test

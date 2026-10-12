@@ -217,6 +217,8 @@ struct Status {
     bool recalibSuggested = false; ///< drifted since the calibration: "calib wear" again
     bool live = false;             ///< the eyelids are read from the cameras live
     double liveMs = 0.0;           ///< how long one live frame took (ms; NaN when missing)
+    bool hasPreview = false;       ///< "preview" is there (an eyecam-rec that makes the eye preview's pictures)
+    bool preview = false;          ///< ...it makes them now (the panel asked within the last few seconds)
     std::string autoGrab;          ///< "auto_grab": how eyecam-rec takes the buffers by itself ("" when missing)
     bool grabOutdated = false;     ///< "grab_outdated": the installed eyecam-grab (root's copy) differs from the one
                                    ///< bundled with eyecam-rec, so an update brought a new one (false when missing)

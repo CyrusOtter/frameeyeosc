@@ -58,6 +58,30 @@ struct UiText {
     const char* errWrite;           ///< writing config.json failed
     const char* errConfigBroken;    ///< config.json can't be parsed
     const char* errAutostart;       ///< systemctl enable/disable failed
+    // The eye preview: the left column's button and the sheet it opens (eye_preview.h)
+    const char* previewButton;          ///< the button at the bottom of the left column (and the sheet's title)
+    const char* previewSourceSent;      ///< which values drive the drawn eyes: as sent...
+    const char* previewSourceRaw;       ///< ...as read (Valve's openness, the gaze before smoothing)...
+    const char* previewSourceCamera;    ///< ...the eye camera's own
+    const char* previewMirror;          ///< the switch that shows the eyes as in a mirror (the right eye on the left)
+    const char* previewPicture;         ///< the switch for the eye cameras' pictures
+    const char* previewFreeze;          ///< stop the drawing where it is
+    const char* previewResume;          ///< ...and let it move again
+    const char* previewLidFormat;       ///< an eye's chip: its eyelid (%.2f)
+    const char* previewLidNone;         ///< ...without one
+    const char* previewFromValve;       ///< the badge: the eyelid is Valve's (the eye camera's is cameraBadge)
+    const char* previewPupilFormat;     ///< an eye's chip: its pupil (%.1f mm)
+    const char* previewPupilNone;       ///< ...without one
+    const char* previewClosed;          ///< on a camera picture: eyecam-rec reads the eye closed
+    const char* previewGazeFormat;      ///< the footer: the gaze (%+.0f sideways, %+.0f up / down, in degrees)
+    const char* previewNotePicture;     ///< the footer while the pictures show: only shown, what the marks are
+    const char* previewNoteShape;       ///< ...otherwise: avatars' eyes differ, it is for the movement
+    const char* previewWaitingPicture;  ///< in a picture's place while none has come (or it stopped)
+    const char* previewCamNotRunning;   ///< why there are no pictures (and no camera values): eyecam-rec isn't running
+    const char* previewCamNotSetUp;     ///< ...the eye cameras aren't set up
+    const char* previewCamNotInUse;     ///< ...camera_lids is off
+    const char* previewCamOld;          ///< why there are no pictures: an eyecam-rec without the preview
+    const char* previewCamRefused;      ///< ...eyecam-rec refused "preview on"
 
     // Tabs
     const char* tabBasic;

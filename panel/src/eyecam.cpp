@@ -144,6 +144,10 @@ Status parseStatus(const std::string& text, double mtime) {
     const JsonValue* live = root.get("live");
     status.live = live != nullptr && live->isBool() && live->boolean;
     status.liveMs = readNumber(root, "live_ms", kNaN);
+    // The eye preview's pictures (missing on an older eyecam-rec, which can't make them)
+    const JsonValue* preview = root.get("preview");
+    status.hasPreview = preview != nullptr && preview->isBool();
+    status.preview = status.hasPreview && preview->boolean;
     // The relaxed eyes learned by itself (missing on an older eyecam-rec, which needs a calibration each wear)
     const JsonValue* baseline = root.get("baseline");
     status.hasBaseline = baseline != nullptr && baseline->isString();

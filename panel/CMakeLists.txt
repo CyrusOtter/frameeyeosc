@@ -45,6 +45,7 @@ add_executable(frameeyeosc-panel
   src/diag.cpp
   src/draw.cpp
   src/eyecam.cpp
+  src/eye_preview.cpp
   src/gaze_dots.cpp
   src/gaze_fit.cpp
   src/fit_text.cpp
@@ -99,6 +100,16 @@ target_include_directories(gaze-dots-test PRIVATE src)
 target_compile_options(gaze-dots-test PRIVATE -Wall -Wextra)
 add_test(NAME gaze-dots COMMAND gaze-dots-test)
 
+# The eye preview without cairo or OpenVR: which values drive the drawn eyes, the lids' and pupil's geometry, eyecam-rec's
+# preview file (made-up pictures in a folder under /tmp: its checks, the seqlock, a replaced or removed file), when the
+# pictures can show and "preview on" / "off": panel/build/eye-preview-test
+add_executable(eye-preview-test tests/eye_preview_test.cpp src/eye_preview.cpp src/gaze_dots.cpp src/eyecam.cpp
+  src/i18n.cpp src/json.cpp src/setup_tools.cpp src/recorder.cpp)
+target_include_directories(eye-preview-test PRIVATE src)
+target_compile_options(eye-preview-test PRIVATE -Wall -Wextra)
+target_link_libraries(eye-preview-test PRIVATE Threads::Threads)
+add_test(NAME eye-preview COMMAND eye-preview-test)
+
 # The eye fit's sound cues (the WAV files and which cue goes with which moment), without playing: panel/build/sounds-test
 add_executable(sounds-test tests/sounds_test.cpp src/sounds.cpp src/gaze_fit.cpp src/status.cpp src/json.cpp)
 target_include_directories(sounds-test PRIVATE src)
@@ -128,7 +139,7 @@ target_compile_options(model-test PRIVATE -Wall -Wextra)
 add_test(NAME model COMMAND model-test)
 
 # The Eyelids and eye cameras tabs as drawn (案E: the widening slider's routing, "Fine-tune", the moved sensitivity
-# slider, a setting's slider) and the other Frame apps' row, list and confirmation: panel/build/panel-test, run right after it is built (it renders with the panel's fonts)
+# slider, a setting's slider), the other Frame apps' row, list and confirmation, and the eye preview's sheet: panel/build/panel-test, run right after it is built (it renders with the panel's fonts)
 add_executable(panel-test tests/panel_test.cpp
   src/autostart.cpp
   src/changelog.cpp
@@ -137,6 +148,7 @@ add_executable(panel-test tests/panel_test.cpp
   src/diag.cpp
   src/draw.cpp
   src/eyecam.cpp
+  src/eye_preview.cpp
   src/fit_text.cpp
   src/gaze_fit.cpp
   src/host_entry.cpp

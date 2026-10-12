@@ -61,6 +61,15 @@ constexpr Color kDanger = hexColor(0xf85149);     ///< errors, not running
 constexpr Color kDangerTint = blendColor(kDanger, kCard, 0.15);
 constexpr Color kDangerSoft = hexColor(0xff8a8a); ///< red text on the red tint (kDanger is only 4.4:1 there)
 constexpr Color kQuitFill = blendColor(kDanger, kCard, 0.12);  ///< quit / reset buttons (quiet)
+// ---- The eye preview: its drawn eyes, and the marks on the eye cameras' pictures ----
+constexpr Color kEyeLid = hexColor(0x3d444d);       ///< the drawn lids (skin) above and below the open eye
+constexpr Color kEyeWhite = hexColor(0xd8dee4);     ///< the white of the drawn eye
+constexpr Color kEyeIris = hexColor(0x3f6fb5);      ///< the drawn iris
+constexpr Color kEyeIrisRim = hexColor(0x24497f);   ///< ...its rim
+constexpr Color kEyeDark = hexColor(0x0d1117);      ///< the drawn pupil and the upper lid's edge
+/** The pupil eyecam-rec found, as a circle on its picture (green), and where it looked for it (a yellow frame) */
+constexpr Color kPreviewPupil = hexColor(0x5fd38a);
+constexpr Color kPreviewWindow = hexColor(0xf2d25a);
 // ---- The eye capture's full-view overlay (a light stimulus, not UI) ----
 // Pure white and black for the bright and dark steps, and the instruction on them on purpose faint, so it barely
 // changes how bright the view is. Not in the contrast report: it isn't meant to be easy to read.

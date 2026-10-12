@@ -7,6 +7,7 @@
 #include "config.h"
 #include "diag.h"
 #include "eyecam.h"
+#include "eye_preview.h"
 #include "frame_apps.h"
 #include "gaze_fit.h"
 #include "i18n.h"
@@ -55,6 +56,7 @@ struct PanelModel {
     diag::System system;         ///< SteamOS's version and the camera tool's checksum (the diagnostics page)
     RecordsView records;         ///< the records (the Advanced tab's "Having trouble", and the failure screens' bar)
     AppsView apps;               ///< the other Frame apps (the row at the bottom of "Version" and the list it opens)
+    eye_preview::View preview;   ///< the eye preview's values and pictures (only while its sheet is open)
 };
 
 /**

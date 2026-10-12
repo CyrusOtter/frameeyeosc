@@ -118,6 +118,13 @@ enum class PanelAction {
     AppsCancel,        ///< the confirmation's "Cancel": back to the list (handled inside)
     AppsLaunch,        ///< the confirmation's "Open in Konsole": the caller opens the installer for appsConfirmKey()
                        ///< and gives the result to setAppsLaunchResult (never from --dump-png)
+    PreviewOpen,       ///< the left column's "Eye preview": open the sheet, or close it if it is open (handled inside;
+                       ///< the caller follows previewOpen)
+    PreviewClose,      ///< the sheet's cross (handled inside)
+    PreviewSource,     ///< which values drive the drawn eyes: arg = eye_preview::Source (handled inside)
+    PreviewMirror,     ///< show the eyes as in a mirror, or as the user sees them (handled inside)
+    PreviewCamera,     ///< the eye cameras' pictures on / off (handled inside; the caller follows previewPictures)
+    PreviewFreeze,     ///< stop the drawing where it is, or let it move again (handled inside)
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -136,7 +143,7 @@ struct PanelHit {
 enum class PanelTab { Basic, Output, Gaze, EyeFit, Lids, Advanced, Eyecam };
 
 /** An icon before a button's label. */
-enum class ButtonIcon { None, Terminal, Play };
+enum class ButtonIcon { None, Terminal, Play, Pause };
 
 /**
  * Draws the panel image and finds the button under the laser pointer.
@@ -339,6 +346,31 @@ public:
 
     /** @return true while the light warning shows */
     bool eyecamConfirmOpen() const { return eyecamConfirm_.isOpen(); }
+
+    /**
+     * Open the eye preview over the tabs' content (the left column stays; any tab closes it), as its button does.
+     * It opens moving, with the choices of its last opening (at first: the values as sent, as in a mirror, with the
+     * eye cameras' pictures).
+     */
+    void openPreview();
+
+    /** Close the eye preview (the dashboard closed). */
+    void closePreview() { previewOpen_ = false; }
+
+    /** @return true while the eye preview is open */
+    bool previewOpen() const { return previewOpen_; }
+
+    /** @return true while it wants the eye cameras' pictures (open, with its "Camera picture" on) */
+    bool previewPictures() const { return previewOpen_ && previewCamera_; }
+
+    /**
+     * For --preview-sheet: how the sheet is set.
+     * @param source which values drive the drawn eyes
+     * @param mirror as in a mirror
+     * @param camera the eye cameras' pictures
+     * @param frozen stopped (at the model drawn next)
+     */
+    void setPreviewOptions(eye_preview::Source source, bool mirror, bool camera, bool frozen);
 
     /**
      * The widening sensitivity slider was let go of (once per release). It keeps showing that value until
@@ -650,6 +682,13 @@ private:
     double appsMaxScroll_ = 0.0;        ///< as far as it can scroll (from the last draw)
     double appsViewH_ = 0.0;            ///< the height it is shown in
     bool appsScrollable_ = false;       ///< the last draw showed it scrolled (it didn't fit)
+    bool previewOpen_ = false;          ///< the eye preview is shown over the tabs' content
+    eye_preview::Source previewSource_ = eye_preview::Source::Sent;  ///< ...which values drive its eyes
+    bool previewMirror_ = true;         ///< ...as in a mirror (the right eye on the left)
+    bool previewCamera_ = true;         ///< ...with the eye cameras' pictures
+    bool previewFrozen_ = false;        ///< ...stopped where it was
+    bool previewFreezePending_ = false; ///< ...the values to keep are taken at the next draw
+    eye_preview::View previewKept_;     ///< ...the values and pictures it stopped at
 
     /**
      * The slider's value at a pointer position (on its track, two decimals).
@@ -684,6 +723,83 @@ private:
      * @return 0 = idle, 1 = hovered, 2 = pressed
      */
     int pointerState(const PanelHit& hit) const;
+
+    /**
+     * The left column's "Eye preview" button at its bottom: wide with its label, or a square with only the eye when a
+     * notice shares the bottom row (it is then at the right of it).
+     * @param pen drawing tools
+     * @param t texts
+     * @param x left
+     * @param y top
+     * @param w width
+     * @param h height
+     * @param label with its label (else the eye alone)
+     */
+    void drawPreviewButton(const Pen& pen, const UiText& t, double x, double y, double w, double h, bool label);
+
+    /**
+     * The eye preview over the tabs' content: the title and a cross, the controls (which values, mirror, the
+     * pictures, freeze), both eyes drawn with their eyelid, pupil and source, each eye's camera picture with what was
+     * found on it, and a footer with the gaze and a note.
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model (its preview, eyecam-rec and camera_lids)
+     */
+    void drawPreview(const Pen& pen, const UiText& t, const PanelModel& m);
+
+    /**
+     * One drawn eye: the almond, the white, the iris and pupil where the eye looks, the upper lid down to its eyelid
+     * (raised for widening), the lower lid up for a squint; faded with no value.
+     * @param pen drawing tools
+     * @param eye its values
+     * @param x left of its box
+     * @param y top
+     * @param w width
+     * @param h height
+     * @param mirror as in a mirror (its gaze sideways turned round)
+     */
+    void drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, double x, double y, double w, double h,
+                        bool mirror);
+
+    /**
+     * One eye's camera picture, upright with its temporal side out (flipped as the drawn eye is), the search window
+     * and the found pupil on it, and "Read as closed"; "waiting" while there is none.
+     * @param pen drawing tools
+     * @param t texts
+     * @param picture the picture
+     * @param fresh new enough to show
+     * @param x left
+     * @param y top
+     * @param side its size (px)
+     * @param flip mirrored left to right
+     */
+    void drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
+                            double x, double y, double side, bool flip);
+
+    /**
+     * A switch as a pill: a check, bold and the accent while on.
+     * @param pen drawing tools
+     * @param x left
+     * @param y top
+     * @param w width
+     * @param h height
+     * @param label its label
+     * @param hit what it does
+     * @param on on
+     * @param usable it can be pressed
+     */
+    void drawToggle(const Pen& pen, double x, double y, double w, double h, const std::string& label,
+                    const PanelHit& hit, bool on, bool usable);
+
+    /**
+     * A sheet's cross at its top right (the other Frame apps' list, the eye preview).
+     * @param pen drawing tools
+     * @param hit what it does
+     * @param x left
+     * @param y top
+     * @param s its size
+     */
+    void drawSheetClose(const Pen& pen, const PanelHit& hit, double x, double y, double s);
 
     /**
      * The always-visible status column (left).

@@ -157,6 +157,14 @@ const std::vector<ContrastPair>& contrastPairs() {
         {"other apps: an app's letters without its icon (dark tile)", kAccent, kBg, ContrastKind::Text},
         {"other apps: the command Konsole runs (dark box)", kText, kBg, ContrastKind::Text},
         {"other apps: the confirmation's error (card)", kDanger, kCard, ContrastKind::Text},
+        // The eye preview: the drawn eyes (outlined with kBorder on the card) and the marks on the cameras' pictures
+        // (dark pictures: checked against the panel background)
+        {"eye preview: the lids against the white of the eye", kEyeLid, kEyeWhite, ContrastKind::Ui},
+        {"eye preview: iris (white of the eye)", kEyeIris, kEyeWhite, ContrastKind::Ui},
+        {"eye preview: pupil and upper lid edge (iris, white of the eye)", kEyeDark, kEyeIris, ContrastKind::Ui},
+        {"eye preview: the found pupil's circle (dark picture)", kPreviewPupil, kBg, ContrastKind::Ui},
+        {"eye preview: the search window's frame (dark picture)", kPreviewWindow, kBg, ContrastKind::Ui},
+        {"eye preview: \"Read as closed\" on a picture (dark badge)", kText, kBg, ContrastKind::Text},
     };
     return pairs;
 }

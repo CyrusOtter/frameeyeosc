@@ -5,6 +5,7 @@
 #include "config.h"
 #include "draw.h"
 #include "eyecam.h"
+#include "eye_preview.h"
 #include "fit_text.h"
 #include "frame_apps.h"
 #include "gaze_dots.h"
@@ -103,6 +104,10 @@ struct Options {
     bool fakeRecords = false;     ///< --fake-records: made-up records instead of the folder's
     bool fakeSaved = false;       ///< --fake-saved: a failed fit's or calibration's record was just saved (its bar)
     std::string appsSheet;        ///< --apps-sheet: the other Frame apps' list, or a confirmation over it
+    bool previewSheet = false;    ///< --preview-sheet: the eye preview open...
+    std::string previewSpec;      ///< ...as SOURCE[:nomirror][:nocamera][:frozen] ("" = as it opens)
+    std::string fakePreview;      ///< --fake-preview: made-up preview values and pictures ("ok" or a state)
+    int previewBench = 0;         ///< --preview-bench N: time N draws of the panel with the eye preview open
     std::string fakeAppsState;    ///< --fake-apps-state: made-up states of the other apps (KEY=STATE,...)
     std::string fakeAppsLaunch;   ///< --fake-apps-launch: why Konsole didn't open (on the confirmation)
     int fakeAppsExtra = 0;        ///< --fake-apps-extra N: made-up apps without an icon added to the list
@@ -264,6 +269,14 @@ void printUsage() {
         "                        otherwise as installed now (the list fetched before; never fetched here)\n"
         "      --fake-apps-launch busy|nodisplay|nokonsole|failed  Why Konsole didn't open (with --apps-sheet confirm)\n"
         "      --fake-apps-extra N  Add N made-up apps without an icon to the list (it scrolls past four or five)\n"
+        "      --preview-sheet [SOURCE[:nomirror][:nocamera][:frozen]]  The eye preview open (SOURCE sent, raw or\n"
+        "                        camera; default sent, in a mirror, with the camera pictures). Its pictures are read from\n"
+        "                        eyecam-rec's preview file in --eyecam-dir when it is there (eyecam-rec --replay\n"
+        "                        --preview), else made up with --fake-preview\n"
+        "      --fake-preview [ok|noeyecam|nopicture|closed|nodata]  Made-up preview values and grey pictures (not an\n"
+        "                        eye), with the eye cameras set up: all there (ok), eyecam-rec not running, no picture\n"
+        "                        yet, the left eye read closed, or no samples from frameeyeosc. Implies --fake\n"
+        "      --preview-bench N  Time N draws of the panel with the eye preview open (with --preview-sheet)\n"
         "      --changelog-dir DIR  Read CHANGELOG.md / CHANGELOG.ja.md from DIR instead of next to the binary,\n"
         "                        the checkout (panel/build) or ~/.local/share/frameeyeosc\n"
         "      --preview-quit    Show \"press again to quit\"\n"
@@ -359,6 +372,43 @@ void printUsage() {
         "  --status PATH         Status file (default $XDG_RUNTIME_DIR/frameeyeosc/status.json)\n");
 }
 
+/**
+ * Take --preview-sheet's value apart: sent, raw or camera, then any of :nomirror, :nocamera, :frozen ("" = as it opens).
+ * @param text the value
+ * @param source which values drive the drawn eyes
+ * @param mirror as in a mirror
+ * @param camera with the eye cameras' pictures
+ * @param frozen stopped
+ * @return false if something in it is unknown
+ */
+bool parsePreviewSpec(const std::string& text, eye_preview::Source& source, bool& mirror, bool& camera, bool& frozen) {
+    source = eye_preview::Source::Sent;
+    mirror = true;
+    camera = true;
+    frozen = false;
+    if (text.empty()) return true;
+    size_t from = 0;
+    for (bool first = true;; first = false) {
+        const size_t colon = text.find(':', from);
+        const std::string part = text.substr(from, colon == std::string::npos ? std::string::npos : colon - from);
+        if (first && (part == "sent" || part == "raw" || part == "camera")) {
+            source = part == "sent" ? eye_preview::Source::Sent
+                     : part == "raw" ? eye_preview::Source::Raw
+                                     : eye_preview::Source::Camera;
+        } else if (!first && part == "nomirror") {
+            mirror = false;
+        } else if (!first && part == "nocamera") {
+            camera = false;
+        } else if (!first && part == "frozen") {
+            frozen = true;
+        } else {
+            return false;
+        }
+        if (colon == std::string::npos) return true;
+        from = colon + 1;
+    }
+}
+
 /** --fake-eyecam, taken apart. */
 struct FakeEyecam {
     std::string state;      ///< waiting, idle, confirm, searching, recording, calibrating, error, calib-error
@@ -391,6 +441,7 @@ struct FakeEyecam {
     int blocks = -1;        ///< blocks=N: changed blocks before the last look (-1 = as the search says)
     bool lastError = false; ///< lasterror: eyecam-rec's last error
     double camFps = -1.0;   ///< camfps=N: the cameras' frame rate (-1 = an eyecam-rec before cam_fps)
+    bool noPreview = false; ///< nopreview: an eyecam-rec without the eye preview (no "preview" in its status)
 };
 
 /**
@@ -500,6 +551,8 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             fake.baseline = "ready";
         } else if (flag == "saved") {
             fake.saved = true;
+        } else if (flag == "nopreview") {
+            fake.noPreview = true;
         } else if (flag.rfind("sens=", 0) == 0 && flag.size() > 5 &&
                    flag.find_first_not_of("0123456789.", 5) == std::string::npos) {
             fake.sens = std::atof(flag.c_str() + 5);
@@ -694,6 +747,37 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fakeRecords = true;
         } else if (arg == "--fake-saved") {
             options.fake = options.fakeSaved = true;
+        } else if (arg == "--preview-sheet") {
+            options.previewSheet = true;
+            // (its value is optional)
+            if (hasNext && std::strncmp(argv[i + 1], "--", 2) != 0) {
+                options.previewSpec = argv[++i];
+                eye_preview::Source source;
+                bool mirror = true;
+                bool camera = true;
+                bool frozen = false;
+                if (!parsePreviewSpec(options.previewSpec, source, mirror, camera, frozen)) {
+                    std::fprintf(stderr,
+                                 "--preview-sheet takes sent, raw or camera, then :nomirror, :nocamera, :frozen: %s\n",
+                                 options.previewSpec.c_str());
+                    return false;
+                }
+            }
+        } else if (arg == "--fake-preview") {
+            options.fakePreview = "ok";
+            if (hasNext && std::strncmp(argv[i + 1], "--", 2) != 0) {
+                options.fakePreview = argv[++i];
+                const std::string& state = options.fakePreview;
+                if (state != "ok" && state != "noeyecam" && state != "nopicture" && state != "closed" &&
+                    state != "nodata") {
+                    std::fprintf(stderr, "--fake-preview must be ok, noeyecam, nopicture, closed or nodata: %s\n",
+                                 state.c_str());
+                    return false;
+                }
+            }
+            options.fake = true;
+        } else if (arg == "--preview-bench" && hasNext) {
+            options.previewBench = std::max(0, std::min(10000, std::atoi(argv[++i])));
         } else if (arg == "--apps-sheet" && hasNext) {
             options.appsSheet = argv[++i];
             const std::string& sheet = options.appsSheet;
@@ -1353,6 +1437,9 @@ eyecam::View fakeEyecam(const std::string& text) {
     }
     // A failed calibration keeps the buffers (eyecam-rec writes has_buffers in every state)
     s.hasBuffers = fake.buffers || state == "calib-error";
+    // An eyecam-rec that makes the eye preview's pictures (not making them now)
+    s.hasPreview = !fake.noPreview;
+    s.preview = false;
     s.hasSetupDone = fake.setup >= 0;
     s.setupDone = fake.setup == 1;
     s.lastCalibWiden = fake.result == "fail" ? "default" : (fake.result == "done" ? "measured" : fake.widen);
@@ -1642,7 +1729,31 @@ PanelModel fakeModel(const Options& options) {
         s.readError = "no status file";
     }
     m.eyecamDir = options.eyecamDir;
-    if (!options.fakeEyecam.empty()) m.eyecam = fakeEyecam(options.fakeEyecam);
+    if (!options.fakeEyecam.empty()) {
+        m.eyecam = fakeEyecam(options.fakeEyecam);
+    } else if (!options.fakePreview.empty() && options.fakePreview != "noeyecam") {
+        // The eye preview's pictures need the eye cameras set up and in use
+        m.eyecam = fakeEyecam("idle:setup:auto=ok:buffers:ready:saved");
+    }
+    if (!options.fakePreview.empty()) {
+        eye_preview::fake(m.preview, eye_preview::monotonicNs());
+        const std::string& state = options.fakePreview;
+        if (state == "nopicture") {
+            m.preview.hasPictures = false;
+        } else if (state == "closed") {
+            // The left eye shut: the eye camera reads it closed and finds no pupil, the eyelid goes out at 0
+            gaze_dots::PacketEye& left = m.preview.packet.eyes[0];
+            left.lid = left.cameraLid = 0.0f;
+            left.openness = left.opennessScaled = 0.04f;
+            left.cameraClosed = true;
+            left.lidFrom = 0;
+            eye_preview::Picture& picture = m.preview.pictures.eyes[0];
+            picture.closed = true;
+            picture.pupil = false;
+        } else if (state == "nodata") {
+            m.preview.hasPacket = false;
+        }
+    }
     m.eyecam.password = options.fakePassword == "unset"   ? eyecam::PasswordState::NotSet
                         : options.fakePassword == "unknown" ? eyecam::PasswordState::Unknown
                                                             : eyecam::PasswordState::Set;
@@ -1947,6 +2058,31 @@ int runDumpPng(const Options& options) {
                                                                   : LaunchResult::Failed);
             }
         }
+        if (options.previewSheet) {
+            eye_preview::Source source = eye_preview::Source::Sent;
+            bool mirror = true;
+            bool camera = true;
+            bool frozen = false;
+            parsePreviewSpec(options.previewSpec, source, mirror, camera, frozen);
+            panel.openPreview();
+            panel.setPreviewOptions(source, mirror, camera, frozen);
+            // The pictures from eyecam-rec's preview file when it is there (eyecam-rec --replay --preview DIR, with
+            // --eyecam-dir DIR); a file of another kind says why
+            eye_preview::PictureReader reader;
+            std::string why;
+            const std::string path = model.eyecamDir + "/" + eye_preview::kFileName;
+            switch (reader.read(path, model.preview.pictures, why)) {
+                case eye_preview::ReadResult::Read:
+                    model.preview.hasPictures = true;
+                    model.preview.nowNs = eye_preview::monotonicNs();
+                    std::fprintf(stderr, "[preview] pictures from %s\n", path.c_str());
+                    break;
+                case eye_preview::ReadResult::Invalid:
+                    std::fprintf(stderr, "[preview] %s: %s\n", path.c_str(), why.c_str());
+                    break;
+                default: break;
+            }
+        }
         if (options.previewQuit) panel.armQuitForPreview();
         if (options.previewReset) panel.armResetForPreview();
         if (!options.fakePrompt.empty()) panel.showPrompt(options.fakePrompt);
@@ -2029,6 +2165,19 @@ int runDumpPng(const Options& options) {
         // (after the pointer left: leaving lets go of the slider)
         if (options.sensitivityDrag >= 0) panel.previewSensitivityDrag(options.sensitivityDrag);
         panel.render(model);
+        if (options.previewBench > 0 && panel.previewOpen()) {
+            // What one draw of the panel costs with the eye preview open (the VR loop draws it about 30 times a second
+            // while the eyes move)
+            const double start = nowSeconds();
+            for (int i = 0; i < options.previewBench; ++i) {
+                model.preview.packet.gaze[0] = static_cast<float>(0.2 * std::sin(i * 0.1));
+                panel.render(model);
+                panel.toRgba();
+            }
+            const double each = (nowSeconds() - start) / options.previewBench;
+            std::printf("preview: %.2f ms per draw (and its RGBA copy) over %d draws\n", each * 1000,
+                        options.previewBench);
+        }
         if (!panel.writePng(options.pngPath)) {
             std::fprintf(stderr, "Could not write the PNG: %s\n", options.pngPath.c_str());
             return 1;
@@ -2738,6 +2887,12 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::AppsCancel: return;  // handled inside the panel
         case PanelAction::AppsOpen:
         case PanelAction::AppsLaunch: return;  // the loop: frame_apps::AppsManager (fetchIfDue, openInstaller)
+        case PanelAction::PreviewOpen:
+        case PanelAction::PreviewClose:
+        case PanelAction::PreviewSource:
+        case PanelAction::PreviewMirror:
+        case PanelAction::PreviewCamera:
+        case PanelAction::PreviewFreeze: return;  // handled inside the panel; the loop follows previewOpen
         case PanelAction::RecordOpen: openRecordView(model, panel.recordShown()); return;
         case PanelAction::RecordsAll: loadRecords(model); return;
         case PanelAction::DiagOpen:
@@ -3240,6 +3395,17 @@ int runOverlay(const Options& options) {
     int dotImageShown[2] = {-1, -1};
     bool dotsVisible[2] = {false, false};
     bool dotsOpenFailed = false;
+    bool dotsWanted = false;        // the dots are on (their overlays shown); the socket may be open for the preview too
+    // The eye preview: frameeyeosc's samples come on the dots' socket (bound while its sheet shows), eyecam-rec's
+    // pictures from its preview file, asked for with "preview on" every second while they show (a control socket
+    // connection of their own, so the eye cameras tab's replies stay its own)
+    eye_preview::PictureReader previewReader;
+    eye_preview::Asker previewAsker;
+    eyecam::Control previewControl;
+    bool previewShown = false;      // the sheet showed at the last loop
+    double lastPreviewSample = -1e9;
+    std::string previewLogged;      // the last line logged about the pictures (each said once)
+    bool previewOnSent = false;     // "preview on" went out (and no "off" since), for the log
     double lastDotAt = 0.0;
     double dotIpd = gaze_fit::kDefaultIpdM;
     double dotDistance = 0.0;       // how far along the rays the dots are (gaze_debug_dots_distance_m), 0 until set
@@ -3571,9 +3737,13 @@ int runOverlay(const Options& options) {
         }
 
         // The debug gaze dots: while the switch is on (and no eye fit runs), move a dot to where the gaze frameeyeosc
-        // sends points, as each sample arrives. Only the transform changes; each dot's image is sent once
+        // sends points, as each sample arrives. Only the transform changes; each dot's image is sent once. The socket
+        // is also open while the eye preview shows (frameeyeosc sends while it is there), without the dots
+        const bool previewing = visible && panel.previewOpen();
         {
             const bool wanted = model.config.flag(key::kGazeDebugDots) && !fit.active();
+            dotsWanted = wanted;
+            const bool listen = wanted || previewing;
             const auto hideDots = [&]() {
                 for (int i = 0; i < 2; ++i) {
                     vr.hideDot(i);
@@ -3582,12 +3752,12 @@ int runOverlay(const Options& options) {
             };
             // One distance, dashboard open or closed (near enough to show over it; nothing jumps)
             const double wantedDistance = gaze_dots::dotDistance(model.config.number(key::kGazeDebugDotsDistanceM));
-            if (dots.isOpen() && wantedDistance != dotDistance) {
+            if (dots.isOpen() && wanted && wantedDistance != dotDistance) {
                 std::fprintf(stderr, "[dots] at %.2f m, %.1f mm wide (plain overlays, no sort order or flags)\n",
                              wantedDistance, gaze_dots::dotWidth(wantedDistance) * 1000);
                 dotDistance = wantedDistance;
             }
-            if (wanted && !dots.isOpen() && !dotsOpenFailed) {
+            if (listen && !dots.isOpen() && !dotsOpenFailed) {
                 const size_t slash = model.statusPath.find_last_of('/');
                 const std::string dir = slash == std::string::npos ? "." : model.statusPath.substr(0, slash);
                 std::string error;
@@ -3595,22 +3765,34 @@ int runOverlay(const Options& options) {
                     dotIpd = vr.userIpdMeters();
                     // Set the distance now, so a packet in this same pass isn't placed at 0 m with the default width
                     dotDistance = wantedDistance;
-                    std::fprintf(stderr, "[dots] at %.2f m, %.1f mm wide (plain overlays, no sort order or flags)\n",
-                                 wantedDistance, gaze_dots::dotWidth(wantedDistance) * 1000);
-                    std::fprintf(stderr, "[dots] listening in %s (IPD %.1f mm)\n", dir.c_str(), dotIpd * 1000);
+                    if (wanted) {
+                        std::fprintf(stderr, "[dots] at %.2f m, %.1f mm wide (plain overlays, no sort order or flags)\n",
+                                     wantedDistance, gaze_dots::dotWidth(wantedDistance) * 1000);
+                    }
+                    std::fprintf(stderr, "[dots] listening in %s (IPD %.1f mm)%s\n", dir.c_str(), dotIpd * 1000,
+                                 wanted ? "" : " for the eye preview");
                 } else {
                     std::fprintf(stderr, "[dots] %s\n", error.c_str());
                     dotsOpenFailed = true;
                 }
-            } else if (!wanted && (dots.isOpen() || dotsOpenFailed)) {
+            } else if (!listen && (dots.isOpen() || dotsOpenFailed)) {
                 if (dots.isOpen()) std::fprintf(stderr, "[dots] off\n");
                 dotDistance = 0.0;
                 dots.close();
                 hideDots();
                 dotsOpenFailed = false;
             }
+            // Listening for the eye preview alone: no dots
+            if (!wanted && (dotsVisible[0] || dotsVisible[1])) hideDots();
             gaze_dots::Packet packet;
-            if (dots.isOpen() && dots.poll(packet)) {
+            const bool got = dots.isOpen() && dots.poll(packet);
+            if (got && previewing) {
+                model.preview.packet = packet;
+                model.preview.hasPacket = true;
+                lastPreviewSample = nowSeconds();
+                dirty = true;
+            }
+            if (got && wanted) {
                 lastDotAt = nowSeconds();
                 const auto place = [&](int index, int eye, DotKind kind, float x, float y) {
                     const gaze_dots::Pose pose = gaze_dots::dotPose(x, y, eye, dotIpd, dotDistance);
@@ -3633,6 +3815,72 @@ int runOverlay(const Options& options) {
                 // No samples (frameeyeosc stopped, or the eyes aren't tracked): no stale dots
                 hideDots();
             }
+        }
+
+        // The eye preview while its sheet shows (the dashboard open): the samples as they come (none for
+        // kPacketStaleSec: none), eyecam-rec's pictures while they can show (asked for every kRenewSec, and "off" once
+        // they stop), drawn at the panel's usual pace while either comes in. Closed, it holds nothing
+        {
+            const double now = nowSeconds();
+            if (previewing != previewShown) {
+                std::fprintf(stderr, "[preview] %s\n", previewing ? "open" : "closed");
+                previewShown = previewing;
+                if (!previewing) {
+                    model.preview = eye_preview::View();
+                    previewReader.close();
+                    previewLogged.clear();
+                }
+            }
+            if (model.preview.hasPacket && now - lastPreviewSample > eye_preview::kPacketStaleSec) {
+                model.preview.hasPacket = false;
+                dirty = true;
+            }
+            const eye_preview::CameraState camera = eye_preview::cameraState(
+                model.eyecam, SettingsView(model).flag(key::kCameraLids), model.preview.refused);
+            const bool pictures = previewing && panel.previewPictures() && camera == eye_preview::CameraState::Available;
+            std::string command;
+            if (previewAsker.next(pictures, previewControl.busy(), now, command)) {
+                const std::string socket = model.eyecamDir + "/ctl.sock";
+                // (said when it starts and when it stops, not each time it is renewed)
+                if (command == "preview off" || !previewOnSent) {
+                    std::fprintf(stderr, "[preview] sending \"%s\" to %s%s\n", command.c_str(), socket.c_str(),
+                                 command == "preview off" ? "" : " (again every second while the pictures show)");
+                }
+                previewOnSent = command != "preview off";
+                previewControl.send(socket, command, now);
+            }
+            if (previewControl.poll(now) || (previewControl.hasReply() && !previewControl.busy())) {
+                // ("preview on" refused: no pictures, said once; taken back by the next one that is answered "ok")
+                const eyecam::Reply& reply = previewControl.reply();
+                if (reply.command == "preview on" && model.preview.refused != !reply.ok) {
+                    model.preview.refused = !reply.ok;
+                    if (!reply.ok) std::fprintf(stderr, "[preview] \"preview on\" refused: %s\n", reply.error.c_str());
+                    dirty = true;
+                }
+            }
+            if (pictures) {
+                std::string why;
+                const std::string path = model.eyecamDir + "/" + eye_preview::kFileName;
+                const eye_preview::ReadResult read = previewReader.read(path, model.preview.pictures, why);
+                if (read == eye_preview::ReadResult::Read) {
+                    if (!model.preview.hasPictures) std::fprintf(stderr, "[preview] pictures from %s\n", path.c_str());
+                    model.preview.hasPictures = true;
+                    dirty = true;
+                }
+                const std::string line = read == eye_preview::ReadResult::Invalid ? why : std::string("read");
+                if (line != previewLogged) {
+                    if (read == eye_preview::ReadResult::Invalid) std::fprintf(stderr, "[preview] %s: %s\n", path.c_str(), why.c_str());
+                    previewLogged = line;
+                }
+            } else if (model.preview.hasPictures) {
+                // The pictures turned off (the switch, or the eye cameras): none kept
+                model.preview.hasPictures = false;
+                model.preview.pictures = eye_preview::Pictures();
+                previewReader.close();
+                dirty = true;
+            }
+            // (the pictures' age, at the draw)
+            if (previewing) model.preview.nowNs = eye_preview::monotonicNs();
         }
 
         // The developer tab "Eye capture" while eyecam-rec runs, dashboard open or closed: its status file read often
@@ -3914,6 +4162,8 @@ int runOverlay(const Options& options) {
         // The IP keypad and the eye capture's light warning don't stay open behind a closed dashboard
         if (!visible && wasVisible) {
             panel.closeHostEntry();
+            // ...nor the eye preview (its pictures stop with it)
+            panel.closePreview();
             panel.closeEyecamConfirm();
             // ...nor the other apps' confirmation (back to their list)
             panel.closeAppsConfirm();
@@ -3924,7 +4174,7 @@ int runOverlay(const Options& options) {
         // Every display frame while the fit's target or the debug dots are up: with the target, paced by the
         // compositor itself (a fixed sleep plus the loop's work fell behind the display, and the ring stuttered)
         // (the dots only while packets arrive: with none for kStaleSec, the usual slow poll)
-        const bool dotsLive = dots.isOpen() && nowSeconds() - lastDotAt <= gaze_dots::kStaleSec;
+        const bool dotsLive = dots.isOpen() && dotsWanted && nowSeconds() - lastDotAt <= gaze_dots::kStaleSec;
         // (and while the eye capture's light fades, so its alpha steps are small)
         const bool everyFrame = fit.active() || dotsLive || lightMoving;
         // While eyecam-rec runs, as often as with the panel open, so the light follows its steps closely
