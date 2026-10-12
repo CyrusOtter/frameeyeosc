@@ -1504,7 +1504,7 @@ struct LidDoubt {
 }
 
 /// Where a sent eyelid came from, beyond the usual mix (the eye server's below relaxed open, the camera's from there
-/// up; see mix_lid).
+/// up; see mix_lid). The panel's eye preview gets it as its place in this order (dot_sample).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum LidFrom {
     #[default]
@@ -2975,6 +2975,35 @@ impl Sample {
     }
 }
 
+/// A sample's copy for the panel (its gaze dots and eye preview; dots.rs): the gaze as sent and before smoothing, and
+/// each eye's eyelid as sent, Valve's openness, squint and pupil as sent, and the eye camera's own values as read for it
+/// (`camera`; NaN for an eye without fresh ones). Only for display: nothing here goes to VRChat or VRCFT.
+fn dot_sample(settings: &Settings, data: &EyeData, sample: &Sample, camera: Option<&Live>) -> dots::DotSample {
+    let nan = f32::NAN;
+    dots::DotSample {
+        time: data.sample_time,
+        gaze: sample.gaze,
+        raw_gaze: sample.raw_gaze,
+        independent: settings.independent_eyes,
+        eyes: std::array::from_fn(|eye| {
+            let seen = camera.filter(|live| live.fresh[eye]).map(|live| live.eyes[eye]);
+            dots::DotEye {
+                lid: sample.lids[eye],
+                openness: sample.openness[eye],
+                openness_scaled: sample.openness_scaled[eye],
+                camera_lid: seen.map_or(nan, |seen| seen.lid),
+                squint: sample.camera.squint[eye].unwrap_or(nan),
+                pupil_mm: sample.camera.pupil_diameter[eye].unwrap_or(nan),
+                camera_squint: seen.map_or(nan, |seen| seen.squint),
+                camera_pupil_mm: seen.map_or(nan, |seen| seen.pupil_mm),
+                // (LidFrom's order: 0 the eye server's usual mix, the camera's from 1 on)
+                lid_from: sample.lid_from[eye] as u8,
+                camera_closed: seen.is_some_and(|seen| seen.closed),
+            }
+        }),
+    }
+}
+
 /// Per-eye multipliers as lid_inputs applies them. An unfitted eye: the fixed one, else the learned one, else 1.
 /// A fitted eye: the fixed one as a fine-tune after the fit, else 1 (never the learned one, which fitted eyes
 /// do not use).
@@ -3720,7 +3749,7 @@ struct Bridge {
     // The gaze capture the panel asked for, while it runs, and the latest one's result.
     capture: Option<Capture>,
     capture_result: Option<CaptureResult>,
-    // The panel's debug gaze dots (only while gaze_debug_dots is on).
+    // The panel's debug gaze dots and eye preview (only while gaze_debug_dots is on or the panel listens).
     dots: dots::DotStream,
     // When the last neutral Live Link packet went out.
     livelink_neutral: Option<Instant>,
@@ -3856,12 +3885,9 @@ impl Bridge {
                 times.pop_front();
             }
         }
-        let dot = dots::DotSample {
-            time: data.sample_time,
-            gaze: sample.gaze,
-            independent: self.settings.independent_eyes,
-        };
-        self.dots.send(self.settings.gaze_debug_dots, &dot);
+        if self.dots.wanted(self.settings.gaze_debug_dots, now) {
+            self.dots.send(&dot_sample(&self.settings, &data, &sample, self.camera_live.as_ref()));
+        }
         if let Some(capture) = &mut self.capture {
             let gaze = [sample.raw_gaze[4], sample.raw_gaze[5]];
             let eye_x = [sample.raw_gaze[0], sample.raw_gaze[2]];

@@ -1,9 +1,12 @@
 // The debug gaze dots: frameeyeosc streams the gaze it sends (one datagram per sample, see src/dots.rs) to a Unix
 // socket in the status folder while "gaze_debug_dots" is on, and the panel shows a dot 1 m ahead where that gaze
-// points: one for the combined gaze, or one per eye, each along that eye's own ray. Nothing here talks to OpenVR,
-// so the packet and the geometry are tested on their own (gaze_dots_test.cpp).
+// points: one for the combined gaze, or one per eye, each along that eye's own ray. The same datagrams carry each
+// eye's eyelid, squint and pupil (as sent, from Valve and from the eye camera) for the eye preview, which binds the
+// socket while it is open (frameeyeosc sends while the socket is there). Nothing here talks to OpenVR, so the packet
+// and the geometry are tested on their own (gaze_dots_test.cpp).
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -13,8 +16,13 @@ namespace gaze_dots {
 
 /** The socket's name in the status folder (the same as frameeyeosc's). */
 constexpr const char* kSocketName = "gaze-dots.sock";
-/** One datagram: b"FEOD", version 1, flags, 2 zero bytes, time (f64), six gaze values (f32), little-endian. */
-constexpr size_t kPacketSize = 40;
+/**
+ * One datagram (version 2), little-endian: b"FEOD", 2, flags, 2 zero bytes, time (f64), six gaze values as sent and six
+ * before smoothing (f32), then each eye's values (kEyeSize bytes; see src/dots.rs). Any other version is ignored.
+ */
+constexpr size_t kPacketSize = 136;
+/** One eye's part of it. */
+constexpr size_t kEyeSize = 36;
 /** How far along each ray the dots are shown (m; gaze_debug_dots_distance_m), the same with the dashboard open or
  *  closed so they never jump. Plain overlays show over the dashboard (about 1.35 m away) up to about 1 m: at 1.2 m
  *  it hid them, depending on where the head was. Up to 2 m is allowed for use with the dashboard closed... */
@@ -28,11 +36,27 @@ constexpr double kWidthAtM = 2.0;
 /** Without a packet for this long, the dots are hidden (frameeyeosc stopped or tracking is lost). */
 constexpr double kStaleSec = 1.0;
 
+/** One eye's values in a sample. NaN where there is none (no fresh eye-camera values for the eye, nothing sent). */
+struct PacketEye {
+    float lid = NAN;             ///< the eyelid as sent (VRCFT: 0 closed, 0.75 relaxed open, 1 widened)
+    float openness = NAN;        ///< Valve's openness as read
+    float opennessScaled = NAN;  ///< ...after the eye's scale (the left column's raw bar)
+    float cameraLid = NAN;       ///< the eye camera's eyelid (eyecam-rec's, VRCFT scale)
+    float squint = NAN;          ///< the squint as sent
+    float pupilMm = NAN;         ///< the pupil diameter as sent (mm)
+    float cameraSquint = NAN;    ///< the eye camera's squint
+    float cameraPupilMm = NAN;   ///< the eye camera's pupil diameter (mm)
+    int lidFrom = 0;             ///< where the sent eyelid came from: 0 the eye server's usual mix, 1.. the eye camera
+    bool cameraClosed = false;   ///< the eye camera reads the eye closed
+};
+
 /** One sample as frameeyeosc sent it. */
 struct Packet {
     double time = 0.0;
-    float gaze[6] = {0, 0, 0, 0, 0, 0};  ///< left x/y, right x/y, combined x/y; 1.0 = 45°
-    bool independent = false;           ///< each eye's own gaze is sent (two dots)
+    float gaze[6] = {0, 0, 0, 0, 0, 0};     ///< left x/y, right x/y, combined x/y as sent; 1.0 = 45°
+    float rawGaze[6] = {0, 0, 0, 0, 0, 0};  ///< the same before smoothing
+    bool independent = false;              ///< each eye's own gaze is sent (two dots)
+    PacketEye eyes[2];                     ///< the left eye, the right eye (anatomical)
 };
 
 /**
@@ -40,7 +64,7 @@ struct Packet {
  * @param data the bytes
  * @param size how many
  * @param out the sample
- * @return false if it is not a gaze dots packet of this version
+ * @return false if it is not a gaze dots packet of this version (or its gaze isn't finite)
  */
 bool decode(const uint8_t* data, size_t size, Packet& out);
 
@@ -92,7 +116,7 @@ double dotDistance(double setting);
  */
 double dotWidth(double distance);
 
-/** The panel's end of the socket: bound while the dots are on, non-blocking. */
+/** The panel's end of the socket: bound while the dots are on or the eye preview is open, non-blocking. */
 class Receiver {
 public:
     Receiver() = default;
