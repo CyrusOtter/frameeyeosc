@@ -3719,8 +3719,8 @@ int runOverlay(const Options& options) {
             model.records.lastFit.clear();
             fitRetryShown = false;
         }
-        // A re-wear fit stopped because the dashboard opened (SteamVR opens it by itself a moment after it starts or
-        // wakes up): auto_recenter tries again once it is closed, kDashboardRetries times at most in a wearing
+        // A re-wear fit stopped because the dashboard opened anyway (auto_recenter waits for SteamVR's own startup
+        // dashboard): auto_recenter tries again once it is closed, kDashboardRetries times at most in a wearing
         const auto stoppedByDashboard = [](const gaze_fit::View& v) {
             return v.phase == gaze_fit::Phase::Failed && v.failure == gaze_fit::Failure::DashboardOpened;
         };
