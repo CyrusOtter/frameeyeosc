@@ -2639,11 +2639,16 @@ impl Drops {
     }
 }
 
-/// UDP sender that re-resolves its target periodically and reconnects when it changes.
+/// UDP sender that re-resolves its target periodically and reconnects when it changes, or when the route to it
+/// now starts from another local address.
 struct Output {
     target: Target,
     socket: Option<(UdpSocket, SocketAddr)>,
     last_resolve: Option<Instant>,
+    // When the route to the target was last checked (see check_route), and whether a send failing or working again
+    // asks for the next check at once.
+    last_route_check: Option<Instant>,
+    route_check_due: bool,
     health: SendHealth,
     drops: Drops,
     // Why the socket to the target could not be set up, or the host could not be looked up, so each
@@ -2658,6 +2663,8 @@ impl Output {
             target,
             socket: None,
             last_resolve: None,
+            last_route_check: None,
+            route_check_due: false,
             health: SendHealth::default(),
             drops: Drops::default(),
             connect_error: None,
@@ -2673,17 +2680,26 @@ impl Output {
         }
     }
 
-    /// Look the target up again when due. Never fails: without a network the socket stays unset and
-    /// the next look-up (RESOLVE_INTERVAL later) tries again.
+    /// Look the target up again, and check the route to it, when due. Never fails: without a network the socket
+    /// stays unset and the next look-up (RESOLVE_INTERVAL later) tries again.
     fn refresh(&mut self) {
-        if let Some(resolved) = self.last_resolve {
-            // A fixed host is looked up once (like before the config file existed) unless that failed.
-            let settled = matches!(self.target, Target::Fixed { .. }) && self.socket.is_some();
-            if settled || resolved.elapsed() < RESOLVE_INTERVAL {
-                return;
-            }
+        let now = Instant::now();
+        // A fixed host is looked up once (like before the config file existed) unless that failed.
+        let settled = matches!(self.target, Target::Fixed { .. }) && self.socket.is_some();
+        if self.last_resolve.is_none_or(|resolved| !settled && now.duration_since(resolved) >= RESOLVE_INTERVAL) {
+            self.look_up(now);
         }
-        self.last_resolve = Some(Instant::now());
+        // Even when the target stays the same, the network under it can change
+        if self.route_check_due
+            || self.last_route_check.is_none_or(|checked| now.duration_since(checked) >= RESOLVE_INTERVAL)
+        {
+            self.check_route(now);
+        }
+    }
+
+    /// Look the target up and connect to it if it moved.
+    fn look_up(&mut self, now: Instant) {
+        self.last_resolve = Some(now);
         let wanted = match &self.target {
             Target::Fixed { host, port } => match (host.as_str(), *port).to_socket_addrs() {
                 Ok(mut addrs) => {
@@ -2715,6 +2731,9 @@ impl Output {
                     eprintln!("Sending OSC to {addr}");
                     self.connect_error = None;
                     self.health = SendHealth::default();
+                    // A new socket starts from the current route
+                    self.last_route_check = Some(now);
+                    self.route_check_due = false;
                     Some((socket, addr))
                 }
                 // e.g. "Network is unreachable" while Wi-Fi comes up after boot
@@ -2736,6 +2755,33 @@ impl Output {
             }
             None => None,
         };
+    }
+
+    /// Reconnect when the route to the target now starts from another local address than the socket's. A connected
+    /// UDP socket keeps the source address chosen when it connected: after the Frame moves to another network (home
+    /// Wi-Fi to the Steam Link adapter, say) it would go on sending "successfully" from an address the new network
+    /// doesn't route back, and nothing arrives. Costs one unsent socket per check, never one per sample. Without a
+    /// route (the network is switching) the socket is kept, quietly, and checked again later.
+    fn check_route(&mut self, now: Instant) {
+        self.last_route_check = Some(now);
+        self.route_check_due = false;
+        let Some((socket, addr)) = &self.socket else {
+            return;
+        };
+        let addr = *addr;
+        let Ok(current) = socket.local_addr().map(|local| local.ip()) else {
+            return;
+        };
+        let Some(moved) = moved_source(current, &route_source(addr)) else {
+            return;
+        };
+        // Should connecting fail after all, the old socket stays until the next check
+        if let Ok(socket) = connect(addr) {
+            eprintln!("Source address for {addr} changed from {current} to {moved}; reconnecting");
+            self.socket = Some((socket, addr));
+            self.connect_error = None;
+            self.health = SendHealth::default();
+        }
     }
 
     fn addr(&self) -> Option<SocketAddr> {
@@ -2774,8 +2820,36 @@ impl Output {
     fn note(&mut self, now: Instant, target: SocketAddr, result: &io::Result<usize>) -> Option<String> {
         match result {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.drops.record(now, target),
-            _ => self.health.record(now, target, result),
+            _ => {
+                let was_failing = self.health.failing.is_some();
+                let line = self.health.record(now, target, result);
+                // Sending starting to fail, or working again, can mean the network changed under the socket: check the
+                // route at the next refresh rather than up to RESOLVE_INTERVAL later. Once per change, not per sample
+                // ("refused" changes nothing).
+                if self.health.failing.is_some() != was_failing {
+                    self.route_check_due = true;
+                }
+                line
+            }
         }
+    }
+}
+
+/// The local address the system would send from to reach `addr` now: a socket connected to it (which sends nothing)
+/// is given one. Fails without a route, e.g. "Network is unreachable" while the network switches.
+fn route_source(addr: SocketAddr) -> io::Result<IpAddr> {
+    let probe = UdpSocket::bind(if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })?;
+    probe.connect(addr)?;
+    Ok(probe.local_addr()?.ip())
+}
+
+/// The new source address, when a socket sending from `current` should be replaced given where the route goes now
+/// (`route`, from route_source): only when there is a route and it starts from another address. Without one the
+/// socket is kept.
+fn moved_source(current: IpAddr, route: &io::Result<IpAddr>) -> Option<IpAddr> {
+    match route {
+        Ok(ip) if *ip != current && !ip.is_unspecified() => Some(*ip),
+        _ => None,
     }
 }
 
@@ -5721,6 +5795,80 @@ mod tests {
         nowhere.refresh();
         assert!(nowhere.addr().is_none());
         assert!(nowhere.send("/x".into(), vec![OscType::Bool(true)]).is_ok());
+    }
+
+    #[test]
+    fn a_new_source_address_reconnects_and_no_route_keeps_the_socket() {
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        let unreachable = || Err(io::Error::from(io::ErrorKind::NetworkUnreachable));
+        // Wi-Fi to the Steam Link adapter: reconnect from the new address
+        assert_eq!(moved_source(ip("192.168.2.96"), &Ok(ip("10.35.78.1"))), Some(ip("10.35.78.1")));
+        // Same route, or none (the network is switching): keep the socket
+        assert_eq!(moved_source(ip("192.168.2.96"), &Ok(ip("192.168.2.96"))), None);
+        assert_eq!(moved_source(ip("192.168.2.96"), &unreachable()), None);
+        assert_eq!(moved_source(ip("192.168.2.96"), &Ok(ip("0.0.0.0"))), None);
+        assert_eq!(moved_source(ip("fe80::1"), &Ok(ip("fd00::2"))), Some(ip("fd00::2")));
+
+        // The real route to the loopback starts from the loopback
+        assert_eq!(route_source("127.0.0.1:9".parse().unwrap()).unwrap(), ip("127.0.0.1"));
+
+        // Sending starting to fail or working again asks for a check at once; failing on, "refused" and drops don't
+        let addr: SocketAddr = "192.0.2.1:9000".parse().unwrap();
+        let mut output = Output::new(Target::Fixed { host: "192.0.2.1".into(), port: 9000 });
+        let t0 = Instant::now();
+        let error = |kind| Err(io::Error::from(kind));
+        output.note(t0, addr, &Ok(20));
+        output.note(t0, addr, &error(io::ErrorKind::ConnectionRefused));
+        output.note(t0, addr, &error(io::ErrorKind::WouldBlock));
+        assert!(!output.route_check_due);
+        output.note(t0, addr, &error(io::ErrorKind::NetworkUnreachable));
+        assert!(output.route_check_due);
+        output.route_check_due = false;
+        output.note(t0, addr, &error(io::ErrorKind::NetworkUnreachable));
+        output.note(t0, addr, &error(io::ErrorKind::HostUnreachable));
+        assert!(!output.route_check_due);
+        output.note(t0, addr, &Ok(20));
+        assert!(output.route_check_due);
+    }
+
+    // Linux routes all of 127/8 to the loopback, so a socket sending from 127.0.0.2 stands in for one left on an old
+    // network's address.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_settled_fixed_target_follows_a_new_source_address_without_another_look_up() {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let loopback = |last: u8| IpAddr::from([127, 0, 0, last]);
+        let local = |output: &Output| output.socket.as_ref().unwrap().0.local_addr().unwrap().ip();
+        let mut output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port: addr.port() });
+        output.refresh();
+        let resolved = output.last_resolve;
+        assert!(resolved.is_some() && output.addr() == Some(addr));
+        // The route is unchanged: the same socket stays
+        output.route_check_due = true;
+        output.refresh();
+        assert_eq!(local(&output), loopback(1));
+
+        let stale = UdpSocket::bind("127.0.0.2:0").unwrap();
+        stale.connect(addr).unwrap();
+        output.socket = Some((stale, addr));
+        output.health.failing = Some("stale".into());
+        // Not due yet: nothing happens
+        output.refresh();
+        assert_eq!(local(&output), loopback(2));
+        // Due (RESOLVE_INTERVAL later, or a send failed): a new socket from the route's address, health starts over,
+        // and the fixed host is not looked up again
+        output.last_route_check = Some(Instant::now() - RESOLVE_INTERVAL);
+        output.refresh();
+        assert_eq!(local(&output), loopback(1));
+        assert_eq!(output.addr(), Some(addr));
+        assert_eq!(output.health.failing, None);
+        assert_eq!(output.last_resolve, resolved);
+        assert!(output.send("/x".into(), vec![OscType::Bool(true)]).is_ok());
+        let mut buf = [0u8; 64];
+        let (_, from) = listener.recv_from(&mut buf).unwrap();
+        assert_eq!(from.ip(), loopback(1));
     }
 
     #[test]
