@@ -254,6 +254,7 @@ struct UiText {
     const char* fitUnchanged;        ///< under a stop (Cancelled, Left, DashboardOpened): "Nothing was changed"
     const char* failLeft;            ///< another tab or dashboard page
     const char* failDashboardOpened; ///< opened while the fit ran without it
+    const char* fitRetryAfterDashboard;  ///< ...while re-centering by itself, which tries again once it is closed
     const char* failNotRunning;
     const char* failNoResult;
     const char* failUnsteadyFormat;  ///< %s = the point
@@ -875,6 +876,9 @@ struct UiText {
     const char* rowGazeDots;         ///< the debug gaze dots switch
     const char* hintGazeDots;
     const char* dotDistance;         ///< next to its stepper ("Dot distance")
+    const char* rowGazeRings;        ///< the rings switch under the dots ("Ring: before the scale")
+    const char* hintGazeRings;
+    const char* gazeRingsNote;       ///< right of its switch: when the rings show
     const char* rowUpdateCheck;
     const char* hintUpdateCheck;
     const char* updateUpToDateFormat;   ///< "Up to date (%s)"

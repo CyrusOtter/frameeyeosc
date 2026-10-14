@@ -3,9 +3,11 @@
 //! processed sample goes to the panel as one datagram on a Unix socket in the status folder. Nothing leaves the device,
 //! nothing is sent otherwise, and nothing here changes what goes to VRChat or VRCFT: these are copies for display.
 //!
-//! A datagram is PACKET_SIZE bytes, little-endian: b"FEOD", version 2, flags (bit 0: per-eye gaze is sent), 2 reserved
-//! zero bytes, the sample time (f64), the six gaze values as sent and the six before smoothing (f32 each: left x/y,
-//! right x/y, combined x/y; 1.0 = 45°), then each eye's values (EYE_SIZE bytes; the left eye first, anatomical):
+//! A datagram is PACKET_SIZE bytes, little-endian: b"FEOD", version 3, flags (bit 0: per-eye gaze is sent; bit 1: the
+//! user's gaze scale is in use, not 1 on all sides), 2 reserved zero bytes, the sample time (f64), the six gaze values
+//! as sent and the six before smoothing (f32 each: left x/y, right x/y, combined x/y; 1.0 = 45°), each eye's values
+//! (EYE_SIZE bytes; the left eye first, anatomical; below), then at UNSCALED_AT the six gaze values as sent but before
+//! the user's gaze scale (the same as the gaze as sent while bit 1 is clear). Each eye's values:
 //!   0  f32  eyelid as sent (VRCFT scale: 0 closed, 0.75 relaxed open, 1 widened)
 //!   4  f32  Valve's openness as read       8  f32  ...after the eye's scale (what the panel's raw bar shows)
 //!   12 f32  the eye camera's eyelid (eyecam-rec's, VRCFT scale; NaN without fresh camera values for the eye)
@@ -13,7 +15,9 @@
 //!   24 f32  the eye camera's squint (NaN as at 12)       28 f32  the eye camera's pupil (mm; NaN as at 12)
 //!   32 u8   where the sent eyelid came from (LidFrom: 0 the eye server's usual mix, 1.. the camera overrode it)
 //!   33 u8   flags (bit 0: the eye camera reads the eye closed)    34 two reserved zero bytes
-//! A panel of another version ignores the datagrams (and frameeyeosc never reads any).
+//! Version 3 is version 2 (136 bytes) with flag bit 1 and the gaze before the scale added at the end. The panel also
+//! reads version 2 (taking the gaze as sent for the gaze before the scale); other versions it ignores (and frameeyeosc
+//! never reads any).
 
 use std::io::ErrorKind;
 use std::os::unix::fs::FileTypeExt;
@@ -23,10 +27,11 @@ use std::time::{Duration, Instant};
 
 pub const SOCKET_NAME: &str = "gaze-dots.sock";
 const MAGIC: &[u8; 4] = b"FEOD";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 const EYES: usize = 64;
 const EYE_SIZE: usize = 36;
-pub const PACKET_SIZE: usize = EYES + 2 * EYE_SIZE;
+const UNSCALED_AT: usize = EYES + 2 * EYE_SIZE;
+pub const PACKET_SIZE: usize = UNSCALED_AT + 24;
 // While gaze_debug_dots is off, whether the panel listens is looked at this often (one stat).
 const LOOK_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -51,7 +56,11 @@ pub struct DotSample {
     pub time: f64,
     pub gaze: [f32; 6],
     pub raw_gaze: [f32; 6],
+    // As sent, but before the user's gaze scale.
+    pub unscaled_gaze: [f32; 6],
     pub independent: bool,
+    // The user's gaze scale is in use (Settings::gaze_scaled).
+    pub scaled: bool,
     pub eyes: [DotEye; 2],
 }
 
@@ -59,7 +68,7 @@ pub fn encode(sample: &DotSample) -> [u8; PACKET_SIZE] {
     let mut packet = [0u8; PACKET_SIZE];
     packet[..4].copy_from_slice(MAGIC);
     packet[4] = VERSION;
-    packet[5] = u8::from(sample.independent);
+    packet[5] = u8::from(sample.independent) | (u8::from(sample.scaled) << 1);
     packet[8..16].copy_from_slice(&sample.time.to_le_bytes());
     for (i, value) in sample.gaze.iter().chain(&sample.raw_gaze).enumerate() {
         packet[16 + i * 4..20 + i * 4].copy_from_slice(&value.to_le_bytes());
@@ -82,6 +91,9 @@ pub fn encode(sample: &DotSample) -> [u8; PACKET_SIZE] {
         packet[at + 32] = eye.lid_from;
         packet[at + 33] = u8::from(eye.camera_closed);
     }
+    for (i, value) in sample.unscaled_gaze.iter().enumerate() {
+        packet[UNSCALED_AT + i * 4..UNSCALED_AT + 4 + i * 4].copy_from_slice(&value.to_le_bytes());
+    }
     packet
 }
 
@@ -96,7 +108,9 @@ pub fn decode(packet: &[u8]) -> Option<DotSample> {
         time,
         gaze: std::array::from_fn(|i| f32_at(16 + i * 4)),
         raw_gaze: std::array::from_fn(|i| f32_at(40 + i * 4)),
+        unscaled_gaze: std::array::from_fn(|i| f32_at(UNSCALED_AT + i * 4)),
         independent: packet[5] & 1 != 0,
+        scaled: packet[5] & 2 != 0,
         eyes: std::array::from_fn(|e| {
             let at = EYES + e * EYE_SIZE;
             DotEye {
@@ -190,7 +204,9 @@ mod tests {
             time: 19892.729813125,
             gaze: [0.1, -0.2, 0.3, -0.4, 0.5, -0.6],
             raw_gaze: [-0.1, 0.2, -0.3, 0.4, -0.5, 0.6],
+            unscaled_gaze: [0.05, -0.1, 0.25, -0.3, 0.15, -0.2],
             independent: true,
+            scaled: true,
             eyes: [eye(0.72), DotEye { camera_closed: false, lid_from: 0, ..eye(0.0) }],
         }
     }
@@ -208,7 +224,8 @@ mod tests {
                         .chain([u32::from(e.lid_from), u32::from(e.camera_closed)])
                 })
                 .collect();
-            (s.time.to_bits(), s.gaze.map(f32::to_bits), s.raw_gaze.map(f32::to_bits), s.independent, eyes)
+            let gazes = [s.gaze, s.raw_gaze, s.unscaled_gaze].map(|gaze| gaze.map(f32::to_bits));
+            (s.time.to_bits(), gazes, s.independent, s.scaled, eyes)
         };
         bits(a) == bits(b)
     }
@@ -217,22 +234,30 @@ mod tests {
     fn packets_read_back_exactly() {
         let sample = sample();
         let packet = encode(&sample);
-        assert_eq!(PACKET_SIZE, 136);
-        assert_eq!(&packet[..8], b"FEOD\x02\x01\x00\x00");
+        assert_eq!(PACKET_SIZE, 160);
+        assert_eq!(&packet[..8], b"FEOD\x03\x03\x00\x00");
         assert!(same(&decode(&packet).unwrap(), &sample));
         // The left eye's lid first, the right eye's flags last
         assert_eq!(f32::from_le_bytes(packet[64..68].try_into().unwrap()), 0.72);
         assert_eq!(packet[64 + 33], 1);
         assert_eq!(packet[100 + 32..100 + 36], [0, 0, 0, 0]);
+        // The gaze before the scale last: its combined x at 152
+        assert_eq!(f32::from_le_bytes(packet[152..156].try_into().unwrap()), 0.15);
+        // Without the scale in use, bit 1 is clear
+        let plain = encode(&DotSample { scaled: false, independent: false, ..sample });
+        assert_eq!(plain[5], 0);
+        assert!(!decode(&plain).unwrap().scaled);
         let mut wrong = packet;
         wrong[0] = b'X';
         assert_eq!(decode(&wrong), None);
-        // Version 1 (40 bytes) and anything else of the wrong size or version is ignored
+        // Versions 1 (40 bytes) and 2 (136), and anything else of the wrong size or version, are not this
         let mut old = packet;
-        old[4] = 1;
+        old[4] = 2;
         assert_eq!(decode(&old), None);
+        assert_eq!(decode(&old[..136]), None);
         assert_eq!(decode(&packet[..40]), None);
-        assert_eq!(decode(&packet[..135]), None);
+        assert_eq!(decode(&packet[..136]), None);
+        assert_eq!(decode(&packet[..159]), None);
     }
 
     #[test]

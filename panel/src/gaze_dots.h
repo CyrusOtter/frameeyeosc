@@ -1,6 +1,8 @@
 // The debug gaze dots: frameeyeosc streams the gaze it sends (one datagram per sample, see src/dots.rs) to a Unix
 // socket in the status folder while "gaze_debug_dots" is on, and the panel shows a dot 1 m ahead where that gaze
-// points: one for the combined gaze, or one per eye, each along that eye's own ray. The same datagrams carry each
+// points: one for the combined gaze, or one per eye, each along that eye's own ray. While the user's gaze scale is in
+// use (not 100 % on all sides), a ring of the same colour shows where the gaze pointed before the scale (where the eyes
+// look), around the dot when they agree. The same datagrams carry each
 // eye's eyelid, squint and pupil (as sent, from Valve and from the eye camera) for the eye preview, which binds the
 // socket while it is open (frameeyeosc sends while the socket is there). Nothing here talks to OpenVR, so the packet
 // and the geometry are tested on their own (gaze_dots_test.cpp).
@@ -17,10 +19,14 @@ namespace gaze_dots {
 /** The socket's name in the status folder (the same as frameeyeosc's). */
 constexpr const char* kSocketName = "gaze-dots.sock";
 /**
- * One datagram (version 2), little-endian: b"FEOD", 2, flags, 2 zero bytes, time (f64), six gaze values as sent and six
- * before smoothing (f32), then each eye's values (kEyeSize bytes; see src/dots.rs). Any other version is ignored.
+ * One datagram (version 3), little-endian: b"FEOD", 3, flags (bit 0 per-eye gaze, bit 1 the gaze scale in use), 2 zero
+ * bytes, time (f64), six gaze values as sent and six before smoothing (f32), each eye's values (kEyeSize bytes; see
+ * src/dots.rs), then six gaze values as sent but before the user's gaze scale (f32).
  */
-constexpr size_t kPacketSize = 136;
+constexpr size_t kPacketSize = 160;
+/** Version 2 (0.7.7 and before): the same without the gaze before the scale (and its flag), still read (as unscaled).
+ *  Any other version is ignored. */
+constexpr size_t kPacketSizeV2 = 136;
 /** One eye's part of it. */
 constexpr size_t kEyeSize = 36;
 /** How far along each ray the dots are shown (m; gaze_debug_dots_distance_m), the same with the dashboard open or
@@ -33,6 +39,8 @@ constexpr double kMaxDistanceM = 2.0;
 /** A dot is this wide (m) at kWidthAtM (about 1 degree), and scaled with its distance to look the same size. */
 constexpr double kWidthM = 0.035;
 constexpr double kWidthAtM = 2.0;
+/** The ring (the gaze before the scale) is this many times as wide as a dot, so it goes around the dot when they meet. */
+constexpr double kRingWidthScale = 1.6;
 /** Without a packet for this long, the dots are hidden (frameeyeosc stopped or tracking is lost). */
 constexpr double kStaleSec = 1.0;
 
@@ -55,7 +63,9 @@ struct Packet {
     double time = 0.0;
     float gaze[6] = {0, 0, 0, 0, 0, 0};     ///< left x/y, right x/y, combined x/y as sent; 1.0 = 45°
     float rawGaze[6] = {0, 0, 0, 0, 0, 0};  ///< the same before smoothing
+    float unscaledGaze[6] = {0, 0, 0, 0, 0, 0};  ///< the same as sent, but before the user's gaze scale
     bool independent = false;              ///< each eye's own gaze is sent (two dots)
+    bool scaled = false;                   ///< the user's gaze scale is in use (not 1 on all sides): rings too
     PacketEye eyes[2];                     ///< the left eye, the right eye (anatomical)
 };
 
@@ -64,7 +74,7 @@ struct Packet {
  * @param data the bytes
  * @param size how many
  * @param out the sample
- * @return false if it is not a gaze dots packet of this version (or its gaze isn't finite)
+ * @return false if it is not a gaze dots packet of version 3 or 2 (or its gaze isn't finite)
  */
 bool decode(const uint8_t* data, size_t size, Packet& out);
 

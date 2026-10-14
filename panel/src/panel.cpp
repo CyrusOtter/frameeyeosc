@@ -2691,6 +2691,10 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                     // Stopped by the user: why, not an error
                     title = failureText(t, fit);
                     paragraphs.push_back(t.fitUnchanged);
+                    // Re-centering by itself, stopped by the dashboard SteamVR opened (or the user did): it tries again
+                    if (fit.failure == gaze_fit::Failure::DashboardOpened && m.fitRetry) {
+                        paragraphs.push_back(t.fitRetryAfterDashboard);
+                    }
                     break;
                 }
                 error = true;
@@ -4213,6 +4217,22 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
         const double distance = v.number(key::kGazeDebugDotsDistanceM);
         drawStepper(pen, stepperX, rowTop, stepperW, kControlH, key::kGazeDebugDotsDistanceM, distance,
                     formatSetting(key::kGazeDebugDotsDistanceM, distance) + " m", on, false);
+        y += h + 2;
+        // Under it: the rings (the gaze before the scale), with when they show beside the switch; greyed out (the
+        // value still readable) while the dots are off
+        const bool rings = v.flag(key::kGazeDebugRings);
+        drawRowLabel(pen, t, y, h, t.rowGazeRings, t.hintGazeRings, false);
+        drawSegmented(pen, kControlX, rowTop + h + 2, segW, kControlH,
+                      {{t.on, {PanelAction::SetBool, key::kGazeDebugRings, 1}, on},
+                       {t.off, {PanelAction::SetBool, key::kGazeDebugRings, 0}, on}},
+                      rings ? 0 : 1, 20, !on);
+        const double noteX = kControlX + segW + 14;
+        const std::vector<std::string> note = wrapText(pen, t.gazeRingsNote, 14, false, right - noteX, 2);
+        double baseline = y + h / 2 - (note.size() - 1) * 9 + 5;
+        for (const std::string& line : note) {
+            pen.text(noteX, baseline, line, 14, on ? kTextMuted : kTextDisabled);
+            baseline += 18;
+        }
         y += h + 14;
     }
     // The eye log: record the raw eye data to a file, from now until "Stop" (or 60 minutes)

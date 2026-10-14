@@ -898,11 +898,16 @@ void testGazeScaleLocks(const FontSet& fonts) {
     // − / ＋ go to the caller as Step on their own key
     const std::vector<EyePanel::HitArea> plus = hits(panel, PanelAction::Step, key::kGazeScaleUp);
     CHECK(plus.size() == 2 && plus[0].hit.arg == -1 && plus[1].hit.arg == 1);
-    // 100% shows as "100%"; at 25% only ＋ can be pressed
-    m.config.root.set(key::kGazeScaleDown, JsonValue::makeNumber(0.25));
+    // 100% shows as "100%"; at 5% only ＋ can be pressed, at 200% only −, at 25% both
+    m.config.root.set(key::kGazeScaleDown, JsonValue::makeNumber(0.05));
+    m.config.root.set(key::kGazeScaleLeft, JsonValue::makeNumber(2.0));
+    m.config.root.set(key::kGazeScaleRight, JsonValue::makeNumber(0.25));
     panel.render(m);
     const std::vector<EyePanel::HitArea> down = hits(panel, PanelAction::Step, key::kGazeScaleDown);
     CHECK(down.size() == 1 && down[0].hit.arg == 1);
+    const std::vector<EyePanel::HitArea> left = hits(panel, PanelAction::Step, key::kGazeScaleLeft);
+    CHECK(left.size() == 1 && left[0].hit.arg == -1);
+    CHECK(hits(panel, PanelAction::Step, key::kGazeScaleRight).size() == 2);
     // Kept while another tab shows, shown again when the tab is chosen again; the Eyelids tab's sub-tab is its own
     pressTab(panel, PanelTab::Basic);
     panel.render(m);
@@ -955,6 +960,54 @@ void testLidsRemembered(const FontSet& fonts) {
     CHECK(!hits(next, PanelAction::Step, key::kBlinkHoldMs).empty());
 }
 
+/**
+ * Advanced > Debug tools: the rings switch (gaze_debug_rings) on its own row under "Show gaze dots", On / Off lined up
+ * with the dots' switch; only pressable while the dots are on, like the dots' distance.
+ */
+void testGazeRingsRow(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const bool dots : {false, true}) {
+            for (const bool rings : {true, false}) {
+                EyePanel panel(fonts);
+                PanelModel m = modelWith(Lids::Both, true);
+                m.language = language;
+                m.config.root.set(key::kGazeDebugDots, JsonValue::makeBool(dots));
+                if (!rings) m.config.root.set(key::kGazeDebugRings, JsonValue::makeBool(false));
+                panel.setTab(PanelTab::Advanced);
+                panel.setAdvPage(AdvPage::Tools);
+                panel.render(m);
+                const std::vector<EyePanel::HitArea> dotHits = hits(panel, PanelAction::SetBool, key::kGazeDebugDots);
+                const std::vector<EyePanel::HitArea> ringHits = hits(panel, PanelAction::SetBool, key::kGazeDebugRings);
+                CHECK(dotHits.size() == 2);
+                CHECK(hits(panel, PanelAction::Step, key::kGazeDebugDotsDistanceM).empty() == !dots);
+                if (!dots) {
+                    // Greyed out: nothing to press
+                    CHECK(ringHits.empty());
+                    continue;
+                }
+                CHECK(ringHits.size() == 2);
+                if (ringHits.size() != 2 || dotHits.size() != 2) continue;
+                // On then Off, right under the dots' On / Off, the same size
+                CHECK(ringHits[0].hit.arg == 1 && ringHits[1].hit.arg == 0);
+                for (size_t i = 0; i < 2; ++i) {
+                    CHECK(std::fabs(ringHits[i].x - dotHits[i].x) < 0.5 && std::fabs(ringHits[i].w - dotHits[i].w) < 0.5);
+                    CHECK(ringHits[i].y >= dotHits[i].y + dotHits[i].h);
+                }
+                // Pressing the other choice gives the key to set
+                bool found = false;
+                for (const EyePanel::HitArea& area : hits(panel, PanelAction::SetBool, key::kGazeDebugRings)) {
+                    if (area.hit.arg != (rings ? 0 : 1)) continue;
+                    const PanelHit pressed = panel.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+                    panel.pointerUp();
+                    CHECK(pressed.action == PanelAction::SetBool && std::string(pressed.key) == key::kGazeDebugRings);
+                    found = true;
+                }
+                CHECK(found);
+            }
+        }
+    }
+}
+
 void testSubTabs(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         EyePanel panel(fonts);
@@ -980,6 +1033,7 @@ void testSubTabs(const FontSet& fonts) {
         CHECK(panel.advPage() == AdvPage::Tools);
         panel.render(m);
         CHECK(hits(panel, PanelAction::SetBool, key::kGazeDebugDots).size() == 2);
+        CHECK(hits(panel, PanelAction::SetBool, key::kGazeDebugRings).empty());  // the dots off: greyed out
         CHECK(hits(panel, PanelAction::RecordToggle).size() == 1 && hits(panel, PanelAction::EyecamStart).size() == 1);
         CHECK(hits(panel, PanelAction::DiagOpen).empty());
         pressArg(panel, PanelAction::AdvancedPage, static_cast<int>(AdvPage::Files));
@@ -2385,6 +2439,7 @@ int main() {
     testSearchSetup(fonts);
     testDiagPage(fonts);
     testSubTabs(fonts);
+    testGazeRingsRow(fonts);
     testUpdateNotice(fonts);
     testDiagFromEyecam(fonts);
     testPagesFit(fonts);

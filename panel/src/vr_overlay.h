@@ -33,6 +33,9 @@ struct VrEvents {
  */
 class VrOverlay {
 public:
+    /** How many debug gaze dot overlays: two dots (the gaze as sent) and two rings (before the user's gaze scale). */
+    static constexpr int kDots = 4;
+
     /** Result of connect(). */
     enum class ConnectResult {
         Ok,          ///< connected
@@ -93,6 +96,9 @@ public:
      */
     void setPanelScroll(bool on);
 
+    /** @return true while connected to SteamVR (connect succeeded, shutdown not yet called) */
+    bool connected() const { return connected_; }
+
     /**
      * Whether the SteamVR dashboard is open (showing any overlay, not only this panel).
      * @return true if open
@@ -129,10 +135,10 @@ public:
     void hideTarget();
 
     /**
-     * Show debug gaze dot `index` (0 or 1): an overlay of its own, fixed to the headset at a pose (head space,
-     * m and degrees). Created the first time it is needed. Only the transform changes from frame to frame; the
-     * image is sent when `newImage` is true (or the dot is new).
-     * @param index 0 or 1
+     * Show debug gaze dot `index` (0 or 1 the dots, 2 or 3 the rings; below kDots): an overlay of its own, fixed to the
+     * headset at a pose (head space, m and degrees). Created the first time it is needed. Only the transform changes
+     * from frame to frame; the image is sent when `newImage` is true (or the dot is new).
+     * @param index 0..kDots-1
      * @param x right (m)
      * @param y up (m)
      * @param z back (m; ahead is negative)
@@ -149,7 +155,7 @@ public:
 
     /**
      * Hide a debug gaze dot.
-     * @param index 0 or 1
+     * @param index 0..kDots-1
      */
     void hideDot(int index);
 
@@ -220,10 +226,10 @@ private:
     double targetYaw_ = 0.0;
     double targetPitch_ = 0.0;
     bool targetFailed_ = false;     ///< creating it failed; not tried again
-    uint64_t dotHandles_[2] = {0, 0};  ///< the debug gaze dots (0 until first needed)
-    bool dotShown_[2] = {false, false};
-    double dotWidth_[2] = {0.0, 0.0};  ///< the width last set (m)
-    bool dotFailed_ = false;          ///< creating one failed; not tried again
+    uint64_t dotHandles_[kDots] = {0, 0, 0, 0};  ///< the debug gaze dots and rings (0 until first needed)
+    bool dotShown_[kDots] = {false, false, false, false};
+    double dotWidth_[kDots] = {0.0, 0.0, 0.0, 0.0};  ///< the width last set (m)
+    bool dotFailed_[kDots] = {false, false, false, false};  ///< creating it failed; not tried again
     uint64_t fillHandle_ = 0;         ///< the eye capture's full-view overlay (0 until first needed)
     bool fillShown_ = false;
     bool fillFailed_ = false;         ///< creating it failed; not tried again
@@ -238,7 +244,7 @@ private:
     OverlayTexture panelTexture_;
     OverlayTexture thumbnailTexture_;
     OverlayTexture targetTexture_;
-    OverlayTexture dotTextures_[2];
+    OverlayTexture dotTextures_[kDots];
     OverlayTexture fillTexture_;
 
     /**

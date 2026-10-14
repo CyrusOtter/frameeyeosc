@@ -48,6 +48,8 @@ struct PanelModel {
     Language language = Language::Ja;
     frame_updater::UpdateStatus update;  ///< new-release check and install (see frame-updater)
     gaze_fit::View fit;          ///< the eye fit session (Eye fit tab)
+    bool fitRetry = false;       ///< ...stopped by the dashboard opening while re-centering by itself, which tries
+                                 ///< again once the dashboard is closed (auto_recenter::Watcher::fitEnded)
     recorder::View recording;    ///< the eye log (Advanced tab, and a mark in the left column while it records)
     std::vector<std::string> changelogDirs;  ///< where to look for CHANGELOG.md (changelog::defaultDirs)
     changelog::History history;  ///< the version history, read when it is opened

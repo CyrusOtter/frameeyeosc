@@ -42,7 +42,9 @@ constexpr double kTargetDistanceM = gaze_fit::kTargetDistanceM;
 constexpr float kTargetWidthM = static_cast<float>(0.15 * kTargetDistanceM);
 // The debug gaze dots: small plain overlays of their own, like frame-perf-overlay's panel (no sort order, no
 // dashboard flags: with those, the dashboard hid them even at 1 m); their width and distance: gaze_dots.h
-constexpr const char* kDotKeys[2] = {"sasaken.frameeyeosc-panel.dot0", "sasaken.frameeyeosc-panel.dot1"};
+// (dot0/1 the gaze as sent, dot2/3 the rings: the gaze before the user's gaze scale)
+constexpr const char* kDotKeys[VrOverlay::kDots] = {"sasaken.frameeyeosc-panel.dot0", "sasaken.frameeyeosc-panel.dot1",
+                                                    "sasaken.frameeyeosc-panel.dot2", "sasaken.frameeyeosc-panel.dot3"};
 // The eye capture's full-view overlay: a plain overlay like the dots (no sort order, no flags), fixed to the headset
 // 0.9 m ahead, closer than the dashboard (about 1.35 m) so it shows over that too, and 4 m wide (square): about 131
 // degrees across and as much up and down, more than the headset shows
@@ -266,7 +268,7 @@ void VrOverlay::shutdown() {
         if (handle != 0) logShutdownStep("DestroyOverlay(dot)", overlay->DestroyOverlay(handle));
         handle = 0;
     }
-    dotShown_[0] = dotShown_[1] = false;
+    for (bool& shown : dotShown_) shown = false;
     if (fillHandle_ != 0) logShutdownStep("DestroyOverlay(fill)", overlay->DestroyOverlay(fillHandle_));
     fillHandle_ = 0;
     fillShown_ = false;
@@ -447,7 +449,7 @@ void VrOverlay::hideTarget() {
 
 bool VrOverlay::showDot(int index, double x, double y, double z, double yawDeg, double pitchDeg, const uint8_t* rgba,
                         int size, bool newImage, double widthM) {
-    if (!connected_ || dotFailed_ || index < 0 || index > 1) return false;
+    if (!connected_ || index < 0 || index >= kDots || dotFailed_[index]) return false;
     vr::IVROverlay* overlay = vr::VROverlay();
     std::string message;
     uint64_t& handle = dotHandles_[index];
@@ -458,7 +460,7 @@ bool VrOverlay::showDot(int index, double x, double y, double z, double yawDeg, 
         if (error != vr::VROverlayError_None || !dotTextures_[index].create(vulkan_, size, size, message)) {
             if (!message.empty()) std::fprintf(stderr, "[Vulkan] can't create a dot texture: %s\n", message.c_str());
             if (error == vr::VROverlayError_None) overlay->DestroyOverlay(created);
-            dotFailed_ = true;
+            dotFailed_[index] = true;
             return false;
         }
         handle = created;
@@ -489,7 +491,7 @@ bool VrOverlay::showDot(int index, double x, double y, double z, double yawDeg, 
 }
 
 void VrOverlay::hideDot(int index) {
-    if (!connected_ || index < 0 || index > 1 || dotHandles_[index] == 0 || !dotShown_[index]) return;
+    if (!connected_ || index < 0 || index >= kDots || dotHandles_[index] == 0 || !dotShown_[index]) return;
     checkOverlay("HideOverlay(dot)", vr::VROverlay()->HideOverlay(dotHandles_[index]));
     dotShown_[index] = false;
 }

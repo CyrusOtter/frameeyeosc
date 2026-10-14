@@ -361,6 +361,8 @@ const PUPIL_MM_PER_UNIT: f32 = 10.0;
 const PUPIL_BITS_RESEND: Duration = Duration::from_secs(1);
 // How often the Steam Link PC is looked up again, to follow reconnects over another network.
 const RESOLVE_INTERVAL: Duration = Duration::from_secs(5);
+/// The shortest time between two checks of the route to a target that a send failing or working again asks for.
+const ROUTE_CHECK_MIN: Duration = Duration::from_secs(1);
 // Eyelid auto calibration keeps a decaying histogram of each eye's open readings (0.005 wide bins).
 const CAL_BINS: usize = 300;
 const CAL_BIN_WIDTH: f32 = 0.005;
@@ -683,16 +685,16 @@ struct Args {
     /// The right eye's own sideways gain for per-eye gaze [default: --gaze-gain-x]
     #[arg(long)]
     gaze_gain_x_right: Option<f32>,
-    /// Your own multiplier on how far the gaze goes left, after the eye fit (0.25..1.5); the fit never changes it
+    /// Your own multiplier on how far the gaze goes left, after the eye fit (0.05..2); the fit never changes it
     #[arg(long, default_value_t = 1.0)]
     gaze_scale_left: f32,
-    /// Your own multiplier on how far the gaze goes right, after the eye fit (0.25..1.5)
+    /// Your own multiplier on how far the gaze goes right, after the eye fit (0.05..2)
     #[arg(long, default_value_t = 1.0)]
     gaze_scale_right: f32,
-    /// Your own multiplier on how far the gaze goes up, after the eye fit (0.25..1.5)
+    /// Your own multiplier on how far the gaze goes up, after the eye fit (0.05..2)
     #[arg(long, default_value_t = 1.0)]
     gaze_scale_up: f32,
-    /// Your own multiplier on how far the gaze goes down, after the eye fit (0.25..1.5)
+    /// Your own multiplier on how far the gaze goes down, after the eye fit (0.05..2)
     #[arg(long, default_value_t = 1.0)]
     gaze_scale_down: f32,
     /// Settings file, re-read while running; options given here win over it
@@ -2639,11 +2641,16 @@ impl Drops {
     }
 }
 
-/// UDP sender that re-resolves its target periodically and reconnects when it changes.
+/// UDP sender that re-resolves its target periodically and reconnects when it changes, or when the route to it
+/// now starts from another local address.
 struct Output {
     target: Target,
     socket: Option<(UdpSocket, SocketAddr)>,
     last_resolve: Option<Instant>,
+    // When the route to the target was last checked (see check_route), and whether a send failing or working again
+    // asks for the next check at once.
+    last_route_check: Option<Instant>,
+    route_check_due: bool,
     health: SendHealth,
     drops: Drops,
     // Why the socket to the target could not be set up, or the host could not be looked up, so each
@@ -2658,6 +2665,8 @@ impl Output {
             target,
             socket: None,
             last_resolve: None,
+            last_route_check: None,
+            route_check_due: false,
             health: SendHealth::default(),
             drops: Drops::default(),
             connect_error: None,
@@ -2673,17 +2682,29 @@ impl Output {
         }
     }
 
-    /// Look the target up again when due. Never fails: without a network the socket stays unset and
-    /// the next look-up (RESOLVE_INTERVAL later) tries again.
+    /// Look the target up again, and check the route to it, when due. Never fails: without a network the socket
+    /// stays unset and the next look-up (RESOLVE_INTERVAL later) tries again.
     fn refresh(&mut self) {
-        if let Some(resolved) = self.last_resolve {
-            // A fixed host is looked up once (like before the config file existed) unless that failed.
-            let settled = matches!(self.target, Target::Fixed { .. }) && self.socket.is_some();
-            if settled || resolved.elapsed() < RESOLVE_INTERVAL {
-                return;
-            }
+        let now = Instant::now();
+        // A fixed host is looked up once (like before the config file existed) unless that failed.
+        let settled = matches!(self.target, Target::Fixed { .. }) && self.socket.is_some();
+        if self.last_resolve.is_none_or(|resolved| !settled && now.duration_since(resolved) >= RESOLVE_INTERVAL) {
+            self.look_up(now);
         }
-        self.last_resolve = Some(Instant::now());
+        // Even when the target stays the same, the network under it can change. A send failing or working again asks
+        // for a check sooner, but not more than once every ROUTE_CHECK_MIN (sends that keep flipping between the two
+        // would otherwise make a socket at every sample)
+        let since = |checked: Instant| now.duration_since(checked);
+        if self.last_route_check.is_none_or(|checked| {
+            since(checked) >= RESOLVE_INTERVAL || (self.route_check_due && since(checked) >= ROUTE_CHECK_MIN)
+        }) {
+            self.check_route(now);
+        }
+    }
+
+    /// Look the target up and connect to it if it moved.
+    fn look_up(&mut self, now: Instant) {
+        self.last_resolve = Some(now);
         let wanted = match &self.target {
             Target::Fixed { host, port } => match (host.as_str(), *port).to_socket_addrs() {
                 Ok(mut addrs) => {
@@ -2715,6 +2736,9 @@ impl Output {
                     eprintln!("Sending OSC to {addr}");
                     self.connect_error = None;
                     self.health = SendHealth::default();
+                    // A new socket starts from the current route
+                    self.last_route_check = Some(now);
+                    self.route_check_due = false;
                     Some((socket, addr))
                 }
                 // e.g. "Network is unreachable" while Wi-Fi comes up after boot
@@ -2736,6 +2760,33 @@ impl Output {
             }
             None => None,
         };
+    }
+
+    /// Reconnect when the route to the target now starts from another local address than the socket's. A connected
+    /// UDP socket keeps the source address chosen when it connected: after the Frame moves to another network (home
+    /// Wi-Fi to the Steam Link adapter, say) it would go on sending "successfully" from an address the new network
+    /// doesn't route back, and nothing arrives. Costs one unsent socket per check, never one per sample. Without a
+    /// route (the network is switching) the socket is kept, quietly, and checked again later.
+    fn check_route(&mut self, now: Instant) {
+        self.last_route_check = Some(now);
+        self.route_check_due = false;
+        let Some((socket, addr)) = &self.socket else {
+            return;
+        };
+        let addr = *addr;
+        let Ok(current) = socket.local_addr().map(|local| local.ip()) else {
+            return;
+        };
+        let Some(moved) = moved_source(current, &route_source(addr)) else {
+            return;
+        };
+        // Should connecting fail after all, the old socket stays until the next check
+        if let Ok(socket) = connect(addr) {
+            eprintln!("Source address for {addr} changed from {current} to {moved}; reconnecting");
+            self.socket = Some((socket, addr));
+            self.connect_error = None;
+            self.health = SendHealth::default();
+        }
     }
 
     fn addr(&self) -> Option<SocketAddr> {
@@ -2774,8 +2825,36 @@ impl Output {
     fn note(&mut self, now: Instant, target: SocketAddr, result: &io::Result<usize>) -> Option<String> {
         match result {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.drops.record(now, target),
-            _ => self.health.record(now, target, result),
+            _ => {
+                let was_failing = self.health.failing.is_some();
+                let line = self.health.record(now, target, result);
+                // Sending starting to fail, or working again, can mean the network changed under the socket: check the
+                // route at the next refresh rather than up to RESOLVE_INTERVAL later. Once per change, not per sample
+                // ("refused" changes nothing).
+                if self.health.failing.is_some() != was_failing {
+                    self.route_check_due = true;
+                }
+                line
+            }
         }
+    }
+}
+
+/// The local address the system would send from to reach `addr` now: a socket connected to it (which sends nothing)
+/// is given one. Fails without a route, e.g. "Network is unreachable" while the network switches.
+fn route_source(addr: SocketAddr) -> io::Result<IpAddr> {
+    let probe = UdpSocket::bind(if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })?;
+    probe.connect(addr)?;
+    Ok(probe.local_addr()?.ip())
+}
+
+/// The new source address, when a socket sending from `current` should be replaced given where the route goes now
+/// (`route`, from route_source): only when there is a route and it starts from another address. Without one the
+/// socket is kept.
+fn moved_source(current: IpAddr, route: &io::Result<IpAddr>) -> Option<IpAddr> {
+    match route {
+        Ok(ip) if *ip != current && !ip.is_unspecified() => Some(*ip),
+        _ => None,
     }
 }
 
@@ -2929,7 +3008,7 @@ fn scale_gaze(gaze: [f32; 6], settings: &Settings) -> [f32; 6] {
         gaze_scale_down: down,
         ..
     } = *settings;
-    if [left, right, up, down] == [1.0; 4] {
+    if !settings.gaze_scaled() {
         return gaze;
     }
     let scaled = |value: f32, below: f32, above: f32| {
@@ -2957,6 +3036,9 @@ struct Sample {
     raw_gaze: [f32; 6],
     // The same layout, as sent.
     gaze: [f32; 6],
+    // The same, before the user's gaze scale (scale_gaze); equal to `gaze` while the scale is 1 on all sides. Only for
+    // the panel's gaze dots.
+    unscaled_gaze: [f32; 6],
     // VRCFT eyelids, as sent to VRChat.
     lids: [f32; 2],
     // Whether each eye's gaze passed the quality check.
@@ -2990,7 +3072,8 @@ impl Sample {
     }
 }
 
-/// A sample's copy for the panel (its gaze dots and eye preview; dots.rs): the gaze as sent and before smoothing, and
+/// A sample's copy for the panel (its gaze dots and eye preview; dots.rs): the gaze as sent, before smoothing and before
+/// the user's gaze scale (with whether that scale is in use: not 1 on all sides), and
 /// each eye's eyelid as sent, Valve's openness, squint and pupil as sent, and the eye camera's own values as read for it
 /// (`camera`; NaN for an eye without fresh ones). Only for display: nothing here goes to VRChat or VRCFT.
 fn dot_sample(settings: &Settings, data: &EyeData, sample: &Sample, camera: Option<&Live>) -> dots::DotSample {
@@ -2999,7 +3082,9 @@ fn dot_sample(settings: &Settings, data: &EyeData, sample: &Sample, camera: Opti
         time: data.sample_time,
         gaze: sample.gaze,
         raw_gaze: sample.raw_gaze,
+        unscaled_gaze: sample.unscaled_gaze,
         independent: settings.independent_eyes,
+        scaled: settings.gaze_scaled(),
         eyes: std::array::from_fn(|eye| {
             let seen = camera.filter(|live| live.fresh[eye]).map(|live| live.eyes[eye]);
             dots::DotEye {
@@ -3082,11 +3167,12 @@ fn process(
     // easing or far-down slope, the camera only for widening, no floor, no ceiling rule, no shared widening)
     let v2 = settings.v2();
     let mut cross_eye = false;
-    let (gaze, lids, gaze_held, openness_scaled, camera, lid_from) = if settings.raw {
+    let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from) = if settings.raw {
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
         let camera_lids = side_checked(smoother, data, camera_lids, v2);
         let corrected = correct_gaze(raw_gaze, settings);
-        let gaze = scale_gaze(choose_gaze(corrected, [true; 2], settings.independent_eyes, v2), settings);
+        let unscaled_gaze = choose_gaze(corrected, [true; 2], settings.independent_eyes, v2);
+        let gaze = scale_gaze(unscaled_gaze, settings);
         let zoned = camera_lids.map(|camera| v2 && camera.is_none());
         let fits = fits_at(settings, corrected[5], zoned);
         let openness_scaled = lid_inputs_with(data.openness, corrected[5], scales, settings, fits);
@@ -3130,7 +3216,7 @@ fn process(
             shut_lids(&mut lids, shut);
         }
         let shut_eyes = data.openness.iter().any(|openness| *openness < settings.gaze_hold_below);
-        (gaze, lids, shut_eyes, openness_scaled, camera, lid_from)
+        (gaze, unscaled_gaze, lids, shut_eyes, openness_scaled, camera, lid_from)
     } else {
         let dt = smoother.advance(data.sample_time);
         // After advance(), which starts the smoothing over after a gap
@@ -3236,6 +3322,7 @@ fn process(
             cross_eye = smoother.cross_eye.engaged;
         }
         // The user's own scale last, on the combined direction (see scale_gaze)
+        let unscaled_gaze = gaze;
         let gaze = scale_gaze(gaze, settings);
         smoother.cap_lids(&mut lids, capped);
         let filtered = lids;
@@ -3257,13 +3344,14 @@ fn process(
             shut_lids(&mut lids, shut);
         }
         let openness_scaled = lid_inputs_with(data.openness, vertical, scales, settings, fits);
-        (gaze, lids, hold[2], openness_scaled, camera, lid_from)
+        (gaze, unscaled_gaze, lids, hold[2], openness_scaled, camera, lid_from)
     };
     Sample {
         openness: data.openness,
         openness_scaled,
         raw_gaze,
         gaze,
+        unscaled_gaze,
         lids,
         reliable,
         gaze_held,
@@ -4803,6 +4891,10 @@ mod tests {
         // Straight ahead stays; never past the end of the range
         assert_eq!(scale_gaze(gaze(0.0, 0.0), &scaled(0.25, 1.5, 0.25, 1.5)), gaze(0.0, 0.0));
         assert_eq!(scale_gaze(gaze(0.8, -0.9), &scaled(1.0, 1.5, 1.0, 1.5)), gaze(1.0, -1.0));
+        // The ends of the range: 5 % and 200 %
+        assert!(close(scale_gaze(gaze(-0.4, 0.4), &scaled(0.05, 1.0, 2.0, 1.0)), gaze(-0.02, 0.8)));
+        assert!(close(scale_gaze(gaze(0.4, -0.3), &scaled(1.0, 0.05, 1.0, 2.0)), gaze(0.02, -0.6)));
+        assert_eq!(scale_gaze(gaze(0.6, -0.7), &scaled(1.0, 2.0, 1.0, 2.0)), gaze(1.0, -1.0));
         // Through the processing: settled on (-0.2, 0.1) on the -1..1 scale, left goes 1.5 times as far and up half
         // as far, in both eye behaviours, smoothed or raw
         let tan = |angle: f32| (angle * 45.0).to_radians().tan();
@@ -4810,8 +4902,12 @@ mod tests {
         for eye_behavior in [1, 2] {
             for raw in [false, true] {
                 let base = Settings { eye_behavior, raw, ..settings() };
-                let plain = run(&base, &readings)[179].gaze;
-                let wider = run(&Settings { gaze_scale_left: 1.5, gaze_scale_up: 0.5, ..base }, &readings)[179].gaze;
+                let plain_sample = &run(&base, &readings)[179];
+                let wider_sample = &run(&Settings { gaze_scale_left: 1.5, gaze_scale_up: 0.5, ..base }, &readings)[179];
+                let [plain, wider] = [plain_sample.gaze, wider_sample.gaze];
+                // The gaze before the scale (for the panel's dots) is what goes out without it
+                assert_eq!(plain_sample.unscaled_gaze, plain);
+                assert_eq!(wider_sample.unscaled_gaze, plain);
                 assert!((wider[4] - plain[4] * 1.5).abs() < 1e-5, "{plain:?} {wider:?}");
                 assert!((wider[5] - plain[5] * 0.5).abs() < 1e-6, "{plain:?} {wider:?}");
                 assert!((plain[4] + 0.2).abs() < 1e-3 && (plain[5] - 0.1).abs() < 1e-3, "{plain:?}");
@@ -5724,6 +5820,82 @@ mod tests {
     }
 
     #[test]
+    fn a_new_source_address_reconnects_and_no_route_keeps_the_socket() {
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        let unreachable = || Err(io::Error::from(io::ErrorKind::NetworkUnreachable));
+        // Wi-Fi to the Steam Link adapter: reconnect from the new address
+        assert_eq!(moved_source(ip("192.168.1.23"), &Ok(ip("10.35.78.1"))), Some(ip("10.35.78.1")));
+        // Same route, or none (the network is switching): keep the socket
+        assert_eq!(moved_source(ip("192.168.1.23"), &Ok(ip("192.168.1.23"))), None);
+        assert_eq!(moved_source(ip("192.168.1.23"), &unreachable()), None);
+        assert_eq!(moved_source(ip("192.168.1.23"), &Ok(ip("0.0.0.0"))), None);
+        assert_eq!(moved_source(ip("fe80::1"), &Ok(ip("fd00::2"))), Some(ip("fd00::2")));
+
+        // The real route to the loopback starts from the loopback
+        assert_eq!(route_source("127.0.0.1:9".parse().unwrap()).unwrap(), ip("127.0.0.1"));
+
+        // Sending starting to fail or working again asks for a check at once; failing on, "refused" and drops don't
+        let addr: SocketAddr = "192.0.2.1:9000".parse().unwrap();
+        let mut output = Output::new(Target::Fixed { host: "192.0.2.1".into(), port: 9000 });
+        let t0 = Instant::now();
+        let error = |kind| Err(io::Error::from(kind));
+        output.note(t0, addr, &Ok(20));
+        output.note(t0, addr, &error(io::ErrorKind::ConnectionRefused));
+        output.note(t0, addr, &error(io::ErrorKind::WouldBlock));
+        assert!(!output.route_check_due);
+        output.note(t0, addr, &error(io::ErrorKind::NetworkUnreachable));
+        assert!(output.route_check_due);
+        output.route_check_due = false;
+        output.note(t0, addr, &error(io::ErrorKind::NetworkUnreachable));
+        output.note(t0, addr, &error(io::ErrorKind::HostUnreachable));
+        assert!(!output.route_check_due);
+        output.note(t0, addr, &Ok(20));
+        assert!(output.route_check_due);
+    }
+
+    // Linux routes all of 127/8 to the loopback, so a socket sending from 127.0.0.2 stands in for one left on an old
+    // network's address.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_settled_fixed_target_follows_a_new_source_address_without_another_look_up() {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let loopback = |last: u8| IpAddr::from([127, 0, 0, last]);
+        let local = |output: &Output| output.socket.as_ref().unwrap().0.local_addr().unwrap().ip();
+        let mut output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port: addr.port() });
+        output.refresh();
+        let resolved = output.last_resolve;
+        assert!(resolved.is_some() && output.addr() == Some(addr));
+        // The route is unchanged: the same socket stays. Asked for within ROUTE_CHECK_MIN of the last check, the check
+        // waits
+        output.route_check_due = true;
+        output.refresh();
+        assert_eq!(local(&output), loopback(1));
+        assert!(output.route_check_due);
+
+        let stale = UdpSocket::bind("127.0.0.2:0").unwrap();
+        stale.connect(addr).unwrap();
+        output.socket = Some((stale, addr));
+        output.health.failing = Some("stale".into());
+        // Not due yet: nothing happens
+        output.refresh();
+        assert_eq!(local(&output), loopback(2));
+        // Due (RESOLVE_INTERVAL later, or a send failed): a new socket from the route's address, health starts over,
+        // and the fixed host is not looked up again
+        output.last_route_check = Some(Instant::now() - RESOLVE_INTERVAL);
+        output.refresh();
+        assert_eq!(local(&output), loopback(1));
+        assert_eq!(output.addr(), Some(addr));
+        assert_eq!(output.health.failing, None);
+        assert_eq!(output.last_resolve, resolved);
+        assert!(output.send("/x".into(), vec![OscType::Bool(true)]).is_ok());
+        let mut buf = [0u8; 64];
+        let (_, from) = listener.recv_from(&mut buf).unwrap();
+        assert_eq!(from.ip(), loopback(1));
+    }
+
+    #[test]
     fn sending_never_blocks_and_a_full_buffer_drops_quietly() {
         // The socket never blocks
         let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -5939,6 +6111,7 @@ mod tests {
             openness_scaled: [0.8; 2],
             raw_gaze: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
             gaze: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+            unscaled_gaze: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
             lids: [0.375, 0.75],
             reliable: [true; 2],
             gaze_held: false,
