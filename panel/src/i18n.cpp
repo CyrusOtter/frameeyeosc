@@ -865,6 +865,9 @@ UiText makeJapanese() {
     t.rowGazeDots = "視線の点を表示";
     t.hintGazeDots = "デバッグ用・送る視線を表示";
     t.dotDistance = "点の距離";
+    t.rowGazeRings = "倍率の前の向き（輪）";
+    t.hintGazeRings = "目が見ている向き";
+    t.gazeRingsNote = "視線の倍率が 100 % でないときだけ、点のまわりに輪で出ます";
     t.rowUpdateCheck = "新しい版の確認";
     t.hintUpdateCheck = "起動時と 1 時間に 1 回、GitHub に新しい版がないか見に行きます";
     t.updateUpToDateFormat = "最新版です（%s）";
@@ -1773,6 +1776,9 @@ UiText makeEnglish() {
     t.rowGazeDots = "Show gaze dots";
     t.hintGazeDots = "Debug: the sent gaze";
     t.dotDistance = "Dot distance";
+    t.rowGazeRings = "Ring: before the scale";
+    t.hintGazeRings = "Where your eyes look";
+    t.gazeRingsNote = "Shown around the dot only while a gaze scale isn't 100 %";
     t.rowUpdateCheck = "Check for updates";
     t.hintUpdateCheck = "Looks on GitHub for a new version at start and every hour";
     t.updateUpToDateFormat = "Up to date (%s)";

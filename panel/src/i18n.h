@@ -876,6 +876,9 @@ struct UiText {
     const char* rowGazeDots;         ///< the debug gaze dots switch
     const char* hintGazeDots;
     const char* dotDistance;         ///< next to its stepper ("Dot distance")
+    const char* rowGazeRings;        ///< the rings switch under the dots ("Ring: before the scale")
+    const char* hintGazeRings;
+    const char* gazeRingsNote;       ///< right of its switch: when the rings show
     const char* rowUpdateCheck;
     const char* hintUpdateCheck;
     const char* updateUpToDateFormat;   ///< "Up to date (%s)"

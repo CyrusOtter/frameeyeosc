@@ -151,6 +151,8 @@ struct Options {
     std::string fakeRecord;       ///< a made-up eye log state: "recording", "failed" or "autostopped"
     std::string fakeWiden;        ///< lid_widen in the made-up config ("" = the default)
     std::vector<double> fakeGazeScale;  ///< --fake-gaze-scale: gaze_scale_left, _right, _up, _down (empty = defaults)
+    bool fakeGazeDots = false;    ///< --fake-gaze-dots: gaze_debug_dots on
+    bool fakeRingsOff = false;    ///< --fake-rings-off: gaze_debug_rings off
     std::string fakeEyecam;       ///< a made-up eyecam-rec state (see printUsage and parseFakeEyecam)
     std::string fakeCamera;       ///< --fake-camera: the eye cameras as frameeyeosc reports them (see printUsage)
     std::string fakePassword = "set";  ///< --fake-password: the setup's password check
@@ -302,6 +304,8 @@ void printUsage() {
         "      --fake-v1         The eyes move as up to 0.7.5 (eye_behavior 1)\n"
         "      --fake-gaze-scale L,R,U,D  The gaze scale (gaze_scale_left, _right, _up, _down; 0.05..2). A pair whose\n"
         "                        two values differ shows its lock open\n"
+        "      --fake-gaze-dots  The debug gaze dots on (gaze_debug_dots; the Advanced tab's Debug tools)\n"
+        "      --fake-rings-off  The dots' rings off (gaze_debug_rings)\n"
         "      --fake-dominant-eye left|right  \"Track Dominant Eye Only\" is on with that eye\n"
         "      --fake-openness-saturated  A relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through\n"
         "      --fake-prompt vrchat|etvr|livelink  The recommended-settings question\n"
@@ -914,6 +918,10 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeIndependent = true;
         } else if (arg == "--fake-v1") {
             options.fake = options.fakeV1 = true;
+        } else if (arg == "--fake-gaze-dots") {
+            options.fake = options.fakeGazeDots = true;
+        } else if (arg == "--fake-rings-off") {
+            options.fake = options.fakeRingsOff = true;
         } else if (arg == "--fake-gaze-scale" && hasNext) {
             const std::string value = argv[++i];
             std::vector<double> scales;
@@ -1592,6 +1600,8 @@ PanelModel fakeModel(const Options& options) {
     if (options.fakeBroken) m.config.error = "expected , or } between members (near character 212)";
     if (options.fakeIndependent) root.set(key::kIndependentEyes, JsonValue::makeBool(true));
     if (options.fakeV1) root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
+    if (options.fakeGazeDots) root.set(key::kGazeDebugDots, JsonValue::makeBool(true));
+    if (options.fakeRingsOff) root.set(key::kGazeDebugRings, JsonValue::makeBool(false));
     for (size_t i = 0; i < options.fakeGazeScale.size() && i < 4; ++i) {
         root.set(kGazeScaleKeys[i / 2][i % 2], JsonValue::makeNumber(options.fakeGazeScale[i]));
     }
@@ -3890,8 +3900,14 @@ int runOverlay(const Options& options) {
                 hideDots();
                 dotsOpenFailed = false;
             }
-            // Listening for the eye preview alone: no dots
+            // Listening for the eye preview alone: no dots. The rings switched off (gaze_debug_rings): no rings, at
+            // once rather than at the next sample
             if (!wanted && anyDot()) hideDots();
+            const bool wantRings = model.config.flag(key::kGazeDebugRings);
+            if (!wantRings && (dotsVisible[2] || dotsVisible[3])) {
+                hideDot(2);
+                hideDot(3);
+            }
             gaze_dots::Packet packet;
             const bool got = dots.isOpen() && dots.poll(packet);
             if (got && previewing) {
@@ -3914,12 +3930,13 @@ int runOverlay(const Options& options) {
                     if (dotsVisible[index]) dotImageShown[index] = image;
                 };
                 // The dots show the gaze as sent; while the user's gaze scale is in use, the rings show it before
-                // the scale (where the eyes look). Without it the two are the same, so no rings
+                // the scale (where the eyes look). Without it the two are the same, so no rings; nor with the rings
+                // switched off (only the dots, as up to 0.7.7)
                 const float* gazes[2] = {packet.gaze, packet.unscaledGaze};
                 for (int ring = 0; ring < 2; ++ring) {
                     const float* gaze = gazes[ring];
                     const int at = ring * 2;
-                    if (ring == 1 && !packet.scaled) {
+                    if (ring == 1 && (!packet.scaled || !wantRings)) {
                         hideDot(at);
                         hideDot(at + 1);
                     } else if (packet.independent) {

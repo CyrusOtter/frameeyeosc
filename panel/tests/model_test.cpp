@@ -731,6 +731,28 @@ void testCameraLids() {
     CHECK(SettingsView(m).locked(key::kCameraLids) && !SettingsView(m).flag(key::kCameraLids));
 }
 
+/** gaze_debug_rings (the rings by the debug gaze dots, Advanced > Debug tools): the panel's own, like the dots'
+ *  distance; on by default and read from config.json, off only when the file says false. */
+void testGazeDebugRings() {
+    const SettingSpec* spec = findSetting(key::kGazeDebugRings);
+    CHECK(spec != nullptr && spec->type == SettingType::Bool && spec->defaultNumber == 1);
+    CHECK(std::string(key::kGazeDebugRings) == "gaze_debug_rings");
+    PanelModel m;
+    m.config.root = JsonValue();
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(SettingsView(m).flag(key::kGazeDebugRings) && m.config.flag(key::kGazeDebugRings));
+    m.config.root.set(key::kGazeDebugRings, JsonValue::makeBool(false));
+    CHECK(!SettingsView(m).flag(key::kGazeDebugRings) && !m.config.flag(key::kGazeDebugRings));
+    CHECK(!SettingsView(m).locked(key::kGazeDebugRings));
+    // Not a boolean: the default
+    m.config.root.set(key::kGazeDebugRings, JsonValue::makeString("no"));
+    CHECK(SettingsView(m).flag(key::kGazeDebugRings));
+    // Independent of the dots' own switch
+    m.config.root.set(key::kGazeDebugRings, JsonValue::makeBool(false));
+    m.config.root.set(key::kGazeDebugDots, JsonValue::makeBool(true));
+    CHECK(SettingsView(m).flag(key::kGazeDebugDots) && !SettingsView(m).flag(key::kGazeDebugRings));
+}
+
 /** frameeyeosc's "camera" and the camera values sent, and what the eye capture tab says about them. */
 /** pupils_to_vrchat (the Output tab's "Send pupils straight to VRChat"): on by default, read from config.json and
  *  written back, frameeyeosc's own value while --no-pupils-to-vrchat locks it, and shown only for LiveLink with the eye
@@ -1177,6 +1199,7 @@ int main() {
     testSteamlinkParams();
     testNativeEyes();
     testCameraLids();
+    testGazeDebugRings();
     testCameraStatus();
     testLidsFromCameras();
     testWarmingShown();
