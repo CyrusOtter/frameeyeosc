@@ -313,7 +313,9 @@ void printUsage() {
         "      --fake-fit running|running-center|running-closed|done|done-center|done-standin|\n"
         "                 done-center-standin|fitted|fitted-gaze|\n"
         "                 failed-unsteady|failed-notclosed|failed-movement|failed-lidrange|failed-cancelled|\n"
-        "                 failed-left|failed-opened|failed-noresult  A made-up eye fit (Eye fit tab)\n"
+        "                 failed-left|failed-opened|failed-opened-retry|failed-noresult\n"
+        "                        A made-up eye fit (Eye fit tab; failed-opened-retry: a re-wear fit the dashboard\n"
+        "                        stopped, tried again once it is closed)\n"
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
         "      --fake-widen off|low|normal|high  lid_widen in the made-up settings\n"
         "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL|calibrating[:LABEL]|error|calib-error\n"
@@ -1044,7 +1046,7 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 "done-center",     "done-standin",     "done-center-standin", "fitted",
                 "fitted-gaze",     "failed-unsteady",  "failed-notclosed", "failed-movement",
                 "failed-lidrange", "failed-cancelled", "failed-left",      "failed-opened",
-                "failed-noresult"};
+                "failed-opened-retry", "failed-noresult"};
             if (std::find(std::begin(kFitStates), std::end(kFitStates), options.fakeFit) == std::end(kFitStates)) {
                 std::fprintf(stderr, "--fake-fit: unknown state %s\n", options.fakeFit.c_str());
                 return false;
@@ -1648,8 +1650,9 @@ PanelModel fakeModel(const Options& options) {
                           : state == "failed-lidrange"  ? Failure::NoLidRange
                           : state == "failed-cancelled" ? Failure::Cancelled
                           : state == "failed-left"      ? Failure::Left
-                          : state == "failed-opened"    ? Failure::DashboardOpened
+                          : state.rfind("failed-opened", 0) == 0 ? Failure::DashboardOpened
                                                         : Failure::NoResult;
+            m.fitRetry = state == "failed-opened-retry";
             fit.point = state == "failed-movement" ? Point::Down : Point::Left;
             // Made-up numbers behind it
             gaze_fit::FailureDetail& d = fit.detail;
@@ -3409,6 +3412,7 @@ int runOverlay(const Options& options) {
     report::Run fitRun;
     report::Run calibRun;
     std::string fitTrigger = "panel";  // "auto" for the re-wear fit started by itself
+    bool fitRetryShown = false;        // the last fit was a re-wear fit the dashboard stopped, to be tried again
     std::string calibCommand;          // the calibration's command, to know its reply
     report::CalibWatch calibWatch;     // ...until it ends
     double lastRunSample = 0.0;
@@ -3684,6 +3688,7 @@ int runOverlay(const Options& options) {
             in.locked = fitKeysLocked(view);
             in.running = model.status.running;
             in.tracking = model.status.tracking;
+            in.vrConnected = vr.connected();
             in.dashboardOpen = dashboardOpen;
             in.fitActive = fit.active();
             // An eye Valve's eye server reads shut (stuck at 0 for a whole wear at times) counts only with the eye
@@ -3712,7 +3717,13 @@ int runOverlay(const Options& options) {
             s.conditions = runConditions(model, vr, recenter);
             s.conditions.ipdMm = vr.userIpdMeters() * 1000;
             model.records.lastFit.clear();
+            fitRetryShown = false;
         }
+        // A re-wear fit stopped because the dashboard opened (SteamVR opens it by itself a moment after it starts or
+        // wakes up): auto_recenter tries again once it is closed, kDashboardRetries times at most in a wearing
+        const auto stoppedByDashboard = [](const gaze_fit::View& v) {
+            return v.phase == gaze_fit::Phase::Failed && v.failure == gaze_fit::Failure::DashboardOpened;
+        };
         fitTrigger = "panel";
 
         // The eye fit: requests and results go through config.json and status.json; the target shows over the open
@@ -3730,8 +3741,11 @@ int runOverlay(const Options& options) {
             }
             // Cues follow what the target shows (a dot arriving, the countdown, the eyes-shut ending)
             const bool soundsOn = model.config.flag(key::kFitSounds);
+            // ...but no "failed" sound for a re-wear fit the dashboard stopped that will be tried again
+            const bool retrying = fitRun.active() &&
+                                  recenter.willRetry(fitRun.summary().trigger == "auto", stoppedByDashboard(fit.view()));
             for (sounds::Cue cue : cues.update(fit.view(), actions)) {
-                if (soundsOn) player.play(cue);
+                if (soundsOn && !(retrying && cue == sounds::Cue::Fail)) player.play(cue);
             }
             player.reap();
             if (actions.writeCapture) {
@@ -3803,9 +3817,27 @@ int runOverlay(const Options& options) {
         }
         // ...and ends with it (done, failed or stopped)
         if (!fit.active() && fitRun.active()) {
+            const gaze_fit::View ended = fit.view();
+            const bool byItself = fitRun.summary().trigger == "auto";
+            const bool byDashboard = stoppedByDashboard(ended);
+            const bool retry = recenter.willRetry(byItself, byDashboard);
             report::Pending pending = fitRun.finish(unixNow());
-            fillFitResult(pending.summary, fit.view());
+            fillFitResult(pending.summary, ended);
+            if (retry) {
+                // Still "stopped" (grey, not a failure), and its reason says it is tried again
+                pending.summary.reason += std::string("。") + uiText(Language::Ja).fitRetryAfterDashboard;
+                pending.summary.reasonEn += std::string(". ") + uiText(Language::En).fitRetryAfterDashboard;
+            }
             submitRecord(std::move(pending));
+            if (const std::string line = recenter.fitEnded(byItself, byDashboard); !line.empty()) {
+                std::fprintf(stderr, "[fit] %s\n", line.c_str());
+            }
+            fitRetryShown = retry;
+        }
+        // The Eye fit tab says it is tried again while it still will be (not once the wearing's re-center is off)
+        if (const bool retryShown = fitRetryShown && recenter.armed(); retryShown != model.fitRetry) {
+            model.fitRetry = retryShown;
+            dirty = true;
         }
 
         // The debug gaze dots: while the switch is on (and no eye fit runs), move a dot to where the gaze frameeyeosc

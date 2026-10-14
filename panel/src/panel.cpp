@@ -2691,6 +2691,10 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                     // Stopped by the user: why, not an error
                     title = failureText(t, fit);
                     paragraphs.push_back(t.fitUnchanged);
+                    // Re-centering by itself, stopped by the dashboard SteamVR opened (or the user did): it tries again
+                    if (fit.failure == gaze_fit::Failure::DashboardOpened && m.fitRetry) {
+                        paragraphs.push_back(t.fitRetryAfterDashboard);
+                    }
                     break;
                 }
                 error = true;

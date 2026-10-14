@@ -249,6 +249,7 @@ UiText makeJapanese() {
     t.fitUnchanged = "設定は変わっていません";
     t.failLeft = "ほかのタブや画面に移ったので止めました";
     t.failDashboardOpened = "ダッシュボードを開いたので止めました";
+    t.fitRetryAfterDashboard = "ダッシュボードを閉じたら、もう一度合わせ直します";
     t.failNotRunning = "frameeyeosc が動いていません";
     t.failNoResult = "frameeyeosc から結果が届きませんでした";
     t.failUnsteadyFormat = "%s の点で視線が落ち着きませんでした（目を閉じていたかも）";
@@ -1153,6 +1154,7 @@ UiText makeEnglish() {
     t.fitUnchanged = "Nothing was changed";
     t.failLeft = "Stopped: you went to another tab or page";
     t.failDashboardOpened = "Stopped: the dashboard was opened";
+    t.fitRetryAfterDashboard = "It tries again once the dashboard is closed";
     t.failNotRunning = "frameeyeosc is not running";
     t.failNoResult = "No answer from frameeyeosc";
     t.failUnsteadyFormat = "The gaze wasn't steady at the %s dot (eyes closed?)";

@@ -254,6 +254,7 @@ struct UiText {
     const char* fitUnchanged;        ///< under a stop (Cancelled, Left, DashboardOpened): "Nothing was changed"
     const char* failLeft;            ///< another tab or dashboard page
     const char* failDashboardOpened; ///< opened while the fit ran without it
+    const char* fitRetryAfterDashboard;  ///< ...while re-centering by itself, which tries again once it is closed
     const char* failNotRunning;
     const char* failNoResult;
     const char* failUnsteadyFormat;  ///< %s = the point

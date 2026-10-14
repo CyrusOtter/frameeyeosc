@@ -20,8 +20,13 @@ constexpr double kSleepGapSec = 10.0;
 /** Tracking has to have been on this long without a break before the dot shows (the headset is still being
  *  adjusted). */
 constexpr double kSettleSec = 3.0;
-/** The dashboard has to have been closed this long. */
+/** The dashboard has to have been closed this long (and SteamVR connected: the dashboard can't be read before). */
 constexpr double kClosedSec = 1.0;
+/** A re-center stopped because the dashboard opened is tried again this many more times in a wearing, each once the
+ *  dashboard has been closed kClosedSec. SteamVR opens its dashboard by itself a moment after it starts or the Frame
+ *  wakes up, which stopped the one try right after it began (Session::tick, Failure::DashboardOpened); a user who keeps
+ *  opening it isn't asked again after these. */
+constexpr int kDashboardRetries = 2;
 /** An eye Valve's eye server reads below this openness (status.json raw.openness) only counts in a fit once the eye
  *  camera's eyelid has taken over for it: the same floor as OPEN_FLOOR in capture.rs. */
 constexpr double kOpenFloor = 0.3;
@@ -42,6 +47,8 @@ struct Inputs {
     bool locked = false;         ///< a fit key is set on frameeyeosc's command line
     bool running = false;        ///< frameeyeosc is running
     bool tracking = false;       ///< eye data is coming in (status.json)
+    bool vrConnected = false;    ///< the panel is connected to SteamVR (while it isn't, the dashboard reads closed
+                                 ///< but may open any moment: it counts as open)
     bool dashboardOpen = false;  ///< the SteamVR dashboard is open
     bool fitActive = false;      ///< an eye fit is running
     bool valveShut[2] = {false, false};  ///< Valve's eye server reads the eye below kOpenFloor (left, right)
@@ -58,7 +65,9 @@ struct Step {
 /**
  * Watches for the headset being put on and says when to re-center, once per wearing. Armed at start (the first
  * wearing) and whenever tracking comes back after at least kOffSec off; fires when armed, tracking has been on for
- * kSettleSec, the dashboard closed for kClosedSec, and re-centering can run. While Valve's eye server reads an eye shut
+ * kSettleSec, SteamVR connected and the dashboard closed for kClosedSec, and re-centering can run. A try the dashboard
+ * stopped (opened by SteamVR itself after it starts or wakes up) is tried again, kDashboardRetries times at most in a
+ * wearing (fitEnded); any other end is final for the wearing. While Valve's eye server reads an eye shut
  * (it can get stuck at 0 for a whole wear) and the eye cameras are still warming up, no sample would count, so it
  * waits for the warm-up (up to kCameraWaitSec): the eye camera's eyelid counts for that eye after it. Time while
  * frameeyeosc is not running counts for nothing (a restart while worn does not look like putting the headset on); the time since the last
@@ -79,6 +88,26 @@ public:
     bool armed() const { return armed_; }
 
     /**
+     * Whether an eye fit ending now would be tried again (see fitEnded).
+     * @param byItself it is the re-center this watcher started (not one started from the panel)
+     * @param byDashboard it was stopped because the dashboard opened (Failure::DashboardOpened)
+     * @return true if fitEnded would arm again
+     */
+    bool willRetry(bool byItself, bool byDashboard) const {
+        return byItself && byDashboard && retries_ < kDashboardRetries;
+    }
+
+    /**
+     * An eye fit ended. The re-center this watcher started, stopped because the dashboard opened: wait again, to try
+     * once the dashboard has been closed kClosedSec, if this wearing has a retry left. Anything else changes nothing
+     * (one try per wearing; a fit from the panel is the user's).
+     * @param byItself it is the re-center this watcher started
+     * @param byDashboard it was stopped because the dashboard opened
+     * @return the line for the log (without "[fit] "), or empty
+     */
+    std::string fitEnded(bool byItself, bool byDashboard);
+
+    /**
      * For the records (report.h): how long the eyes have been tracked without a break, as of the last update.
      * @return seconds, NaN while they aren't (or before the first update with frameeyeosc running)
      */
@@ -93,6 +122,7 @@ public:
 private:
     bool started_ = false;       ///< update has run once
     bool armed_ = true;          ///< waiting to re-center (the first wearing is armed from the start)
+    int retries_ = 0;            ///< tries again this wearing after the dashboard stopped one (fitEnded)
     bool wasRunning_ = false;    ///< frameeyeosc ran at the last update
     bool tracking_ = false;      ///< tracking at the last update while frameeyeosc ran
     double lastNow_ = 0.0;       ///< the last update

@@ -10,14 +10,36 @@ std::string Watcher::disarm(const char* why) {
     return std::string("auto re-center: skipped (") + why + ")";
 }
 
+std::string Watcher::fitEnded(bool byItself, bool byDashboard) {
+    if (!byItself || !byDashboard) return std::string();
+    char text[160];
+    if (!willRetry(byItself, byDashboard)) {
+        armed_ = false;
+        std::snprintf(text, sizeof(text),
+                      "auto re-center: stopped by the dashboard opening; not trying again (%d retries used this wearing)",
+                      retries_);
+        return text;
+    }
+    ++retries_;
+    armed_ = true;
+    std::snprintf(text, sizeof(text),
+                  "auto re-center: stopped by the dashboard opening; trying again once it has been closed %.0f s "
+                  "(retry %d of %d)",
+                  kClosedSec, retries_, kDashboardRetries);
+    return text;
+}
+
 Step Watcher::update(double now, const Inputs& in) {
     Step step;
     const double dt = started_ ? std::max(0.0, now - lastNow_) : 0.0;
     started_ = true;
     lastNow_ = now;
-    if (in.dashboardOpen != dashboardOpen_) {
-        dashboardOpen_ = in.dashboardOpen;
-        if (!in.dashboardOpen) closedAt_ = now;
+    // Not connected to SteamVR, the dashboard reads closed but can't be known: it counts as open, so the time it has
+    // been closed starts when the panel connects
+    const bool dashboardOpen = in.dashboardOpen || !in.vrConnected;
+    if (dashboardOpen != dashboardOpen_) {
+        dashboardOpen_ = dashboardOpen;
+        if (!dashboardOpen) closedAt_ = now;
     }
     if (dt > kSleepGapSec) {
         // No update for this long: the Frame slept (the loop runs every 0.25-0.5 s), which it does with the headset
@@ -44,6 +66,7 @@ Step Watcher::update(double now, const Inputs& in) {
                 // Back after a real break (not one of the tracker's hiccups): the headset was put on
                 if (offFor_ >= kOffSec && in.enabled && in.fitted && !in.locked) {
                     armed_ = true;
+                    retries_ = 0;
                     holdSince_ = NAN;
                     clearSince_ = NAN;
                     char text[96];
@@ -87,7 +110,7 @@ Step Watcher::update(double now, const Inputs& in) {
         step.log = disarm("fit values locked by the command line");
     } else if (in.fitActive) {
         step.log = disarm("an eye fit was started");
-    } else if (in.running && tracking_ && onFor_ >= kSettleSec && !in.dashboardOpen && now - closedAt_ >= kClosedSec) {
+    } else if (in.running && tracking_ && onFor_ >= kSettleSec && !dashboardOpen && now - closedAt_ >= kClosedSec) {
         // Held back until the warm-up is over (and kCameraMarginSec more, for frameeyeosc to take the camera's
         // eyelid), kCameraWaitSec at most
         if (hold && std::isnan(holdSince_)) {
@@ -98,10 +121,16 @@ Step Watcher::update(double now, const Inputs& in) {
         }
         const bool held = !std::isnan(holdSince_);
         if (held && now - holdSince_ < kCameraWaitSec && (hold || now - clearSince_ < kCameraMarginSec)) return step;
-        // One try per wearing: no retry if it fails or is stopped
+        // One try per wearing: no retry if it fails or is stopped, unless the dashboard opening stopped it
+        // (fitEnded arms it again)
         armed_ = false;
         step.start = true;
         step.log = "auto re-center: starting";
+        if (retries_ > 0) {
+            char text[48];
+            std::snprintf(text, sizeof(text), " (retry %d of %d)", retries_, kDashboardRetries);
+            step.log += text;
+        }
         if (held) {
             // (the record's logs start shortly before it: the wait is said here too)
             char text[96];

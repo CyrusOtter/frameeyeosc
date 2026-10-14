@@ -96,6 +96,9 @@ public:
      */
     void setPanelScroll(bool on);
 
+    /** @return true while connected to SteamVR (connect succeeded, shutdown not yet called) */
+    bool connected() const { return connected_; }
+
     /**
      * Whether the SteamVR dashboard is open (showing any overlay, not only this panel).
      * @return true if open
