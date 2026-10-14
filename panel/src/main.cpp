@@ -85,6 +85,7 @@ struct Options {
     std::string dotPngPath;       ///< --dot-png: a debug gaze dot image
     std::string playSound;        ///< --play-sound: play one eye fit cue and exit
     std::string dotKind = "both";
+    bool dotRing = false;         ///< --dot-ring: the ring (the gaze before the gaze scale) instead of the dot
     int targetSeconds = 3;
     double targetProgress = 0.7;
     int targetBench = 0;          ///< --target-bench N: time drawing the target N times
@@ -237,6 +238,7 @@ void printUsage() {
         "  --play-sound NAME     Play one eye fit cue (pop, pip, buzz, tick, open, done, fail) and exit\n"
         "  --dot-png PATH        Draw a debug gaze dot to a PNG\n"
         "      --dot-kind both|left|right  Which one (default both)\n"
+        "      --dot-ring        The ring (the gaze before the gaze scale) instead of the dot\n"
         "  --target-png PATH     Draw the eye fit's target (the head-locked dot) to a PNG\n"
         "      --target-style dot|close|keep|open  The dot, or the eyes-shut step (words from --language)\n"
         "      --target-seconds N  The countdown on it (default 3; 0 = none)\n"
@@ -298,7 +300,7 @@ void printUsage() {
         "      --fake-custom     Gaze smoothing values that match no preset\n"
         "      --fake-independent  Move eyes separately (the left column shows each eye's gaze)\n"
         "      --fake-v1         The eyes move as up to 0.7.5 (eye_behavior 1)\n"
-        "      --fake-gaze-scale L,R,U,D  The gaze scale (gaze_scale_left, _right, _up, _down; 0.25..1.5). A pair whose\n"
+        "      --fake-gaze-scale L,R,U,D  The gaze scale (gaze_scale_left, _right, _up, _down; 0.05..2). A pair whose\n"
         "                        two values differ shows its lock open\n"
         "      --fake-dominant-eye left|right  \"Track Dominant Eye Only\" is on with that eye\n"
         "      --fake-openness-saturated  A relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through\n"
@@ -689,6 +691,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (arg == "--dot-png" && hasNext) {
             options.mode = Options::Mode::DumpPng;
             options.dotPngPath = argv[++i];
+        } else if (arg == "--dot-ring") {
+            options.dotRing = true;
         } else if (arg == "--dot-kind" && hasNext) {
             options.dotKind = argv[++i];
             if (options.dotKind != "both" && options.dotKind != "left" && options.dotKind != "right") {
@@ -917,13 +921,13 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 const std::string part = value.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
                 char* end = nullptr;
                 const double scale = std::strtod(part.c_str(), &end);
-                if (part.empty() || end == nullptr || *end != '\0' || !(scale >= 0.25 && scale <= 1.5)) break;
+                if (part.empty() || end == nullptr || *end != '\0' || !(scale >= 0.05 && scale <= 2.0)) break;
                 scales.push_back(scale);
                 if (comma == std::string::npos) break;
                 start = comma + 1;
             }
             if (scales.size() != 4 || std::count(value.begin(), value.end(), ',') != 3) {
-                std::fprintf(stderr, "--fake-gaze-scale takes four values 0.25..1.5 (L,R,U,D), not %s\n", value.c_str());
+                std::fprintf(stderr, "--fake-gaze-scale takes four values 0.05..2 (L,R,U,D), not %s\n", value.c_str());
                 return false;
             }
             options.fake = true;
@@ -2238,7 +2242,11 @@ int runDumpPng(const Options& options) {
                              : options.dotKind == "right" ? DotKind::Right
                                                           : DotKind::Both;
         std::vector<uint8_t> rgba;
-        renderGazeDot(kind, rgba, options.dotPngPath);
+        if (options.dotRing) {
+            renderGazeRing(kind, rgba, options.dotPngPath);
+        } else {
+            renderGazeDot(kind, rgba, options.dotPngPath);
+        }
         std::printf("Wrote %s (%dx%d)\n", options.dotPngPath.c_str(), kDotImageSize, kDotImageSize);
     }
     if (!options.targetPngPath.empty()) {
@@ -3440,12 +3448,17 @@ int runOverlay(const Options& options) {
     eyecam::Light light;            // the light as shown: which one, and its alpha as it fades in and out
     eyecam::Fill lightWanted = eyecam::Fill::None;  // the one fillFor wanted last time (to log a fade-out once)
     bool lightMoving = false;       // fading in or out: the loop runs every display frame
-    // The debug gaze dots: their socket, the three dot images (drawn once), which image each overlay has
+    // The debug gaze dots: their socket, the three dot images and the three ring images after them (drawn once), which
+    // image each overlay has (0 and 1 the dots, 2 and 3 the rings: the gaze before the user's gaze scale)
     gaze_dots::Receiver dots;
-    std::vector<uint8_t> dotImages[3];
-    for (int kind = 0; kind < 3; ++kind) renderGazeDot(static_cast<DotKind>(kind), dotImages[kind]);
-    int dotImageShown[2] = {-1, -1};
-    bool dotsVisible[2] = {false, false};
+    std::vector<uint8_t> dotImages[6];
+    for (int kind = 0; kind < 3; ++kind) {
+        renderGazeDot(static_cast<DotKind>(kind), dotImages[kind]);
+        renderGazeRing(static_cast<DotKind>(kind), dotImages[3 + kind]);
+    }
+    constexpr int kDotOverlays = VrOverlay::kDots;
+    int dotImageShown[kDotOverlays] = {-1, -1, -1, -1};
+    bool dotsVisible[kDotOverlays] = {false, false, false, false};
     bool dotsOpenFailed = false;
     bool dotsWanted = false;        // the dots are on (their overlays shown); the socket may be open for the preview too
     // The eye preview: frameeyeosc's samples come on the dots' socket (bound while its sheet shows), eyecam-rec's
@@ -3803,11 +3816,15 @@ int runOverlay(const Options& options) {
             const bool wanted = model.config.flag(key::kGazeDebugDots) && !fit.active();
             dotsWanted = wanted;
             const bool listen = wanted || previewing;
+            const auto hideDot = [&](int index) {
+                vr.hideDot(index);
+                dotsVisible[index] = false;
+            };
             const auto hideDots = [&]() {
-                for (int i = 0; i < 2; ++i) {
-                    vr.hideDot(i);
-                    dotsVisible[i] = false;
-                }
+                for (int i = 0; i < kDotOverlays; ++i) hideDot(i);
+            };
+            const auto anyDot = [&]() {
+                return std::any_of(std::begin(dotsVisible), std::end(dotsVisible), [](bool shown) { return shown; });
             };
             // One distance, dashboard open or closed (near enough to show over it; nothing jumps)
             const double wantedDistance = gaze_dots::dotDistance(model.config.number(key::kGazeDebugDotsDistanceM));
@@ -3842,7 +3859,7 @@ int runOverlay(const Options& options) {
                 dotsOpenFailed = false;
             }
             // Listening for the eye preview alone: no dots
-            if (!wanted && (dotsVisible[0] || dotsVisible[1])) hideDots();
+            if (!wanted && anyDot()) hideDots();
             gaze_dots::Packet packet;
             const bool got = dots.isOpen() && dots.poll(packet);
             if (got && previewing) {
@@ -3853,24 +3870,35 @@ int runOverlay(const Options& options) {
             }
             if (got && wanted) {
                 lastDotAt = nowSeconds();
+                // A ring (index 2 or 3) is the same eye's dot, kRingWidthScale times as wide, with a clear middle
                 const auto place = [&](int index, int eye, DotKind kind, float x, float y) {
+                    const bool ring = index >= 2;
                     const gaze_dots::Pose pose = gaze_dots::dotPose(x, y, eye, dotIpd, dotDistance);
-                    const int image = static_cast<int>(kind);
+                    const int image = static_cast<int>(kind) + (ring ? 3 : 0);
+                    const double width = gaze_dots::dotWidth(dotDistance) * (ring ? gaze_dots::kRingWidthScale : 1.0);
                     dotsVisible[index] = vr.showDot(index, pose.position.x, pose.position.y, pose.position.z,
                                                     pose.yawDeg, pose.pitchDeg, dotImages[image].data(),
-                                                    kDotImageSize, dotImageShown[index] != image,
-                                                    gaze_dots::dotWidth(dotDistance));
+                                                    kDotImageSize, dotImageShown[index] != image, width);
                     if (dotsVisible[index]) dotImageShown[index] = image;
                 };
-                if (packet.independent) {
-                    place(0, -1, DotKind::Left, packet.gaze[0], packet.gaze[1]);
-                    place(1, 1, DotKind::Right, packet.gaze[2], packet.gaze[3]);
-                } else {
-                    place(0, 0, DotKind::Both, packet.gaze[4], packet.gaze[5]);
-                    vr.hideDot(1);
-                    dotsVisible[1] = false;
+                // The dots show the gaze as sent; while the user's gaze scale is in use, the rings show it before
+                // the scale (where the eyes look). Without it the two are the same, so no rings
+                const float* gazes[2] = {packet.gaze, packet.unscaledGaze};
+                for (int ring = 0; ring < 2; ++ring) {
+                    const float* gaze = gazes[ring];
+                    const int at = ring * 2;
+                    if (ring == 1 && !packet.scaled) {
+                        hideDot(at);
+                        hideDot(at + 1);
+                    } else if (packet.independent) {
+                        place(at, -1, DotKind::Left, gaze[0], gaze[1]);
+                        place(at + 1, 1, DotKind::Right, gaze[2], gaze[3]);
+                    } else {
+                        place(at, 0, DotKind::Both, gaze[4], gaze[5]);
+                        hideDot(at + 1);
+                    }
                 }
-            } else if ((dotsVisible[0] || dotsVisible[1]) && nowSeconds() - lastDotAt > gaze_dots::kStaleSec) {
+            } else if (anyDot() && nowSeconds() - lastDotAt > gaze_dots::kStaleSec) {
                 // No samples (frameeyeosc stopped, or the eyes aren't tracked): no stale dots
                 hideDots();
             }

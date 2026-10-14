@@ -683,16 +683,16 @@ struct Args {
     /// The right eye's own sideways gain for per-eye gaze [default: --gaze-gain-x]
     #[arg(long)]
     gaze_gain_x_right: Option<f32>,
-    /// Your own multiplier on how far the gaze goes left, after the eye fit (0.25..1.5); the fit never changes it
+    /// Your own multiplier on how far the gaze goes left, after the eye fit (0.05..2); the fit never changes it
     #[arg(long, default_value_t = 1.0)]
     gaze_scale_left: f32,
-    /// Your own multiplier on how far the gaze goes right, after the eye fit (0.25..1.5)
+    /// Your own multiplier on how far the gaze goes right, after the eye fit (0.05..2)
     #[arg(long, default_value_t = 1.0)]
     gaze_scale_right: f32,
-    /// Your own multiplier on how far the gaze goes up, after the eye fit (0.25..1.5)
+    /// Your own multiplier on how far the gaze goes up, after the eye fit (0.05..2)
     #[arg(long, default_value_t = 1.0)]
     gaze_scale_up: f32,
-    /// Your own multiplier on how far the gaze goes down, after the eye fit (0.25..1.5)
+    /// Your own multiplier on how far the gaze goes down, after the eye fit (0.05..2)
     #[arg(long, default_value_t = 1.0)]
     gaze_scale_down: f32,
     /// Settings file, re-read while running; options given here win over it
@@ -3003,7 +3003,7 @@ fn scale_gaze(gaze: [f32; 6], settings: &Settings) -> [f32; 6] {
         gaze_scale_down: down,
         ..
     } = *settings;
-    if [left, right, up, down] == [1.0; 4] {
+    if !settings.gaze_scaled() {
         return gaze;
     }
     let scaled = |value: f32, below: f32, above: f32| {
@@ -3031,6 +3031,9 @@ struct Sample {
     raw_gaze: [f32; 6],
     // The same layout, as sent.
     gaze: [f32; 6],
+    // The same, before the user's gaze scale (scale_gaze); equal to `gaze` while the scale is 1 on all sides. Only for
+    // the panel's gaze dots.
+    unscaled_gaze: [f32; 6],
     // VRCFT eyelids, as sent to VRChat.
     lids: [f32; 2],
     // Whether each eye's gaze passed the quality check.
@@ -3064,7 +3067,8 @@ impl Sample {
     }
 }
 
-/// A sample's copy for the panel (its gaze dots and eye preview; dots.rs): the gaze as sent and before smoothing, and
+/// A sample's copy for the panel (its gaze dots and eye preview; dots.rs): the gaze as sent, before smoothing and before
+/// the user's gaze scale (with whether that scale is in use: not 1 on all sides), and
 /// each eye's eyelid as sent, Valve's openness, squint and pupil as sent, and the eye camera's own values as read for it
 /// (`camera`; NaN for an eye without fresh ones). Only for display: nothing here goes to VRChat or VRCFT.
 fn dot_sample(settings: &Settings, data: &EyeData, sample: &Sample, camera: Option<&Live>) -> dots::DotSample {
@@ -3073,7 +3077,9 @@ fn dot_sample(settings: &Settings, data: &EyeData, sample: &Sample, camera: Opti
         time: data.sample_time,
         gaze: sample.gaze,
         raw_gaze: sample.raw_gaze,
+        unscaled_gaze: sample.unscaled_gaze,
         independent: settings.independent_eyes,
+        scaled: settings.gaze_scaled(),
         eyes: std::array::from_fn(|eye| {
             let seen = camera.filter(|live| live.fresh[eye]).map(|live| live.eyes[eye]);
             dots::DotEye {
@@ -3156,11 +3162,12 @@ fn process(
     // easing or far-down slope, the camera only for widening, no floor, no ceiling rule, no shared widening)
     let v2 = settings.v2();
     let mut cross_eye = false;
-    let (gaze, lids, gaze_held, openness_scaled, camera, lid_from) = if settings.raw {
+    let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from) = if settings.raw {
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
         let camera_lids = side_checked(smoother, data, camera_lids, v2);
         let corrected = correct_gaze(raw_gaze, settings);
-        let gaze = scale_gaze(choose_gaze(corrected, [true; 2], settings.independent_eyes, v2), settings);
+        let unscaled_gaze = choose_gaze(corrected, [true; 2], settings.independent_eyes, v2);
+        let gaze = scale_gaze(unscaled_gaze, settings);
         let zoned = camera_lids.map(|camera| v2 && camera.is_none());
         let fits = fits_at(settings, corrected[5], zoned);
         let openness_scaled = lid_inputs_with(data.openness, corrected[5], scales, settings, fits);
@@ -3204,7 +3211,7 @@ fn process(
             shut_lids(&mut lids, shut);
         }
         let shut_eyes = data.openness.iter().any(|openness| *openness < settings.gaze_hold_below);
-        (gaze, lids, shut_eyes, openness_scaled, camera, lid_from)
+        (gaze, unscaled_gaze, lids, shut_eyes, openness_scaled, camera, lid_from)
     } else {
         let dt = smoother.advance(data.sample_time);
         // After advance(), which starts the smoothing over after a gap
@@ -3310,6 +3317,7 @@ fn process(
             cross_eye = smoother.cross_eye.engaged;
         }
         // The user's own scale last, on the combined direction (see scale_gaze)
+        let unscaled_gaze = gaze;
         let gaze = scale_gaze(gaze, settings);
         smoother.cap_lids(&mut lids, capped);
         let filtered = lids;
@@ -3331,13 +3339,14 @@ fn process(
             shut_lids(&mut lids, shut);
         }
         let openness_scaled = lid_inputs_with(data.openness, vertical, scales, settings, fits);
-        (gaze, lids, hold[2], openness_scaled, camera, lid_from)
+        (gaze, unscaled_gaze, lids, hold[2], openness_scaled, camera, lid_from)
     };
     Sample {
         openness: data.openness,
         openness_scaled,
         raw_gaze,
         gaze,
+        unscaled_gaze,
         lids,
         reliable,
         gaze_held,
@@ -4877,6 +4886,10 @@ mod tests {
         // Straight ahead stays; never past the end of the range
         assert_eq!(scale_gaze(gaze(0.0, 0.0), &scaled(0.25, 1.5, 0.25, 1.5)), gaze(0.0, 0.0));
         assert_eq!(scale_gaze(gaze(0.8, -0.9), &scaled(1.0, 1.5, 1.0, 1.5)), gaze(1.0, -1.0));
+        // The ends of the range: 5 % and 200 %
+        assert!(close(scale_gaze(gaze(-0.4, 0.4), &scaled(0.05, 1.0, 2.0, 1.0)), gaze(-0.02, 0.8)));
+        assert!(close(scale_gaze(gaze(0.4, -0.3), &scaled(1.0, 0.05, 1.0, 2.0)), gaze(0.02, -0.6)));
+        assert_eq!(scale_gaze(gaze(0.6, -0.7), &scaled(1.0, 2.0, 1.0, 2.0)), gaze(1.0, -1.0));
         // Through the processing: settled on (-0.2, 0.1) on the -1..1 scale, left goes 1.5 times as far and up half
         // as far, in both eye behaviours, smoothed or raw
         let tan = |angle: f32| (angle * 45.0).to_radians().tan();
@@ -4884,8 +4897,12 @@ mod tests {
         for eye_behavior in [1, 2] {
             for raw in [false, true] {
                 let base = Settings { eye_behavior, raw, ..settings() };
-                let plain = run(&base, &readings)[179].gaze;
-                let wider = run(&Settings { gaze_scale_left: 1.5, gaze_scale_up: 0.5, ..base }, &readings)[179].gaze;
+                let plain_sample = &run(&base, &readings)[179];
+                let wider_sample = &run(&Settings { gaze_scale_left: 1.5, gaze_scale_up: 0.5, ..base }, &readings)[179];
+                let [plain, wider] = [plain_sample.gaze, wider_sample.gaze];
+                // The gaze before the scale (for the panel's dots) is what goes out without it
+                assert_eq!(plain_sample.unscaled_gaze, plain);
+                assert_eq!(wider_sample.unscaled_gaze, plain);
                 assert!((wider[4] - plain[4] * 1.5).abs() < 1e-5, "{plain:?} {wider:?}");
                 assert!((wider[5] - plain[5] * 0.5).abs() < 1e-6, "{plain:?} {wider:?}");
                 assert!((plain[4] + 0.2).abs() < 1e-3 && (plain[5] - 0.1).abs() < 1e-3, "{plain:?}");
@@ -6087,6 +6104,7 @@ mod tests {
             openness_scaled: [0.8; 2],
             raw_gaze: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
             gaze: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+            unscaled_gaze: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
             lids: [0.375, 0.75],
             reliable: [true; 2],
             gaze_held: false,

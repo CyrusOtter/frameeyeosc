@@ -1071,13 +1071,14 @@ double written(const std::vector<SettingChange>& changes, const char* name) {
 /** The gaze scale: shown as percent, its pairs, the locks at start, − / ＋ with the lock closed or open, re-linking. */
 void testGazeScale() {
     CHECK(formatPercent(1.0) == "100%" && formatPercent(0.25) == "25%" && formatPercent(1.5) == "150%");
+    CHECK(formatPercent(0.05) == "5%" && formatPercent(2.0) == "200%");
     CHECK(formatPercent(0.95) == "95%" && formatPercent(1.05) == "105%" && formatPercent(0.55) == "55%");
     CHECK(formatPercent(NAN) == "—");
     // Its range and step, and the default where the file has none
     for (const auto& pair : kGazeScaleKeys) {
         for (const char* name : pair) {
             const SettingSpec* spec = findSetting(name);
-            CHECK(spec != nullptr && spec->min == 0.25 && spec->max == 1.5 && spec->step == 0.05);
+            CHECK(spec != nullptr && spec->min == 0.05 && spec->max == 2.0 && spec->step == 0.05);
             CHECK(spec != nullptr && spec->defaultNumber == 1.0);
         }
     }
@@ -1108,10 +1109,20 @@ void testGazeScale() {
     changes = gazeScaleStep(view, key::kGazeScaleDown, -1, true);
     CHECK(changes.size() == 2 && std::fabs(written(changes, key::kGazeScaleUp) - 0.95) < 1e-9 &&
           std::fabs(written(changes, key::kGazeScaleDown) - 0.95) < 1e-9 && std::isnan(written(changes, key::kGazeScaleLeft)));
-    // At the ends: nothing moves
-    const PanelModel ends = scaleModel({0.25, 0.25, 1.5, 1.5});
+    // At the ends (5 % and 200 %): nothing moves past them; one step in from them is 10 % and 195 %
+    const PanelModel ends = scaleModel({0.05, 0.05, 2.0, 2.0});
     CHECK(gazeScaleStep(SettingsView(ends), key::kGazeScaleRight, -1, true).empty());
     CHECK(gazeScaleStep(SettingsView(ends), key::kGazeScaleUp, 1, true).empty());
+    changes = gazeScaleStep(SettingsView(ends), key::kGazeScaleLeft, 1, false);
+    CHECK(changes.size() == 1 && std::fabs(written(changes, key::kGazeScaleLeft) - 0.1) < 1e-9);
+    changes = gazeScaleStep(SettingsView(ends), key::kGazeScaleDown, -1, false);
+    CHECK(changes.size() == 1 && std::fabs(written(changes, key::kGazeScaleDown) - 1.95) < 1e-9);
+    // ...and the old ends (25 % and 150 %) go on past them
+    const PanelModel oldEnds = scaleModel({0.25, 0.25, 1.5, 1.5});
+    changes = gazeScaleStep(SettingsView(oldEnds), key::kGazeScaleRight, -1, false);
+    CHECK(changes.size() == 1 && std::fabs(written(changes, key::kGazeScaleRight) - 0.2) < 1e-9);
+    changes = gazeScaleStep(SettingsView(oldEnds), key::kGazeScaleUp, 1, false);
+    CHECK(changes.size() == 1 && std::fabs(written(changes, key::kGazeScaleUp) - 1.55) < 1e-9);
     // Linked, with the other one locked by the command line: only the one pressed; the one pressed locked: nothing
     const PanelModel locked = scaleModel({1.0, 1.0, 1.0, 1.0}, {key::kGazeScaleRight});
     changes = gazeScaleStep(SettingsView(locked), key::kGazeScaleLeft, 1, true);
