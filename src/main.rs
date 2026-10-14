@@ -361,6 +361,8 @@ const PUPIL_MM_PER_UNIT: f32 = 10.0;
 const PUPIL_BITS_RESEND: Duration = Duration::from_secs(1);
 // How often the Steam Link PC is looked up again, to follow reconnects over another network.
 const RESOLVE_INTERVAL: Duration = Duration::from_secs(5);
+/// The shortest time between two checks of the route to a target that a send failing or working again asks for.
+const ROUTE_CHECK_MIN: Duration = Duration::from_secs(1);
 // Eyelid auto calibration keeps a decaying histogram of each eye's open readings (0.005 wide bins).
 const CAL_BINS: usize = 300;
 const CAL_BIN_WIDTH: f32 = 0.005;
@@ -2689,10 +2691,13 @@ impl Output {
         if self.last_resolve.is_none_or(|resolved| !settled && now.duration_since(resolved) >= RESOLVE_INTERVAL) {
             self.look_up(now);
         }
-        // Even when the target stays the same, the network under it can change
-        if self.route_check_due
-            || self.last_route_check.is_none_or(|checked| now.duration_since(checked) >= RESOLVE_INTERVAL)
-        {
+        // Even when the target stays the same, the network under it can change. A send failing or working again asks
+        // for a check sooner, but not more than once every ROUTE_CHECK_MIN (sends that keep flipping between the two
+        // would otherwise make a socket at every sample)
+        let since = |checked: Instant| now.duration_since(checked);
+        if self.last_route_check.is_none_or(|checked| {
+            since(checked) >= RESOLVE_INTERVAL || (self.route_check_due && since(checked) >= ROUTE_CHECK_MIN)
+        }) {
             self.check_route(now);
         }
     }
@@ -5819,11 +5824,11 @@ mod tests {
         let ip = |text: &str| text.parse::<IpAddr>().unwrap();
         let unreachable = || Err(io::Error::from(io::ErrorKind::NetworkUnreachable));
         // Wi-Fi to the Steam Link adapter: reconnect from the new address
-        assert_eq!(moved_source(ip("192.168.2.96"), &Ok(ip("10.35.78.1"))), Some(ip("10.35.78.1")));
+        assert_eq!(moved_source(ip("192.168.1.23"), &Ok(ip("10.35.78.1"))), Some(ip("10.35.78.1")));
         // Same route, or none (the network is switching): keep the socket
-        assert_eq!(moved_source(ip("192.168.2.96"), &Ok(ip("192.168.2.96"))), None);
-        assert_eq!(moved_source(ip("192.168.2.96"), &unreachable()), None);
-        assert_eq!(moved_source(ip("192.168.2.96"), &Ok(ip("0.0.0.0"))), None);
+        assert_eq!(moved_source(ip("192.168.1.23"), &Ok(ip("192.168.1.23"))), None);
+        assert_eq!(moved_source(ip("192.168.1.23"), &unreachable()), None);
+        assert_eq!(moved_source(ip("192.168.1.23"), &Ok(ip("0.0.0.0"))), None);
         assert_eq!(moved_source(ip("fe80::1"), &Ok(ip("fd00::2"))), Some(ip("fd00::2")));
 
         // The real route to the loopback starts from the loopback
@@ -5862,10 +5867,12 @@ mod tests {
         output.refresh();
         let resolved = output.last_resolve;
         assert!(resolved.is_some() && output.addr() == Some(addr));
-        // The route is unchanged: the same socket stays
+        // The route is unchanged: the same socket stays. Asked for within ROUTE_CHECK_MIN of the last check, the check
+        // waits
         output.route_check_due = true;
         output.refresh();
         assert_eq!(local(&output), loopback(1));
+        assert!(output.route_check_due);
 
         let stale = UdpSocket::bind("127.0.0.2:0").unwrap();
         stale.connect(addr).unwrap();

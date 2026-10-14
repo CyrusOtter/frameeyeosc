@@ -10,7 +10,7 @@ Tracking keeps reaching the PC after the Frame changes networks with a fixed des
 - The gaze scale (`gaze_scale_left/right/up/down`, Gaze › Reach) goes from 0.05 to 2.0 (5-200 % in 5 % steps), up from 0.25-1.5 (#27). All four at 100 % still send exactly what 0.7.7 sent.
 - Debug gaze dots: while a gaze scale isn't 100 %, a hollow ring in the dot's colour shows the gaze before the scale (where your eyes look), around the dot that shows the gaze as sent (#27). The new switch "Ring: before the scale" under "Show gaze dots" (Advanced › Debug tools, `gaze_debug_rings`, on by default; the panel's own setting) turns the rings off.
 - Automatic re-center after the Frame starts or wakes: SteamVR opens its dashboard by itself a few seconds after it starts, which stopped a re-center that had already begun. It now waits for that dashboard to open and close (up to 45 s, then it goes ahead), so the dot appears once, right after you close it. Should the dashboard still stop an automatic re-center, it tries again once the dashboard has been closed 1 s, twice at most per wearing; a fit started from the panel is unchanged.
-- frameeyeosc's datagrams to the panel (`gaze-dots.sock`) are version 3 (160 bytes): version 2 plus the gaze before the scale and a flag for the scale being in use. The panel still reads version 2.
+- frameeyeosc's datagrams to the panel (`gaze-dots.sock`) are version 3 (160 bytes): version 2 plus the gaze before the scale and a flag for the scale being in use. The panel still reads version 2 (a panel from before 0.7.8 ignores version 3; both come in the same package).
 
 ## 0.7.7 (2026-10-13)
 
