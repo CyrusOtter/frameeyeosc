@@ -22,10 +22,19 @@ constexpr double kSleepGapSec = 10.0;
 constexpr double kSettleSec = 3.0;
 /** The dashboard has to have been closed this long (and SteamVR connected: the dashboard can't be read before). */
 constexpr double kClosedSec = 1.0;
-/** A re-center stopped because the dashboard opened is tried again this many more times in a wearing, each once the
- *  dashboard has been closed kClosedSec. SteamVR opens its dashboard by itself a moment after it starts or the Frame
- *  wakes up, which stopped the one try right after it began (Session::tick, Failure::DashboardOpened); a user who keeps
- *  opening it isn't asked again after these. */
+/** SteamVR opens its dashboard by itself a few seconds after it starts, and the user closes it before doing anything
+ *  else: a re-center started before that was stopped right after it began (Session::tick, Failure::DashboardOpened).
+ *  So after the panel connects to SteamVR, and after the Frame wakes up, a re-center waits until the dashboard has
+ *  been open (then closed kClosedSec, as always), this long at most: SteamVR may not open it (the panel restarted by
+ *  an update while the headset is worn and the dashboard closed). Seen opening 5.1 s after the panel connected at
+ *  boot (2026-10-14 19:55:43.9 -> 19:55:49.0; the panel tries to connect every 3 s, SteamVR's dashboard process had
+ *  started 1.3 s before) and 3.2 s after SteamVR left its standby (19:50:16.8 -> 19:50:20.0); 45 s leaves a wide
+ *  margin for a slower start (the first after an update), and a dashboard that never comes only delays the re-center
+ *  that long. */
+constexpr double kStartupDashboardWaitSec = 45.0;
+/** A re-center stopped because the dashboard opened anyway is tried again this many more times in a wearing, each once
+ *  the dashboard has been closed kClosedSec (the user opened it just as it began, or SteamVR did later than
+ *  kStartupDashboardWaitSec); a user who keeps opening it isn't asked again after these. */
 constexpr int kDashboardRetries = 2;
 /** An eye Valve's eye server reads below this openness (status.json raw.openness) only counts in a fit once the eye
  *  camera's eyelid has taken over for it: the same floor as OPEN_FLOOR in capture.rs. */
@@ -65,9 +74,11 @@ struct Step {
 /**
  * Watches for the headset being put on and says when to re-center, once per wearing. Armed at start (the first
  * wearing) and whenever tracking comes back after at least kOffSec off; fires when armed, tracking has been on for
- * kSettleSec, SteamVR connected and the dashboard closed for kClosedSec, and re-centering can run. A try the dashboard
- * stopped (opened by SteamVR itself after it starts or wakes up) is tried again, kDashboardRetries times at most in a
- * wearing (fitEnded); any other end is final for the wearing. While Valve's eye server reads an eye shut
+ * kSettleSec, SteamVR connected and the dashboard closed for kClosedSec, and re-centering can run. After the panel
+ * connects to SteamVR and after the Frame wakes up, it also waits for SteamVR's own startup dashboard to have opened
+ * (and been closed), kStartupDashboardWaitSec at most from the connect or the wake; a re-wear otherwise doesn't. A try
+ * the dashboard stopped is tried again, kDashboardRetries times at most in a wearing (fitEnded); any other end is
+ * final for the wearing. While Valve's eye server reads an eye shut
  * (it can get stuck at 0 for a whole wear) and the eye cameras are still warming up, no sample would count, so it
  * waits for the warm-up (up to kCameraWaitSec): the eye camera's eyelid counts for that eye after it. Time while
  * frameeyeosc is not running counts for nothing (a restart while worn does not look like putting the headset on); the time since the last
@@ -130,6 +141,11 @@ private:
     double offFor_ = 0.0;        ///< ...or off
     bool dashboardOpen_ = true;  ///< the dashboard at the last update...
     double closedAt_ = 0.0;      ///< ...and when it was last closed
+    bool connected_ = false;     ///< SteamVR was connected at the last update
+    bool startupWait_ = false;   ///< waiting for SteamVR's startup dashboard to open (kStartupDashboardWaitSec)...
+    double startupFrom_ = 0.0;   ///< ...since the connect or the wake...
+    const char* startupAfter_ = "";  ///< ...which ("connecting" / "waking up")...
+    bool startupLogged_ = false;     ///< ...and a re-center has waited for it (said once)
     double shutSince_ = NAN;     ///< since when an eye has read shut on Valve's eye server (NaN: neither does)
     double holdSince_ = NAN;     ///< since when this wearing's start is held back for the eye cameras (NaN: it isn't)
     double clearSince_ = NAN;    ///< ...and since when that no longer holds (NaN: it still does)
@@ -140,6 +156,13 @@ private:
      * @return the log line
      */
     std::string disarm(const char* why);
+
+    /**
+     * SteamVR was connected, or the Frame woke up: SteamVR's dashboard is about to open by itself.
+     * @param now the time
+     * @param after what happened, for the log ("connecting" / "waking up")
+     */
+    void awaitStartupDashboard(double now, const char* after);
 };
 
 }  // namespace auto_recenter

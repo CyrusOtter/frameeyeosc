@@ -7,7 +7,15 @@ namespace auto_recenter {
 
 std::string Watcher::disarm(const char* why) {
     armed_ = false;
+    startupLogged_ = false;
     return std::string("auto re-center: skipped (") + why + ")";
+}
+
+void Watcher::awaitStartupDashboard(double now, const char* after) {
+    startupWait_ = true;
+    startupFrom_ = now;
+    startupAfter_ = after;
+    startupLogged_ = false;
 }
 
 std::string Watcher::fitEnded(bool byItself, bool byDashboard) {
@@ -41,7 +49,13 @@ Step Watcher::update(double now, const Inputs& in) {
         dashboardOpen_ = dashboardOpen;
         if (!dashboardOpen) closedAt_ = now;
     }
+    // SteamVR opens its dashboard by itself a few seconds after it starts: just connected (the panel starts with the
+    // Frame, before SteamVR), a re-center waits for that dashboard to have opened
+    if (in.vrConnected && !connected_) awaitStartupDashboard(now, "connecting");
+    connected_ = in.vrConnected;
     if (dt > kSleepGapSec) {
+        // ...and after the Frame wakes up
+        awaitStartupDashboard(now, "waking up");
         // No update for this long: the Frame slept (the loop runs every 0.25-0.5 s), which it does with the headset
         // off, and the eye server delivers nothing through a suspend. So it counts as off whatever the last status
         // said: also when that was read just before sleeping and still said "tracking", which otherwise made the
@@ -67,6 +81,7 @@ Step Watcher::update(double now, const Inputs& in) {
                 if (offFor_ >= kOffSec && in.enabled && in.fitted && !in.locked) {
                     armed_ = true;
                     retries_ = 0;
+                    startupLogged_ = false;
                     holdSince_ = NAN;
                     clearSince_ = NAN;
                     char text[96];
@@ -90,7 +105,25 @@ Step Watcher::update(double now, const Inputs& in) {
     } else if (std::isnan(shutSince_)) {
         shutSince_ = now;
     }
+    // Seen open since (already open at the connect counts too, as when the panel restarted for an update from the
+    // dashboard): from now on the usual "closed for kClosedSec". Or never came: go ahead after kStartupDashboardWaitSec
+    bool startupGaveUp = false;
+    if (startupWait_ && in.vrConnected && in.dashboardOpen) {
+        startupWait_ = false;
+    } else if (startupWait_ && now - startupFrom_ >= kStartupDashboardWaitSec) {
+        startupWait_ = false;
+        startupGaveUp = startupLogged_;
+        startupLogged_ = false;
+    }
     if (!armed_) return step;
+    if (startupGaveUp) {
+        // (the start follows on the next update)
+        char text[96];
+        std::snprintf(text, sizeof(text), "auto re-center: no startup dashboard after %.0f s, going ahead",
+                      kStartupDashboardWaitSec);
+        step.log = text;
+        return step;
+    }
     // Such an eye counts in the fit only once the eye camera's eyelid takes over for it, which it doesn't while the
     // eye cameras warm up: then no sample would count. Once held back for that, whether it still holds
     const bool hold = !std::isnan(shutSince_) && now - shutSince_ >= kShutSec && in.camerasWarming;
@@ -111,6 +144,20 @@ Step Watcher::update(double now, const Inputs& in) {
     } else if (in.fitActive) {
         step.log = disarm("an eye fit was started");
     } else if (in.running && tracking_ && onFor_ >= kSettleSec && !dashboardOpen && now - closedAt_ >= kClosedSec) {
+        // Would start now, but SteamVR's startup dashboard is still to come: started now, it would be stopped as it
+        // opens. Said once
+        if (startupWait_) {
+            if (!startupLogged_) {
+                startupLogged_ = true;
+                char text[128];
+                std::snprintf(text, sizeof(text),
+                              "auto re-center: waiting for SteamVR's startup dashboard to open and close (up to %.0f s "
+                              "after %s)",
+                              kStartupDashboardWaitSec, startupAfter_);
+                step.log = text;
+            }
+            return step;
+        }
         // Held back until the warm-up is over (and kCameraMarginSec more, for frameeyeosc to take the camera's
         // eyelid), kCameraWaitSec at most
         if (hold && std::isnan(holdSince_)) {
@@ -126,6 +173,10 @@ Step Watcher::update(double now, const Inputs& in) {
         armed_ = false;
         step.start = true;
         step.log = "auto re-center: starting";
+        if (startupLogged_) {
+            startupLogged_ = false;
+            step.log += " (SteamVR's startup dashboard was closed)";
+        }
         if (retries_ > 0) {
             char text[48];
             std::snprintf(text, sizeof(text), " (retry %d of %d)", retries_, kDashboardRetries);

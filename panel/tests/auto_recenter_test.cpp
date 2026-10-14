@@ -37,13 +37,26 @@ struct Run {
     double startedAt = -1.0;        ///< when it last did
     std::vector<std::string> logs;  ///< every line it logged
 
-    /** A worn headset with a gaze fit, frameeyeosc running, SteamVR connected and the dashboard closed. */
-    Run() {
+    /**
+     * A worn headset with a gaze fit, frameeyeosc running, SteamVR connected and the dashboard closed.
+     * @param startedUp SteamVR's startup dashboard has already come and gone (the watcher saw the connect, the dashboard
+     *                  open and then closed, before frameeyeosc ran); false: a watcher that has seen nothing yet
+     */
+    explicit Run(bool startedUp = true) {
         in.enabled = true;
         in.fitted = true;
         in.running = true;
         in.tracking = true;
         in.vrConnected = true;
+        if (!startedUp) return;
+        // frameeyeosc not running yet, so its status counts for nothing; the dashboard closed well before `now`
+        Inputs before = in;
+        before.running = false;
+        before.tracking = false;
+        before.dashboardOpen = true;
+        watcher.update(now - 2.0, before);
+        before.dashboardOpen = false;
+        watcher.update(now - 1.75, before);
     }
 
     /**
@@ -88,6 +101,16 @@ struct Run {
         in.fitActive = false;
         const std::string line = watcher.fitEnded(byItself, byDashboard);
         if (!line.empty()) logs.push_back(line);
+    }
+
+    /**
+     * The dashboard opens (SteamVR's own after it starts or wakes up), stays open a while, and is closed.
+     * @param openSec how long it is open
+     */
+    void dashboardOpenFor(double openSec) {
+        in.dashboardOpen = true;
+        wait(openSec);
+        in.dashboardOpen = false;
     }
 
     /**
@@ -212,19 +235,28 @@ void testDashboardOpenBlocks() {
 void testNotConnectedWaits() {
     // Not connected to SteamVR yet (the Frame starting up): the dashboard reads closed, but it can't be known, so no dot
     // however long the eyes have been tracked
-    Run run;
+    Run run(false);
     run.in.vrConnected = false;
     run.wait(30);
     CHECK(run.starts == 0 && run.watcher.armed());
-    // Connected: the dashboard's second closed counts from now
+    // Connected: SteamVR is about to open its dashboard, so no dot a second later as until 0.7.7: it waits for that
     run.in.vrConnected = true;
-    const double connected = run.now;
+    run.wait(1.25);
+    CHECK(run.starts == 0 && run.watcher.armed());
+    CHECK(run.logged("auto re-center: waiting for SteamVR's startup dashboard to open and close (up to 45 s after "
+                     "connecting)") == 1);
+    run.wait(3.75);
+    // ...opened, and closed by the user: the dot a second later
+    run.dashboardOpenFor(20);
+    const double closed = run.now;
     run.wait(0.75);
     CHECK(run.starts == 0);
     run.wait(0.5);
-    CHECK(run.starts == 1 && run.startedAt >= connected + auto_recenter::kClosedSec &&
-          run.startedAt <= connected + auto_recenter::kClosedSec + 0.25);
-    // ...and SteamVR opened its dashboard right after: the stopped try is tried again once it has been closed a second
+    CHECK(run.starts == 1 && run.startedAt >= closed + auto_recenter::kClosedSec &&
+          run.startedAt <= closed + auto_recenter::kClosedSec + 0.25);
+    CHECK(run.logged("auto re-center: starting (SteamVR's startup dashboard was closed)") == 1);
+    CHECK(run.logged("waiting for SteamVR's startup dashboard") == 1);
+    // The dashboard opened again just after (the user): the safety net still tries again once it has been closed
     run.dashboardStops();
     CHECK(run.watcher.armed());
     CHECK(run.logged("auto re-center: stopped by the dashboard opening; trying again once it has been closed 1 s "
@@ -232,11 +264,11 @@ void testNotConnectedWaits() {
     run.wait(20);
     CHECK(run.starts == 1);
     run.in.dashboardOpen = false;
-    const double closed = run.now;
+    const double closedAgain = run.now;
     run.wait(0.75);
     CHECK(run.starts == 1);
     run.wait(0.5);
-    CHECK(run.starts == 2 && run.startedAt >= closed + auto_recenter::kClosedSec);
+    CHECK(run.starts == 2 && run.startedAt >= closedAgain + auto_recenter::kClosedSec);
     CHECK(run.logged("auto re-center: starting (retry 1 of 2)") == 1);
     // That one went through: nothing more this wearing
     run.endFit(true, false);
@@ -244,15 +276,170 @@ void testNotConnectedWaits() {
     CHECK(run.starts == 2 && !run.watcher.armed());
 }
 
-void testDashboardRetries() {
-    // Put on after the Frame slept 12 minutes (2026-10-12 23:38): the re-center started, and SteamVR opened its
-    // dashboard a moment later as it woke up
+void testBootTimeline() {
+    // The reboot of 2026-10-14 (journal): the panel started at 19:55:40.67, frameeyeosc tracked the eyes from 43.73, the
+    // panel connected to SteamVR at 43.90 with the dashboard closed, SteamVR opened its dashboard at 49.02 and the user
+    // closed it at 19:56:16.64. 0.7.7 started at 47.06, was stopped at 49.02 (failure 3) and tried again at 56:17.59.
+    // Now: no try before that dashboard, one right after it was closed
+    Run run(false);
+    run.now = 40.75;  // 19:55:40.75
+    run.in.vrConnected = false;
+    run.in.tracking = false;
+    run.wait(3.0);  // 43.75: tracking
+    run.in.tracking = true;
+    run.wait(0.25);  // 44.0: connected
+    run.in.vrConnected = true;
+    run.wait(5.0);  // 49.0: SteamVR's dashboard
+    CHECK(run.starts == 0);
+    CHECK(run.logs.size() == 1 && run.logs[0] == "auto re-center: waiting for SteamVR's startup dashboard to open "
+                                                  "and close (up to 45 s after connecting)");
+    run.dashboardOpenFor(27.75);  // closed at 76.75 (19:56:16.75)
+    run.wait(0.75);
+    CHECK(run.starts == 0);
+    run.wait(0.5);
+    CHECK(run.starts == 1 && run.startedAt >= 77.75 && run.startedAt <= 78.0);
+    // The two lines, nothing about the dashboard stopping it
+    CHECK(run.logs.size() == 2 && run.logs[1] == "auto re-center: starting (SteamVR's startup dashboard was closed)");
+    run.endFit(true, false);
+    run.wait(60);
+    CHECK(run.starts == 1 && run.logs.size() == 2);
+}
+
+void testWakeTimeline() {
+    // Put on after the Frame slept 12 minutes (like 2026-10-12 23:38: SteamVR's dashboard came about 23 s after the
+    // eyes): no try before that dashboard, one right after it was closed
     Run run;
     run.wait(5);
     run.finishFit();
     run.in.tracking = false;
     run.wait(3);
     run.now += 721;
+    run.in.tracking = true;
+    run.wait(0.25);
+    CHECK(run.watcher.armed() && run.logged("put on (tracking was off 724.") == 1);
+    run.wait(22.75);
+    CHECK(run.starts == 1);
+    CHECK(run.logged("auto re-center: waiting for SteamVR's startup dashboard to open and close (up to 45 s after "
+                     "waking up)") == 1);
+    run.dashboardOpenFor(5);
+    const double closed = run.now;
+    run.wait(0.75);
+    CHECK(run.starts == 1);
+    run.wait(0.5);
+    CHECK(run.starts == 2 && run.startedAt >= closed + auto_recenter::kClosedSec);
+    CHECK(run.logged("auto re-center: starting (SteamVR's startup dashboard was closed)") == 1);
+    CHECK(run.logged("stopped by the dashboard") == 0);
+    // The dashboard already open when the Frame wakes up (left open before it slept) counts as seen
+    Run open;
+    open.wait(5);
+    open.finishFit();
+    open.in.tracking = false;
+    open.in.dashboardOpen = true;
+    open.wait(3);
+    open.now += 600;
+    open.in.tracking = true;
+    open.wait(10);
+    open.in.dashboardOpen = false;
+    const double shut = open.now;
+    open.wait(1.25);
+    CHECK(open.starts == 2 && open.startedAt >= shut + auto_recenter::kClosedSec && open.logged("waiting") == 0);
+}
+
+void testStartupDashboardCap() {
+    // SteamVR doesn't open its dashboard (the panel restarted by an update while worn, the dashboard closed): it goes
+    // ahead kStartupDashboardWaitSec after connecting, saying so
+    Run run(false);
+    const double connected = run.now;
+    run.wait(auto_recenter::kStartupDashboardWaitSec - 0.25);
+    CHECK(run.starts == 0 && run.watcher.armed());
+    CHECK(run.logged("(up to 45 s after connecting)") == 1);
+    run.wait(0.5);
+    CHECK(run.starts == 0 && run.logged("auto re-center: no startup dashboard after 45 s, going ahead") == 1);
+    run.wait(0.25);
+    CHECK(run.starts == 1 && run.startedAt <= connected + auto_recenter::kStartupDashboardWaitSec + 0.5);
+    CHECK(run.logs.back() == "auto re-center: starting");
+    // ...also after waking up, counted from the wake
+    Run wake;
+    wake.wait(5);
+    wake.finishFit();
+    wake.in.tracking = false;
+    wake.wait(3);
+    wake.now += 120;
+    const double woke = wake.now;
+    wake.in.tracking = true;
+    wake.wait(auto_recenter::kStartupDashboardWaitSec - 0.25);
+    CHECK(wake.starts == 1 && wake.logged("(up to 45 s after waking up)") == 1);
+    wake.wait(0.75);
+    CHECK(wake.starts == 2 && wake.startedAt <= woke + auto_recenter::kStartupDashboardWaitSec + 0.5);
+    CHECK(wake.logged("no startup dashboard after 45 s, going ahead") == 1);
+    // Not worn at boot: the wait ran out unseen, and putting the headset on later is an ordinary put-on
+    Run later(false);
+    later.in.tracking = false;
+    later.wait(60);
+    CHECK(later.logs.empty());
+    later.in.tracking = true;
+    later.wait(3.25);
+    CHECK(later.starts == 1 && later.logged("waiting") == 0 && later.logged("no startup dashboard") == 0);
+    // Put on within the wait, without the dashboard yet: waits like the first wearing
+    Run early(false);
+    early.in.tracking = false;
+    early.wait(10);
+    early.in.tracking = true;
+    early.wait(10);
+    CHECK(early.starts == 0 && early.logged("waiting for SteamVR's startup dashboard") == 1);
+    early.dashboardOpenFor(3);
+    early.wait(1.25);
+    CHECK(early.starts == 1);
+}
+
+void testDashboardOpenAtConnect() {
+    // The panel restarted from the dashboard (an update): open when it connects, which counts as SteamVR's dashboard
+    // having come. It starts a second after it is closed, as before
+    Run run(false);
+    run.in.dashboardOpen = true;
+    run.wait(15);
+    CHECK(run.starts == 0);
+    run.in.dashboardOpen = false;
+    const double closed = run.now;
+    run.wait(1.25);
+    CHECK(run.starts == 1 && run.startedAt >= closed + auto_recenter::kClosedSec &&
+          run.startedAt <= closed + auto_recenter::kClosedSec + 0.25);
+    CHECK(run.logs.size() == 1 && run.logs[0] == "auto re-center: starting");
+}
+
+void testRewearUnaffected() {
+    // Taken off and put back on with the Frame awake: no waiting for a dashboard, the dot 3 s after it settles
+    Run run(false);
+    run.wait(1);
+    run.dashboardOpenFor(10);  // SteamVR's startup dashboard
+    run.wait(2);
+    CHECK(run.starts == 1);
+    run.finishFit();
+    run.in.tracking = false;
+    run.wait(300);
+    run.in.tracking = true;
+    const double back = run.now;
+    run.wait(3.25);
+    CHECK(run.starts == 2 && run.startedAt <= back + auto_recenter::kSettleSec + 0.25);
+    CHECK(run.logged("waiting") == 0);
+    // ...also soon after connecting, once the startup dashboard has come and gone
+    run.finishFit();
+    run.in.tracking = false;
+    run.wait(6);
+    run.in.tracking = true;
+    run.wait(3.25);
+    CHECK(run.starts == 3 && run.logged("waiting") == 0);
+}
+
+void testDashboardRetries() {
+    // The safety net: a re-center the dashboard stopped anyway (opened just as it began) is tried again once it has been
+    // closed, twice at most in a wearing. (Until 0.7.7 this put the headset on after the Frame slept, SteamVR opening
+    // its dashboard as it woke up; that now waits for the dashboard, testWakeTimeline)
+    Run run;
+    run.wait(5);
+    run.finishFit();
+    run.in.tracking = false;
+    run.wait(20);
     run.in.tracking = true;
     run.wait(3.5);
     CHECK(run.starts == 2);
@@ -410,7 +597,11 @@ void testSuspendCountsAsOff() {
     stale.in.tracking = true;
     stale.wait(0.25);
     CHECK(stale.watcher.armed() && stale.logged("put on (tracking was off 63.") == 1);
+    // (after waking up it also waits for SteamVR's dashboard, testWakeTimeline)
     stale.wait(4);
+    CHECK(stale.starts == 1 && stale.logged("after waking up)") == 1);
+    stale.dashboardOpenFor(1);
+    stale.wait(1.25);
     CHECK(stale.starts == 2);
     // ...or the status from before the sleep had not been read again yet (still running, tracking off)
     Run cached;
@@ -421,6 +612,8 @@ void testSuspendCountsAsOff() {
     cached.now += 60;
     cached.in.tracking = true;
     cached.wait(4);
+    cached.dashboardOpenFor(1);
+    cached.wait(1.25);
     CHECK(cached.starts == 2 && cached.logged("put on (tracking was off 63.") == 1);
     // The last status before sleeping still said "tracking" (read just before the headset came off and the Frame
     // slept), and tracking again after waking: the suspend counts as off, so it arms
@@ -429,6 +622,8 @@ void testSuspendCountsAsOff() {
     stale2.finishFit();
     stale2.now += 600;
     stale2.wait(4);
+    stale2.dashboardOpenFor(1);
+    stale2.wait(1.25);
     CHECK(stale2.starts == 2 && stale2.logged("put on (tracking was off 600.") == 1);
     // A gap under 10 s is not sleep: nothing
     Run shortGap;
@@ -622,6 +817,11 @@ int main() {
     testSettleRestarts();
     testDashboardOpenBlocks();
     testNotConnectedWaits();
+    testBootTimeline();
+    testWakeTimeline();
+    testStartupDashboardCap();
+    testDashboardOpenAtConnect();
+    testRewearUnaffected();
     testDashboardRetries();
     testOtherEndsNoRetry();
     testPanelFitUnaffected();
