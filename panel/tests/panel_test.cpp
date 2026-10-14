@@ -898,11 +898,16 @@ void testGazeScaleLocks(const FontSet& fonts) {
     // − / ＋ go to the caller as Step on their own key
     const std::vector<EyePanel::HitArea> plus = hits(panel, PanelAction::Step, key::kGazeScaleUp);
     CHECK(plus.size() == 2 && plus[0].hit.arg == -1 && plus[1].hit.arg == 1);
-    // 100% shows as "100%"; at 25% only ＋ can be pressed
-    m.config.root.set(key::kGazeScaleDown, JsonValue::makeNumber(0.25));
+    // 100% shows as "100%"; at 5% only ＋ can be pressed, at 200% only −, at 25% both
+    m.config.root.set(key::kGazeScaleDown, JsonValue::makeNumber(0.05));
+    m.config.root.set(key::kGazeScaleLeft, JsonValue::makeNumber(2.0));
+    m.config.root.set(key::kGazeScaleRight, JsonValue::makeNumber(0.25));
     panel.render(m);
     const std::vector<EyePanel::HitArea> down = hits(panel, PanelAction::Step, key::kGazeScaleDown);
     CHECK(down.size() == 1 && down[0].hit.arg == 1);
+    const std::vector<EyePanel::HitArea> left = hits(panel, PanelAction::Step, key::kGazeScaleLeft);
+    CHECK(left.size() == 1 && left[0].hit.arg == -1);
+    CHECK(hits(panel, PanelAction::Step, key::kGazeScaleRight).size() == 2);
     // Kept while another tab shows, shown again when the tab is chosen again; the Eyelids tab's sub-tab is its own
     pressTab(panel, PanelTab::Basic);
     panel.render(m);

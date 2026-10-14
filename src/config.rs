@@ -19,7 +19,7 @@ const CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const GAZE_OFFSET_RANGE: std::ops::RangeInclusive<f32> = -0.5..=0.5;
 const GAZE_GAIN_RANGE: std::ops::RangeInclusive<f32> = 0.5..=2.0;
 // Allowed gaze scales (the user's own multipliers after the eye fit; the panel's steppers stay inside these too).
-const GAZE_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.25..=1.5;
+const GAZE_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.05..=2.0;
 // Allowed headset tilt (degrees).
 const GAZE_ROLL_RANGE: std::ops::RangeInclusive<f32> = -20.0..=20.0;
 // camera_lid_floor, in VRCFT units: up to relaxed open.
@@ -291,6 +291,11 @@ impl Settings {
         self.eye_behavior >= 2
     }
 
+    /// Whether the user's gaze scale changes anything (not 1 on all four sides).
+    pub fn gaze_scaled(&self) -> bool {
+        [self.gaze_scale_left, self.gaze_scale_right, self.gaze_scale_up, self.gaze_scale_down] != [1.0; 4]
+    }
+
     /// Each eye's fit, if all four of its readings are set.
     pub fn lid_fit(&self) -> [Option<LidFit>; 2] {
         let fit = |closed: Option<f32>, up: Option<f32>, open: Option<f32>, down: Option<f32>| {
@@ -444,7 +449,7 @@ impl Settings {
         }
         let gaze_scales = [self.gaze_scale_left, self.gaze_scale_right, self.gaze_scale_up, self.gaze_scale_down];
         if !gaze_scales.iter().all(|scale| GAZE_SCALE_RANGE.contains(scale)) {
-            return Err("gaze_scale_left/right/up/down must be between 0.25 and 1.5".into());
+            return Err("gaze_scale_left/right/up/down must be between 0.05 and 2".into());
         }
         if !lid_fit.iter().all(|eye| eye.iter().all(Option::is_some) || eye.iter().all(Option::is_none)) {
             return Err("an eye's lid_fit_* values must all be set, or all null".into());
@@ -949,10 +954,10 @@ mod tests {
         let scales = |s: &Settings| [s.gaze_scale_left, s.gaze_scale_right, s.gaze_scale_up, s.gaze_scale_down];
         assert_eq!(scales(&settings), [1.0; 4]);
         for name in ["gaze_scale_left", "gaze_scale_right", "gaze_scale_up", "gaze_scale_down"] {
-            for bad in ["0.2", "1.55", "-1", "0", "\"big\""] {
+            for bad in ["0.04", "2.05", "-1", "0", "\"big\""] {
                 assert!(merged(&format!(r#"{{"{name}": {bad}}}"#), &[]).is_err(), "{name} {bad}");
             }
-            for good in ["0.25", "1.5", "1", "0.8"] {
+            for good in ["0.05", "2", "0.25", "1.5", "1", "0.8"] {
                 assert!(merged(&format!(r#"{{"{name}": {good}}}"#), &[]).is_ok(), "{name} {good}");
             }
         }
@@ -962,7 +967,10 @@ mod tests {
         let (settings, locked) = merged(file, &["--gaze-scale-up", "0.75", "--gaze-scale-left", "1"]).unwrap();
         assert_eq!(scales(&settings), [1.0, 0.9, 0.75, 1.5]);
         assert_eq!(locked, ["gaze_scale_left", "gaze_scale_up"]);
-        assert!(merged("{}", &["--gaze-scale-down", "2"]).is_err());
+        assert!(merged("{}", &["--gaze-scale-down", "2.1"]).is_err());
+        assert!(merged("{}", &["--gaze-scale-down", "0.01"]).is_err());
+        let (settings, _) = merged("{}", &["--gaze-scale-down", "2", "--gaze-scale-left", "0.05"]).unwrap();
+        assert_eq!(scales(&settings), [0.05, 1.0, 1.0, 2.0]);
     }
 
     #[test]

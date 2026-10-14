@@ -95,3 +95,12 @@ enum class DotKind { Both, Left, Right };
  * @param pngPath also save a PNG here if not empty
  */
 void renderGazeDot(DotKind kind, std::vector<uint8_t>& rgba, const std::string& pngPath = "");
+
+/**
+ * Draw a debug gaze ring (the gaze before the user's gaze scale): a ring of the dot's colour with dark edges and a clear
+ * middle, shown gaze_dots::kRingWidthScale times as wide as a dot, so a dot at the same place sits inside it.
+ * @param kind which eye's colour
+ * @param rgba where to write un-premultiplied RGBA (kDotImageSize squared)
+ * @param pngPath also save a PNG here if not empty
+ */
+void renderGazeRing(DotKind kind, std::vector<uint8_t>& rgba, const std::string& pngPath = "");
